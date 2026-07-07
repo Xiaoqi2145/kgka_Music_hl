@@ -1,8 +1,33 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 class AppTheme {
   static const blue = Color(0xFF1478FF);
   static const musicRed = Color(0xFFFF2D55);
+  static const _transparentPageTransitions = PageTransitionsTheme(
+    builders: <TargetPlatform, PageTransitionsBuilder>{
+      TargetPlatform.android: PredictiveBackPageTransitionsBuilder(
+        fallbackColor: Colors.transparent,
+      ),
+      TargetPlatform.fuchsia: ZoomPageTransitionsBuilder(
+        allowSnapshotting: false,
+        allowEnterRouteSnapshotting: false,
+        backgroundColor: Colors.transparent,
+      ),
+      TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+      TargetPlatform.linux: ZoomPageTransitionsBuilder(
+        allowSnapshotting: false,
+        allowEnterRouteSnapshotting: false,
+        backgroundColor: Colors.transparent,
+      ),
+      TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+      TargetPlatform.windows: ZoomPageTransitionsBuilder(
+        allowSnapshotting: false,
+        allowEnterRouteSnapshotting: false,
+        backgroundColor: Colors.transparent,
+      ),
+    },
+  );
 
   static ThemeData light({Color? seedColor, bool transparentBackground = false}) {
     return _theme(Brightness.light,
@@ -50,6 +75,9 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      pageTransitionsTheme: transparentBackground
+          ? _transparentPageTransitions
+          : const PageTransitionsTheme(),
       scaffoldBackgroundColor: transparentBackground
           ? Colors.transparent
           : (isDark ? const Color(0xFF06070A) : Colors.white),

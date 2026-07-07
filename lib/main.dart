@@ -39,12 +39,14 @@ Future<void> main() async {
   final themeController = ThemeController();
   await themeController.load();
 
-  runApp(KaMusicApp(
-    client: client,
-    api: api,
-    audioHandler: audioHandler,
-    themeController: themeController,
-  ));
+  runApp(
+    KaMusicApp(
+      client: client,
+      api: api,
+      audioHandler: audioHandler,
+      themeController: themeController,
+    ),
+  );
 }
 
 class KaMusicApp extends StatefulWidget {
@@ -175,39 +177,120 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
 ///
 /// 当用户启用了自定义背景图时，在所有页面内容下方显示背景图，
 /// 并叠加半透明遮罩（由 [ThemeController.backgroundOpacity] 控制）。
-class _AppBackground extends StatelessWidget {
+class _AppBackground extends StatefulWidget {
   const _AppBackground({required this.themeController, required this.child});
 
   final ThemeController themeController;
   final Widget child;
 
   @override
+  State<_AppBackground> createState() => _AppBackgroundState();
+}
+
+class _AppBackgroundState extends State<_AppBackground> {
+  ImageProvider<Object>? _imageProvider;
+  String? _imageCacheKey;
+  ImageStream? _liveImageStream;
+  ImageStreamListener? _liveImageListener;
+  String? _liveImageKey;
+
+  ImageProvider<Object> _providerFor(
+    String path,
+    int cacheWidth,
+    int cacheHeight,
+  ) {
+    final key = '$path@$cacheWidth*$cacheHeight';
+    if (_imageProvider != null && _imageCacheKey == key) {
+      return _imageProvider!;
+    }
+
+    final provider = ResizeImage.resizeIfNeeded(
+      cacheWidth,
+      cacheHeight,
+      FileImage(File(path)),
+    );
+    _imageProvider = provider;
+    _imageCacheKey = key;
+    _keepImageAlive(provider, key);
+    return provider;
+  }
+
+  void _keepImageAlive(ImageProvider<Object> provider, String key) {
+    if (_liveImageKey == key) return;
+    _releaseLiveImage();
+
+    final listener = ImageStreamListener(
+      (imageInfo, _) => imageInfo.dispose(),
+      onError: (_, _) {},
+    );
+
+    try {
+      final stream = provider.resolve(createLocalImageConfiguration(context));
+      _liveImageStream = stream;
+      _liveImageListener = listener;
+      _liveImageKey = key;
+      stream.addListener(listener);
+    } catch (_) {
+      _liveImageStream = null;
+      _liveImageListener = null;
+      _liveImageKey = null;
+    }
+  }
+
+  void _releaseLiveImage() {
+    final stream = _liveImageStream;
+    final listener = _liveImageListener;
+    if (stream != null && listener != null) {
+      stream.removeListener(listener);
+    }
+    _liveImageStream = null;
+    _liveImageListener = null;
+    _liveImageKey = null;
+  }
+
+  @override
+  void dispose() {
+    _releaseLiveImage();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: themeController,
-      builder: (context, _) {
-        final path = themeController.backgroundImagePath;
-        final enabled = themeController.backgroundEnabled;
+      animation: widget.themeController,
+      child: widget.child,
+      builder: (context, child) {
+        final path = widget.themeController.backgroundImagePath;
+        final enabled = widget.themeController.backgroundEnabled;
 
         if (!enabled || path == null) {
-          return child;
+          _releaseLiveImage();
+          return child ?? const SizedBox.shrink();
         }
 
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        final overlayColor = isDark
-            ? const Color(0xFF06070A)
-            : Colors.white;
-        final opacity = themeController.backgroundOpacity;
+        final overlayColor = isDark ? const Color(0xFF06070A) : Colors.white;
+        final opacity = widget.themeController.backgroundOpacity;
+        final mediaQuery = MediaQuery.of(context);
+        final targetSize = mediaQuery.size * mediaQuery.devicePixelRatio;
+        final imageProvider = _providerFor(
+          path,
+          targetSize.width.ceil(),
+          targetSize.height.ceil(),
+        );
 
         return Stack(
           children: [
             // 背景图层
             Positioned.fill(
-              child: Image.file(
-                File(path),
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              child: RepaintBoundary(
+                child: Image(
+                  image: imageProvider,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  filterQuality: FilterQuality.low,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
               ),
             ),
             // 半透明遮罩（opacity 越大遮罩越透明，背景图越明显）
@@ -217,7 +300,7 @@ class _AppBackground extends StatelessWidget {
               ),
             ),
             // 页面内容
-            child,
+            child ?? const SizedBox.shrink(),
           ],
         );
       },

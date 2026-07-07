@@ -154,7 +154,9 @@ class ThemeController extends ChangeNotifier {
     final ImagePicker picker = ImagePicker();
     final xFile = await picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 90,
+      imageQuality: 88,
+      maxWidth: 2560,
+      maxHeight: 2560,
     );
     if (xFile == null) return false;
 
