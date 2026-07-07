@@ -64,253 +64,279 @@ class SettingsPage extends StatelessWidget {
             return AdaptiveContentPadding(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-              children: [
-                // Account section
-                _SectionHeader(title: '账号'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.sync_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '同步个人信息',
-                      subtitle: '刷新头像、昵称和歌单数据',
-                      loading: auth.isLoading,
-                      onTap:
-                          auth.isLoading ? null : () => auth.refreshProfile(),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsTile(
-                      icon: Icons.logout_rounded,
-                      iconColor: colorScheme.error,
-                      title: '退出登录',
-                      titleColor: colorScheme.error,
-                      onTap: auth.isLoading
-                          ? null
-                          : () => _confirmLogout(context),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Playback section
-                _SectionHeader(title: '播放'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.high_quality_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '默认音质',
-                      subtitle: player.audioQuality.label,
-                      onTap: () => _selectDefaultAudioQuality(context),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsSwitchTile(
-                      icon: Icons.auto_awesome_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '智能音质',
-                      subtitle: '播放失败时自动降级音质重试',
-                      value: player.smartQualityEnabled,
-                      onChanged: player.setSmartQualityEnabled,
-                    ),
-                    _SettingsDivider(),
-                    _SettingsTile(
-                      icon: Icons.graphic_eq_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '音效',
-                      subtitle: player.audioEffectsLabel,
-                      onTap: () => showAudioEffectsSheet(
-                        context: context,
-                        player: player,
+                children: [
+                  // Account section
+                  _SectionHeader(title: '账号'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.sync_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '同步个人信息',
+                        subtitle: '刷新头像、昵称和歌单数据',
+                        loading: auth.isLoading,
+                        onTap: auth.isLoading
+                            ? null
+                            : () => auth.refreshProfile(),
                       ),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsTile(
-                      icon: Icons.bar_chart_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '播放统计',
-                      subtitle: '听歌时长、最常听歌手等',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => PlaybackStatsPage(player: player),
-                        ),
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.logout_rounded,
+                        iconColor: colorScheme.error,
+                        title: '退出登录',
+                        titleColor: colorScheme.error,
+                        onTap: auth.isLoading
+                            ? null
+                            : () => _confirmLogout(context),
                       ),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsTile(
-                      icon: Icons.history_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '播放历史',
-                      subtitle: '最近播放的歌曲',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => PlaybackHistoryPage(
-                            api: api,
-                            auth: auth,
-                            player: player,
-                          ),
-                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // Playback section
+                  _SectionHeader(title: '播放'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.high_quality_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '默认音质',
+                        subtitle: player.audioQuality.label,
+                        onTap: () => _selectDefaultAudioQuality(context),
                       ),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsTile(
-                      icon: Icons.block_rounded,
-                      title: '后台打断机制',
-                      subtitle: _audioInterruptionSummary(player),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => AudioInterruptionSettingsPage(
-                            player: player,
-                          ),
-                        ),
-                      ),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsSwitchTile(
-                      icon: Icons.bar_chart_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '增加听歌时长',
-                      subtitle: '每播放 30 分钟自动同步一次',
-                      value: player.addListeningTimeEnabled,
-                      onChanged: player.setAddListeningTimeEnabled,
-                    ),
-                    if (player.isDesktopLyricsSupported) ...[
                       _SettingsDivider(),
                       _SettingsSwitchTile(
-                        icon: Icons.lyrics_rounded,
+                        icon: Icons.auto_awesome_rounded,
                         iconColor: colorScheme.primary,
-                        title: '桌面歌词',
-                        subtitle: '在其他应用上方显示歌词悬浮窗',
-                        value: player.desktopLyricsEnabled,
-                        onChanged: (value) async {
-                          await player.setDesktopLyricsEnabled(value);
-                          if (!player.desktopLyricsEnabled && value) {
-                            Toast.error('需要悬浮窗权限才能使用桌面歌词');
-                          }
-                        },
+                        title: '智能音质',
+                        subtitle: '播放失败时自动降级音质重试',
+                        value: player.smartQualityEnabled,
+                        onChanged: player.setSmartQualityEnabled,
                       ),
-                      if (player.desktopLyricsEnabled) ...[
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.headphones_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '设备连接自动播放',
+                        subtitle: '连接蓝牙耳机等音频设备时自动继续播放',
+                        value: player.autoPlayOnDeviceConnected,
+                        onChanged: player.setAutoPlayOnDeviceConnected,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.volume_up_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '音量均衡',
+                        subtitle: '自动统一不同歌曲的播放音量',
+                        value: player.volumeNormalizationEnabled,
+                        onChanged: player.setVolumeNormalizationEnabled,
+                      ),
+                      if (player.volumeNormalizationEnabled) ...[
                         _SettingsDivider(),
-                        _SettingsTile(
-                          icon: Icons.tune_rounded,
-                          iconColor: colorScheme.primary,
-                          title: '歌词设置',
-                          subtitle: '透明度、颜色、锁定位置等',
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => DesktopLyricsSettingsPage(player: player),
+                        _VolumeNormLufsSlider(player: player),
+                      ],
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.graphic_eq_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '音效',
+                        subtitle: player.audioEffectsLabel,
+                        onTap: () => showAudioEffectsSheet(
+                          context: context,
+                          player: player,
+                        ),
+                      ),
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.bar_chart_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '播放统计',
+                        subtitle: '听歌时长、最常听歌手等',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => PlaybackStatsPage(player: player),
+                          ),
+                        ),
+                      ),
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.history_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '播放历史',
+                        subtitle: '最近播放的歌曲',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => PlaybackHistoryPage(
+                              api: api,
+                              auth: auth,
+                              player: player,
                             ),
                           ),
                         ),
-                      ],
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Local Music section
-                _SectionHeader(title: '本地'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.computer_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '本地音乐目录',
-                      subtitle: localMusic.localMusicDir ?? '未设置',
-                      onTap: () => _selectOrClearDir(context, localMusic),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Network section
-                _SectionHeader(title: '网络'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.dns_rounded,
-                      iconColor: colorScheme.primary,
-                      title: 'API 服务器地址',
-                      subtitle: AppConfig.hasCustomBaseUrl
-                          ? AppConfig.customBaseUrl
-                          : '默认：${AppConfig.defaultApiBaseUrl}',
-                      onTap: () => _editApiBaseUrl(context),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Cache section
-                _SectionHeader(title: '缓存'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.storage_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '缓存管理',
-                      subtitle: '查看和清理缓存',
-                      onTap: () => _showCacheManagement(context),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Personalization section
-                _SectionHeader(title: '个性化'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.palette_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '皮肤与背景',
-                      subtitle: '配色方案与自定义全局背景图',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => PersonalizationSettingsPage(
-                            themeController: theme,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.block_rounded,
+                        title: '后台打断机制',
+                        subtitle: _audioInterruptionSummary(player),
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                AudioInterruptionSettingsPage(player: player),
                           ),
                         ),
                       ),
-                    ),
-                    _SettingsDivider(),
-                    _SettingsSwitchTile(
-                      icon: Icons.screen_rotation_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '横屏模式',
-                      subtitle: '允许手机横屏时自动旋转（平板默认开启）',
-                      value: theme.landscapeEnabled,
-                      onChanged: (value) {
-                        theme.setLandscapeEnabled(value, AdaptiveLayout.isTablet(context));
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // App section
-                _SectionHeader(title: '应用'),
-                const SizedBox(height: 8),
-                _SettingsCard(
-                  children: [
-                    _SettingsTile(
-                      icon: Icons.info_outline_rounded,
-                      iconColor: colorScheme.primary,
-                      title: '关于',
-                      subtitle: AppUpdateService.isSupportedPlatform
-                          ? '版本、更新日志与检查更新'
-                          : '版本与更新日志',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => AboutPage(api: api),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.bar_chart_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '增加听歌时长',
+                        subtitle: '每播放 30 分钟自动同步一次',
+                        value: player.addListeningTimeEnabled,
+                        onChanged: player.setAddListeningTimeEnabled,
+                      ),
+                      if (player.isDesktopLyricsSupported) ...[
+                        _SettingsDivider(),
+                        _SettingsSwitchTile(
+                          icon: Icons.lyrics_rounded,
+                          iconColor: colorScheme.primary,
+                          title: '桌面歌词',
+                          subtitle: '在其他应用上方显示歌词悬浮窗',
+                          value: player.desktopLyricsEnabled,
+                          onChanged: (value) async {
+                            await player.setDesktopLyricsEnabled(value);
+                            if (!player.desktopLyricsEnabled && value) {
+                              Toast.error('需要悬浮窗权限才能使用桌面歌词');
+                            }
+                          },
+                        ),
+                        if (player.desktopLyricsEnabled) ...[
+                          _SettingsDivider(),
+                          _SettingsTile(
+                            icon: Icons.tune_rounded,
+                            iconColor: colorScheme.primary,
+                            title: '歌词设置',
+                            subtitle: '透明度、颜色、锁定位置等',
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    DesktopLyricsSettingsPage(player: player),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // Local Music section
+                  _SectionHeader(title: '本地'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.computer_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '本地音乐目录',
+                        subtitle: localMusic.localMusicDir ?? '未设置',
+                        onTap: () => _selectOrClearDir(context, localMusic),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // Network section
+                  _SectionHeader(title: '网络'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.dns_rounded,
+                        iconColor: colorScheme.primary,
+                        title: 'API 服务器地址',
+                        subtitle: AppConfig.hasCustomBaseUrl
+                            ? AppConfig.customBaseUrl
+                            : '默认：${AppConfig.defaultApiBaseUrl}',
+                        onTap: () => _editApiBaseUrl(context),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // Cache section
+                  _SectionHeader(title: '缓存'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.storage_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '缓存管理',
+                        subtitle: '查看和清理缓存',
+                        onTap: () => _showCacheManagement(context),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // Personalization section
+                  _SectionHeader(title: '个性化'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.palette_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '皮肤与背景',
+                        subtitle: '配色方案与自定义全局背景图',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => PersonalizationSettingsPage(
+                              themeController: theme,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        },
-      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.screen_rotation_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '横屏模式',
+                        subtitle: '允许手机横屏时自动旋转（平板默认开启）',
+                        value: theme.landscapeEnabled,
+                        onChanged: (value) {
+                          theme.setLandscapeEnabled(
+                            value,
+                            AdaptiveLayout.isTablet(context),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  // App section
+                  _SectionHeader(title: '应用'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.info_outline_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '关于',
+                        subtitle: AppUpdateService.isSupportedPlatform
+                            ? '版本、更新日志与检查更新'
+                            : '版本与更新日志',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AboutPage(api: api),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -344,10 +370,7 @@ class SettingsPage extends StatelessWidget {
       isScrollControlled: true,
       backgroundColor: Theme.of(context).colorScheme.surface,
       builder: (sheetContext) {
-        return _CacheManagementSheet(
-          cache: cache,
-          downloads: downloads,
-        );
+        return _CacheManagementSheet(cache: cache, downloads: downloads);
       },
     );
   }
@@ -401,7 +424,9 @@ class SettingsPage extends StatelessWidget {
                 onPressed: () => Navigator.of(dialogContext).pop(''),
                 child: Text(
                   '恢复默认',
-                  style: TextStyle(color: Theme.of(dialogContext).colorScheme.error),
+                  style: TextStyle(
+                    color: Theme.of(dialogContext).colorScheme.error,
+                  ),
                 ),
               ),
             FilledButton(
@@ -425,7 +450,10 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  Future<void> _selectOrClearDir(BuildContext context, LocalMusicController localMusic) async {
+  Future<void> _selectOrClearDir(
+    BuildContext context,
+    LocalMusicController localMusic,
+  ) async {
     final dir = localMusic.localMusicDir;
     if (dir == null || dir.isEmpty) {
       await _pickLocalMusicDir(context, localMusic);
@@ -443,15 +471,18 @@ class SettingsPage extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 child: Text(
                   '当前目录: $dir',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
               const Divider(),
@@ -461,7 +492,10 @@ class SettingsPage extends StatelessWidget {
                 onTap: () => Navigator.of(context).pop(1),
               ),
               ListTile(
-                leading: Icon(Icons.delete_outline_rounded, color: colorScheme.error),
+                leading: Icon(
+                  Icons.delete_outline_rounded,
+                  color: colorScheme.error,
+                ),
                 title: Text('清除目录', style: TextStyle(color: colorScheme.error)),
                 onTap: () => Navigator.of(context).pop(2),
               ),
@@ -480,7 +514,10 @@ class SettingsPage extends StatelessWidget {
     }
   }
 
-  Future<void> _pickLocalMusicDir(BuildContext context, LocalMusicController localMusic) async {
+  Future<void> _pickLocalMusicDir(
+    BuildContext context,
+    LocalMusicController localMusic,
+  ) async {
     try {
       final path = await FilePicker.getDirectoryPath();
       if (path == null) return;
@@ -564,6 +601,60 @@ class _SettingsCard extends StatelessWidget {
   }
 }
 
+/// 音量均衡参考响度滑块。
+class _VolumeNormLufsSlider extends StatelessWidget {
+  const _VolumeNormLufsSlider({required this.player});
+
+  final PlayerController player;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final lufs = player.volumeNormalizationRefLufs;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 20, 10),
+      child: Row(
+        children: [
+          const SizedBox(width: 46),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '目标响度',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    Text(
+                      '${lufs.toStringAsFixed(0)} LUFS',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  min: -16,
+                  max: -6,
+                  divisions: 10,
+                  value: lufs.clamp(-16.0, -6.0),
+                  onChanged: (value) =>
+                      player.setVolumeNormalizationRefLufs(value),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SettingsTile extends StatelessWidget {
   const _SettingsTile({
     required this.icon,
@@ -602,7 +693,11 @@ class _SettingsTile extends StatelessWidget {
                         color: colorScheme.primary,
                       ),
                     )
-                  : Icon(icon, size: 22, color: iconColor ?? colorScheme.primary),
+                  : Icon(
+                      icon,
+                      size: 22,
+                      color: iconColor ?? colorScheme.primary,
+                    ),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -667,7 +762,11 @@ class _SettingsSwitchTile extends StatelessWidget {
         children: [
           SizedBox(
             width: 32,
-            child: Icon(icon, size: 22, color: iconColor ?? colorScheme.primary),
+            child: Icon(
+              icon,
+              size: 22,
+              color: iconColor ?? colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -676,9 +775,9 @@ class _SettingsSwitchTile extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
@@ -725,6 +824,7 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   int? _dataCacheSize;
   int? _downloadSize;
   int? _playCacheSize;
+  int? _playCacheLimitBytes;
   bool _clearing = false;
 
   @override
@@ -741,6 +841,7 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
       } catch (_) {}
     }
     if (widget.downloads != null) {
+      _playCacheLimitBytes = widget.downloads!.playCacheMaxBytes;
       try {
         download = await widget.downloads!.getDownloadDirSize();
       } catch (_) {}
@@ -753,8 +854,16 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
         _dataCacheSize = dataCache;
         _downloadSize = download;
         _playCacheSize = playCache;
+        _playCacheLimitBytes = widget.downloads?.playCacheMaxBytes;
       });
     }
+  }
+
+  String _formatPlayCacheUsage() {
+    final limit = _playCacheLimitBytes ?? widget.downloads?.playCacheMaxBytes;
+    final size = _formatSize(_playCacheSize);
+    if (limit == null) return size;
+    return '$size / 上限 ${_formatSize(limit)}';
   }
 
   String _formatSize(int? bytes) {
@@ -780,9 +889,9 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
           children: [
             Text(
               '缓存管理',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 16),
             _CacheItem(
@@ -823,8 +932,9 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
             _CacheItem(
               icon: Icons.cached_rounded,
               title: '播放缓存',
-              size: _formatSize(_playCacheSize),
-              onClear: widget.downloads != null &&
+              size: _formatPlayCacheUsage(),
+              onClear:
+                  widget.downloads != null &&
                       _playCacheSize != null &&
                       _playCacheSize! > 0
                   ? () async {
@@ -846,10 +956,160 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
                     }
                   : null,
             ),
+            if (widget.downloads != null) ...[
+              const SizedBox(height: 10),
+              _PlayCacheLimitInput(
+                valueBytes:
+                    _playCacheLimitBytes ?? widget.downloads!.playCacheMaxBytes,
+                onSubmitted: (bytes) async {
+                  setState(() => _playCacheLimitBytes = bytes);
+                  await widget.downloads!.setPlayCacheMaxBytes(bytes);
+                  await _loadSizes();
+                },
+              ),
+            ],
             const SizedBox(height: 20),
             if (_clearing) const Center(child: CircularProgressIndicator()),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PlayCacheLimitInput extends StatefulWidget {
+  const _PlayCacheLimitInput({
+    required this.valueBytes,
+    required this.onSubmitted,
+  });
+
+  static const _bytesPerMb = 1024 * 1024;
+
+  final int valueBytes;
+  final Future<void> Function(int bytes) onSubmitted;
+
+  @override
+  State<_PlayCacheLimitInput> createState() => _PlayCacheLimitInputState();
+}
+
+class _PlayCacheLimitInputState extends State<_PlayCacheLimitInput> {
+  late final TextEditingController _controller;
+  bool _saving = false;
+
+  int get _minMb =>
+      AppConfig.minPlayCacheMaxBytes ~/ _PlayCacheLimitInput._bytesPerMb;
+
+  int get _maxMb =>
+      AppConfig.maxPlayCacheMaxBytes ~/ _PlayCacheLimitInput._bytesPerMb;
+
+  int _valueMbFromBytes(int bytes) {
+    return (bytes / _PlayCacheLimitInput._bytesPerMb).round().clamp(
+      _minMb,
+      _maxMb,
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(
+      text: _valueMbFromBytes(widget.valueBytes).toString(),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _PlayCacheLimitInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.valueBytes != oldWidget.valueBytes && !_saving) {
+      _controller.text = _valueMbFromBytes(widget.valueBytes).toString();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final parsed = int.tryParse(_controller.text.trim());
+    if (parsed == null) return;
+
+    final clamped = parsed.clamp(_minMb, _maxMb);
+    _controller.text = clamped.toString();
+    setState(() => _saving = true);
+    try {
+      await widget.onSubmitted(clamped * _PlayCacheLimitInput._bytesPerMb);
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.tune_rounded, size: 22, color: colorScheme.primary),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              '播放缓存上限',
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          SizedBox(
+            width: 124,
+            child: TextField(
+              controller: _controller,
+              enabled: !_saving,
+              textAlign: TextAlign.end,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(
+                isDense: true,
+                suffixText: 'MB',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 10,
+                ),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox.square(
+            dimension: 38,
+            child: _saving
+                ? Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: colorScheme.primary,
+                    ),
+                  )
+                : IconButton(
+                    tooltip: '保存',
+                    icon: const Icon(Icons.check_rounded),
+                    onPressed: _submit,
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -888,9 +1148,9 @@ class _CacheItem extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 Text(
                   size,
@@ -904,10 +1164,7 @@ class _CacheItem extends StatelessWidget {
           if (onClear != null)
             TextButton(
               onPressed: onClear,
-              child: Text(
-                '清理',
-                style: TextStyle(color: colorScheme.error),
-              ),
+              child: Text('清理', style: TextStyle(color: colorScheme.error)),
             ),
         ],
       ),

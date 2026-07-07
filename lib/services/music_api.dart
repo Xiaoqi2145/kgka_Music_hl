@@ -485,6 +485,13 @@ class MusicApi {
         'free_part': false,
       }),
     );
+    // 🔍 调试：检查 API 是否返回 volume 响度数据
+    debugPrint('[KA Music][loudness] /song/url response keys: ${json.keys}');
+    if (json.containsKey('volume')) {
+      debugPrint('[KA Music][loudness] volume=${json['volume']}'
+          ' volume_gain=${json['volume_gain']}'
+          ' volume_peak=${json['volume_peak']}');
+    }
     return PlayUrl.fromJson(json);
   }
 

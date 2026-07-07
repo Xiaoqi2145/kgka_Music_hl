@@ -36,10 +36,12 @@ class _PendingTask {
 class DownloadService {
   DownloadService();
 
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(minutes: 10),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(minutes: 10),
+    ),
+  );
   final Map<String, CancelToken> _cancelTokens = {};
   final int _maxConcurrent = AppConfig.maxConcurrentDownloads;
   int _running = 0;
@@ -122,8 +124,9 @@ class DownloadService {
     // 用户下载优先：插入队列头部之后（在其它下载任务之后、播放缓存之前）
     if (task.kind == DownloadTaskKind.download) {
       // 插入到第一个 playCache 任务之前
-      final firstPlayCache = _queue
-          .indexWhere((t) => t.kind == DownloadTaskKind.playCache);
+      final firstPlayCache = _queue.indexWhere(
+        (t) => t.kind == DownloadTaskKind.playCache,
+      );
       if (firstPlayCache >= 0) {
         _queue.insert(firstPlayCache, task);
       } else {
@@ -272,13 +275,14 @@ class DownloadService {
     }
   }
 
-  /// LRU 清理播放缓存至 [AppConfig.playCacheMaxBytes] 以下。
+  /// LRU 清理播放缓存至 [maxBytes] 以下。
   ///
   /// [entries] 为当前缓存索引（按 cachedAt 升序排列）。
   /// [excludePaths] 中的文件跳过清理（如正在播放的文件）。
   Future<void> prunePlayCache(
     List<({String cacheKey, String filePath, DateTime cachedAt})> entries, {
     Set<String> excludePaths = const {},
+    int maxBytes = AppConfig.defaultPlayCacheMaxBytes,
   }) async {
     int totalSize = 0;
     final fileSizes = <String, int>{};
@@ -288,14 +292,14 @@ class DownloadService {
       totalSize += size;
     }
 
-    if (totalSize <= AppConfig.playCacheMaxBytes) return;
+    if (totalSize <= maxBytes) return;
 
     // 按 cachedAt 升序删除最旧条目
     final sorted = List.of(entries)
       ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 
     for (final entry in sorted) {
-      if (totalSize <= AppConfig.playCacheMaxBytes) break;
+      if (totalSize <= maxBytes) break;
       if (excludePaths.contains(entry.filePath)) continue;
       final size = fileSizes[entry.filePath] ?? 0;
       await deleteFile(entry.filePath);

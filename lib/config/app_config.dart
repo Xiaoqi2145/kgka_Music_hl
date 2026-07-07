@@ -32,7 +32,9 @@ class AppConfig {
   static const userProfileTtl = Duration(hours: 24); // 用户信息+歌单列表
 
   /// 播放缓存大小上限（超过则按 LRU 清理），下载不设上限（用户主动管理）
-  static const playCacheMaxBytes = 300 * 1024 * 1024; // 300MB
+  static const defaultPlayCacheMaxBytes = 300 * 1024 * 1024; // 300MB
+  static const minPlayCacheMaxBytes = 100 * 1024 * 1024; // 100MB
+  static const maxPlayCacheMaxBytes = 10 * 1024 * 1024 * 1024; // 10GB
 
   /// 下载并发数
   static const maxConcurrentDownloads = 3;

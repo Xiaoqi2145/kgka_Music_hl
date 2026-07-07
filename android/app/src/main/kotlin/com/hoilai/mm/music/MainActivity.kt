@@ -12,6 +12,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.view.WindowManager
 import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.FlutterEngine
@@ -28,6 +29,8 @@ class MainActivity : AudioServiceActivity() {
     private var bassBoostSessionId: Int? = null
     private var equalizer: Equalizer? = null
     private var equalizerSessionId: Int? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var loudnessEnhancerSessionId: Int? = null
 
     private val downloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -142,6 +145,22 @@ class MainActivity : AudioServiceActivity() {
                             releaseBassBoost()
                             result.error("bass_boost_failed", error.message, null)
                         }
+                    }
+                    "enableLoudnessEnhancer" -> {
+                        val audioSessionId = call.argument<Int>("audioSessionId")
+                        val gainMillibels = call.argument<Int>("gainMillibels") ?: 0
+
+                        runCatching {
+                            enableLoudnessEnhancer(audioSessionId, gainMillibels)
+                        }.onSuccess {
+                            result.success(true)
+                        }.onFailure { error ->
+                            result.error("loudness_failed", error.message, null)
+                        }
+                    }
+                    "disableLoudnessEnhancer" -> {
+                        releaseLoudnessEnhancer()
+                        result.success(true)
                     }
                     else -> result.notImplemented()
                 }
@@ -453,9 +472,33 @@ class MainActivity : AudioServiceActivity() {
         startActivity(installIntent)
     }
 
+    private fun enableLoudnessEnhancer(audioSessionId: Int?, gainMillibels: Int) {
+        if (audioSessionId == null || audioSessionId <= 0) return
+        if (loudnessEnhancerSessionId != audioSessionId || loudnessEnhancer == null) {
+            releaseLoudnessEnhancer()
+            LoudnessEnhancer(audioSessionId).also {
+                loudnessEnhancer = it
+                loudnessEnhancerSessionId = audioSessionId
+            }
+        }
+        val clamped = gainMillibels.coerceIn(0, 3000)
+        loudnessEnhancer?.setTargetGain(clamped)
+        loudnessEnhancer?.enabled = true
+    }
+
+    private fun releaseLoudnessEnhancer() {
+        loudnessEnhancer?.runCatching {
+            enabled = false
+            release()
+        }
+        loudnessEnhancer = null
+        loudnessEnhancerSessionId = null
+    }
+
     override fun onDestroy() {
         releaseEqualizer()
         releaseBassBoost()
+        releaseLoudnessEnhancer()
         if (downloadReceiverRegistered) {
             unregisterReceiver(downloadReceiver)
             downloadReceiverRegistered = false

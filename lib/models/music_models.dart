@@ -1,3 +1,5 @@
+import 'loudness_data.dart';
+
 class LoginSession {
   const LoginSession({
     this.userId,
@@ -1153,16 +1155,20 @@ class AlbumShopItem {
 }
 
 class PlayUrl {
-  const PlayUrl({required this.url, required this.hash});
+  const PlayUrl({required this.url, required this.hash, this.loudness});
 
   final String url;
   final String hash;
+
+  /// 曲目响度元数据（来自 API 的 volume 字段），用于音量均衡。
+  final LoudnessData? loudness;
 
   factory PlayUrl.fromJson(Map<String, dynamic> json) {
     final urls = asList(json['url']).whereType<String>().toList();
     return PlayUrl(
       url: urls.isNotEmpty ? urls.first : '',
       hash: asString(json['hash']) ?? '',
+      loudness: LoudnessData.fromJson(json),
     );
   }
 }

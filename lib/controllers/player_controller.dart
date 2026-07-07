@@ -17,6 +17,7 @@ import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_stats_service.dart';
+import '../services/volume_normalization_service.dart';
 import 'download_controller.dart';
 
 enum PlaybackMode { playlistLoop, shuffle, singleLoop }
@@ -40,10 +41,17 @@ class PlayerController extends ChangeNotifier {
       'settings.audio_interruption_enabled';
   static const _autoResumeAfterInterruptionSettingKey =
       'settings.auto_resume_after_interruption';
+  static const _autoPlayOnDeviceConnectedSettingKey =
+      'settings.auto_play_on_device_connected';
   static const _playbackSpeedSettingKey = 'settings.playback_speed';
-  static const _desktopLyricsEnabledSettingKey = 'settings.desktop_lyrics_enabled';
+  static const _desktopLyricsEnabledSettingKey =
+      'settings.desktop_lyrics_enabled';
   static const _desktopLyricsSettingsKey = 'settings.desktop_lyrics_settings';
   static const _smartQualitySettingKey = 'settings.smart_quality_enabled';
+  static const _volumeNormEnabledSettingKey =
+      'settings.volume_normalization_enabled';
+  static const _volumeNormRefLufsSettingKey =
+      'settings.volume_normalization_ref_lufs';
   static const _listenTimeReportInterval = Duration(minutes: 30);
   static const _listenTimeCheckInterval = Duration(minutes: 1);
   static const _defaultEqualizerLevels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -132,6 +140,7 @@ class PlayerController extends ChangeNotifier {
       unawaited(_refreshEqualizerConfig());
       unawaited(_applyEqualizer());
       unawaited(_applyBassBoost());
+      unawaited(_applyVolumeNormalization());
     });
     unawaited(_setupAudioSessionListeners());
   }
@@ -154,6 +163,7 @@ class PlayerController extends ChangeNotifier {
   late final StreamSubscription<int?> _androidAudioSessionSub;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSub;
   StreamSubscription<void>? _becomingNoisySub;
+  StreamSubscription<AudioDevicesChangedEvent>? _devicesChangedSub;
   final Stopwatch _positionClock = Stopwatch();
   final _random = math.Random();
   Timer? _completionFallbackTimer;
@@ -180,6 +190,7 @@ class PlayerController extends ChangeNotifier {
   bool isPreparing = false;
   bool addListeningTimeEnabled = true;
   AudioQuality audioQuality = AudioQuality.standard;
+
   /// 是否开启音质智能切换（播放失败时自动降级重试）。
   bool smartQualityEnabled = false;
   double playbackSpeed = 1.0;
@@ -193,8 +204,15 @@ class PlayerController extends ChangeNotifier {
   double bassBoostStrength = 0.45;
   bool audioInterruptionEnabled = true;
   bool autoResumeAfterInterruption = false;
+  bool autoPlayOnDeviceConnected = true;
   bool desktopLyricsEnabled = false;
   DesktopLyricsSettings desktopLyricsSettings = const DesktopLyricsSettings();
+
+  /// 音量均衡（LUFS 响度标准化）。
+  bool volumeNormalizationEnabled = false;
+  double volumeNormalizationRefLufs = -11.0;
+  final VolumeNormalizationService _volNormService =
+      VolumeNormalizationService();
   Timer? _autoResumeTimer;
   Duration? sleepTimerRemaining;
   Timer? _sleepTimer;
@@ -204,6 +222,7 @@ class PlayerController extends ChangeNotifier {
   String? errorMessage;
   int seekRevision = 0;
   int? _androidAudioSessionId;
+  int _volumeNormApplySerial = 0;
   bool get isScrubbing => _isScrubbing;
   bool get isAudioEffectsSupported => _audioEffects.isAudioEffectsSupported;
   bool get isBassBoostSupported => _audioEffects.isBassBoostSupported;
@@ -328,12 +347,13 @@ class PlayerController extends ChangeNotifier {
             song.isCloudDrive
                 ? '云盘歌曲暂时没有可播放地址'
                 : song.source == SongSource.netease
-                    ? '网易云歌曲暂时没有可播放地址'
-                    : '这首歌暂时没有可播放地址',
+                ? '网易云歌曲暂时没有可播放地址'
+                : '这首歌暂时没有可播放地址',
           );
         }
         url = playUrl.url;
         networkUrl = playUrl.url;
+        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
       }
       await _audioHandler.loadSong(
         song: song,
@@ -345,6 +365,8 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
       unawaited(loadLyrics(song));
       await _audioHandler.play();
+      // 切歌后应用音量均衡
+      await _applyVolumeNormalization();
       // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
       unawaited(_historyService.record(song));
       unawaited(_statsService.recordPlay(song));
@@ -614,7 +636,8 @@ class PlayerController extends ChangeNotifier {
       try {
         final songFile = File(song.id);
         final dotIndex = songFile.path.lastIndexOf('.');
-        final lrcPath = '${dotIndex != -1 ? songFile.path.substring(0, dotIndex) : songFile.path}.lrc';
+        final lrcPath =
+            '${dotIndex != -1 ? songFile.path.substring(0, dotIndex) : songFile.path}.lrc';
         final file = File(lrcPath);
         if (await file.exists()) {
           final bytes = await file.readAsBytes();
@@ -654,7 +677,9 @@ class PlayerController extends ChangeNotifier {
               .toList(),
           ttl: const Duration(days: 30),
         );
-        if (cached != null && !listEquals(lyrics, cached.data) && currentSong?.hash == song.hash) {
+        if (cached != null &&
+            !listEquals(lyrics, cached.data) &&
+            currentSong?.hash == song.hash) {
           lyrics = cached.data;
           notifyListeners();
           _syncDesktopLyrics();
@@ -672,9 +697,11 @@ class PlayerController extends ChangeNotifier {
       }
       // 写缓存（空歌词也缓存，避免重复请求）
       if (cache != null) {
-        unawaited(cache.write(cacheKey, {
-          'lines': fresh.map((l) => l.toCache()).toList(),
-        }));
+        unawaited(
+          cache.write(cacheKey, {
+            'lines': fresh.map((l) => l.toCache()).toList(),
+          }),
+        );
       }
     } catch (_) {
       if (currentSong?.hash == song.hash && lyrics.isEmpty) {
@@ -841,6 +868,7 @@ class PlayerController extends ChangeNotifier {
         }
         url = playUrl.url;
         networkUrl = playUrl.url;
+        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
       }
       await _audioHandler.loadSong(
         song: song,
@@ -860,6 +888,8 @@ class PlayerController extends ChangeNotifier {
           downloadController?.cacheForPlayback(song, audioQuality, networkUrl),
         );
       }
+      // 音质切换后重新应用音量均衡
+      await _applyVolumeNormalization();
     } catch (error) {
       errorMessage = error.toString();
     } finally {
@@ -878,29 +908,22 @@ class PlayerController extends ChangeNotifier {
           // 若开启了"阻止打断"，立即恢复播放以对抗暂停。
           if (!audioInterruptionEnabled && isPlaying && currentSong != null) {
             _autoResumeTimer?.cancel();
-            _autoResumeTimer = Timer(
-              const Duration(milliseconds: 300),
-              () {
-                if (!isPlaying && currentSong != null) {
-                  unawaited(_audioHandler.play());
-                }
-              },
-            );
+            _autoResumeTimer = Timer(const Duration(milliseconds: 300), () {
+              if (!isPlaying && currentSong != null) {
+                unawaited(_audioHandler.play());
+              }
+            });
           }
         } else {
           // 打断结束：若开启了"自动恢复"或"阻止打断"，恢复播放。
-          if ((autoResumeAfterInterruption ||
-                  (!audioInterruptionEnabled)) &&
+          if ((autoResumeAfterInterruption || (!audioInterruptionEnabled)) &&
               currentSong != null) {
             _autoResumeTimer?.cancel();
-            _autoResumeTimer = Timer(
-              const Duration(milliseconds: 500),
-              () {
-                if (!isPlaying && currentSong != null) {
-                  unawaited(_audioHandler.play());
-                }
-              },
-            );
+            _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
+              if (!isPlaying && currentSong != null) {
+                unawaited(_audioHandler.play());
+              }
+            });
           }
         }
       });
@@ -911,19 +934,50 @@ class PlayerController extends ChangeNotifier {
         }
         if (autoResumeAfterInterruption && currentSong != null) {
           _autoResumeTimer?.cancel();
-          _autoResumeTimer = Timer(
-            const Duration(milliseconds: 500),
-            () {
-              if (!isPlaying && currentSong != null) {
-                unawaited(_audioHandler.play());
-              }
-            },
-          );
+          _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
+            if (!isPlaying && currentSong != null) {
+              unawaited(_audioHandler.play());
+            }
+          });
         }
+      });
+      _devicesChangedSub = session.devicesChangedEventStream.listen((event) {
+        if (!autoPlayOnDeviceConnected || currentSong == null) {
+          return;
+        }
+        if (!event.devicesAdded.any(_isExternalOutputAudioDevice)) {
+          return;
+        }
+        _autoResumeTimer?.cancel();
+        _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
+          if (!isPlaying && !isPreparing && currentSong != null) {
+            unawaited(_audioHandler.play());
+          }
+        });
       });
     } catch (_) {
       // AudioSession not available on this platform
     }
+  }
+
+  bool _isExternalOutputAudioDevice(AudioDevice device) {
+    if (!device.isOutput) return false;
+    return const {
+      'wiredHeadset',
+      'wiredHeadphones',
+      'bluetoothSco',
+      'bluetoothA2dp',
+      'bluetoothLe',
+      'usbAudio',
+      'dock',
+      'airPlay',
+      'hdmi',
+      'hdmiArc',
+      'displayPort',
+      'carAudio',
+      'auxLine',
+      'thunderbolt',
+    }.contains(device.type.name);
   }
 
   /// 根据打断设置生成 AudioSessionConfiguration。
@@ -975,6 +1029,14 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setAutoPlayOnDeviceConnected(bool enabled) async {
+    if (autoPlayOnDeviceConnected == enabled) return;
+    autoPlayOnDeviceConnected = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_autoPlayOnDeviceConnectedSettingKey, enabled);
+    notifyListeners();
+  }
+
   Future<void> setDesktopLyricsEnabled(bool enabled) async {
     if (desktopLyricsEnabled == enabled) return;
     desktopLyricsEnabled = enabled;
@@ -1014,7 +1076,10 @@ class PlayerController extends ChangeNotifier {
 
     final song = currentSong;
     if (song == null) return;
-    final shown = await _desktopLyrics.show(title: song.title, artist: song.artist);
+    final shown = await _desktopLyrics.show(
+      title: song.title,
+      artist: song.artist,
+    );
     if (shown) {
       _syncDesktopLyrics();
       _syncDesktopPlayState();
@@ -1118,10 +1183,15 @@ class PlayerController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> updateDesktopLyricsSettings(DesktopLyricsSettings settings) async {
+  Future<void> updateDesktopLyricsSettings(
+    DesktopLyricsSettings settings,
+  ) async {
     desktopLyricsSettings = settings;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_desktopLyricsSettingsKey, jsonEncode(settings.toMap()));
+    await prefs.setString(
+      _desktopLyricsSettingsKey,
+      jsonEncode(settings.toMap()),
+    );
     notifyListeners();
     await _desktopLyrics.updateSettings(settings);
   }
@@ -1239,6 +1309,82 @@ class PlayerController extends ChangeNotifier {
     unawaited(_audioHandler.pause());
   }
 
+  // ── 音量均衡 ──
+
+  /// 为当前曲目应用音量均衡增益。
+  Future<void> _applyVolumeNormalization({
+    bool retryIfSessionPending = true,
+  }) async {
+    final serial = ++_volumeNormApplySerial;
+    final song = currentSong;
+    if (song == null) return;
+
+    final loudness = _volNormService.getCachedLoudness(song.hash);
+    final sessionId =
+        _androidAudioSessionId ?? audioPlayer.androidAudioSessionId;
+    final gainDb = loudness == null
+        ? null
+        : _volNormService.computeGainDb(loudness);
+
+    final gainLinear = await _volNormService.applyForTrack(
+      audioSessionId: sessionId,
+      loudness: loudness,
+    );
+    if (serial != _volumeNormApplySerial || currentSong?.hash != song.hash) {
+      return;
+    }
+
+    // 衰减路径（gain < 1.0）通过 just_audio 音量处理；提升路径交给原生增强器。
+    await audioPlayer.setVolume(
+      _volNormService.enabled && loudness != null && gainLinear < 1.0
+          ? gainLinear
+          : 1.0,
+    );
+
+    if (retryIfSessionPending &&
+        _volNormService.enabled &&
+        loudness != null &&
+        gainDb != null &&
+        gainDb > 0.5 &&
+        (sessionId == null || sessionId <= 0)) {
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 250)).then((_) async {
+          if (currentSong?.hash == song.hash) {
+            await _applyVolumeNormalization(retryIfSessionPending: false);
+          }
+        }),
+      );
+    }
+  }
+
+  /// 切换音量均衡开关。
+  Future<void> setVolumeNormalizationEnabled(bool enabled) async {
+    if (volumeNormalizationEnabled == enabled) return;
+    volumeNormalizationEnabled = enabled;
+    _volNormService.enabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_volumeNormEnabledSettingKey, enabled);
+    notifyListeners();
+
+    await _applyVolumeNormalization();
+  }
+
+  /// 设置参考响度（-16 ~ -6 LUFS）。
+  Future<void> setVolumeNormalizationRefLufs(double value) async {
+    final clamped = value.clamp(-16.0, -6.0);
+    if ((volumeNormalizationRefLufs - clamped).abs() < 0.1) return;
+    volumeNormalizationRefLufs = clamped;
+    _volNormService.referenceLufs = clamped;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_volumeNormRefLufsSettingKey, clamped);
+    notifyListeners();
+
+    // 如果正在播放且均衡已启用，重新应用
+    if (_volNormService.enabled && currentSong != null) {
+      await _applyVolumeNormalization();
+    }
+  }
+
   Future<void> _restoreSettings() async {
     final prefs = await SharedPreferences.getInstance();
     addListeningTimeEnabled =
@@ -1262,14 +1408,24 @@ class PlayerController extends ChangeNotifier {
         prefs.getDouble(_bassBoostStrengthSettingKey) ?? bassBoostStrength;
     audioInterruptionEnabled =
         prefs.getBool(_audioInterruptionEnabledSettingKey) ??
-            audioInterruptionEnabled;
+        audioInterruptionEnabled;
     autoResumeAfterInterruption =
         prefs.getBool(_autoResumeAfterInterruptionSettingKey) ??
-            autoResumeAfterInterruption;
-    playbackSpeed =
-        prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
+        autoResumeAfterInterruption;
+    autoPlayOnDeviceConnected =
+        prefs.getBool(_autoPlayOnDeviceConnectedSettingKey) ??
+        autoPlayOnDeviceConnected;
+    playbackSpeed = prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
     desktopLyricsEnabled =
         prefs.getBool(_desktopLyricsEnabledSettingKey) ?? desktopLyricsEnabled;
+    volumeNormalizationEnabled =
+        prefs.getBool(_volumeNormEnabledSettingKey) ??
+        volumeNormalizationEnabled;
+    volumeNormalizationRefLufs =
+        prefs.getDouble(_volumeNormRefLufsSettingKey) ??
+        volumeNormalizationRefLufs;
+    _volNormService.enabled = volumeNormalizationEnabled;
+    _volNormService.referenceLufs = volumeNormalizationRefLufs;
     final dlSettingsRaw = prefs.getString(_desktopLyricsSettingsKey);
     if (dlSettingsRaw != null && dlSettingsRaw.isNotEmpty) {
       try {
@@ -1473,7 +1629,9 @@ class PlayerController extends ChangeNotifier {
     _androidAudioSessionSub.cancel();
     _interruptionSub?.cancel();
     _becomingNoisySub?.cancel();
+    _devicesChangedSub?.cancel();
     _completionFallbackTimer?.cancel();
+    unawaited(_volNormService.dispose());
     unawaited(
       _audioEffects.configureEqualizer(
         audioSessionId:

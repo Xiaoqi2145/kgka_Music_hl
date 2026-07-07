@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/app_config.dart';
 import '../models/music_models.dart';
 import '../services/download_service.dart';
 import '../services/music_api.dart';
@@ -81,19 +82,36 @@ class DownloadController extends ChangeNotifier {
 
   static const _downloadsIndexKey = 'ka_music_downloads_index';
   static const _playCacheIndexKey = 'ka_music_play_cache_index';
+  static const _playCacheMaxBytesKey = 'settings.play_cache_max_bytes';
 
   final Map<String, DownloadEntry> _downloads = {}; // key = hash
   final Map<String, PlayCacheEntry> _playCache = {}; // key = hash_quality
   bool _initialized = false;
+  int playCacheMaxBytes = AppConfig.defaultPlayCacheMaxBytes;
 
   /// 启动时加载索引并校验文件存在性。
   Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
+    await _loadPlayCacheSettings();
     await _loadDownloads();
     await _loadPlayCache();
     // 启动时 LRU 清理播放缓存
     await _prunePlayCache(excludePaths: const {});
+  }
+
+  Future<void> _loadPlayCacheSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    playCacheMaxBytes = _normalizePlayCacheMaxBytes(
+      prefs.getInt(_playCacheMaxBytesKey) ?? playCacheMaxBytes,
+    );
+  }
+
+  int _normalizePlayCacheMaxBytes(int value) {
+    return value.clamp(
+      AppConfig.minPlayCacheMaxBytes,
+      AppConfig.maxPlayCacheMaxBytes,
+    );
   }
 
   Future<void> _loadDownloads() async {
@@ -163,12 +181,14 @@ class DownloadController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final list = _downloads.values
         .where((e) => e.status == DownloadStatus.downloaded)
-        .map((e) => {
-              'song': e.song.toCache(),
-              'quality': e.quality.apiValue,
-              'filePath': e.filePath,
-              'downloadedAt': e.downloadedAt?.toIso8601String(),
-            })
+        .map(
+          (e) => {
+            'song': e.song.toCache(),
+            'quality': e.quality.apiValue,
+            'filePath': e.filePath,
+            'downloadedAt': e.downloadedAt?.toIso8601String(),
+          },
+        )
         .toList();
     await prefs.setString(_downloadsIndexKey, jsonEncode(list));
   }
@@ -176,14 +196,16 @@ class DownloadController extends ChangeNotifier {
   Future<void> _persistPlayCache() async {
     final prefs = await SharedPreferences.getInstance();
     final list = _playCache.values
-        .map((e) => {
-              'cacheKey': e.cacheKey,
-              'song': e.song.toCache(),
-              'quality': e.quality.apiValue,
-              'filePath': e.filePath,
-              'size': e.size,
-              'cachedAt': e.cachedAt.toIso8601String(),
-            })
+        .map(
+          (e) => {
+            'cacheKey': e.cacheKey,
+            'song': e.song.toCache(),
+            'quality': e.quality.apiValue,
+            'filePath': e.filePath,
+            'size': e.size,
+            'cachedAt': e.cachedAt.toIso8601String(),
+          },
+        )
         .toList();
     await prefs.setString(_playCacheIndexKey, jsonEncode(list));
   }
@@ -218,8 +240,7 @@ class DownloadController extends ChangeNotifier {
       .map((e) => e.song)
       .toList();
 
-  List<DownloadEntry> get downloadEntries =>
-      _downloads.values.toList();
+  List<DownloadEntry> get downloadEntries => _downloads.values.toList();
 
   List<PlayCacheEntry> get playCacheEntries => _playCache.values.toList();
 
@@ -228,6 +249,18 @@ class DownloadController extends ChangeNotifier {
 
   /// 获取播放缓存目录大小（字节）。
   Future<int> getPlayCacheDirSize() => _service.getPlayCacheDirSize();
+
+  /// 设置播放缓存上限（字节），并立即按新上限清理。
+  Future<void> setPlayCacheMaxBytes(int bytes) async {
+    final normalized = _normalizePlayCacheMaxBytes(bytes);
+    if (playCacheMaxBytes == normalized) return;
+    playCacheMaxBytes = normalized;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_playCacheMaxBytesKey, normalized);
+    await _prunePlayCache();
+  }
 
   // ===== 下载操作 =====
 
@@ -378,21 +411,22 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<void> _prunePlayCache({Set<String> excludePaths = const {}}) async {
-    final entries = _playCache.values
-        .map((e) => (
-              cacheKey: e.cacheKey,
-              filePath: e.filePath,
-              cachedAt: e.cachedAt,
-            ))
-        .toList()
-      ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
+    final entries =
+        _playCache.values
+            .map(
+              (e) => (
+                cacheKey: e.cacheKey,
+                filePath: e.filePath,
+                cachedAt: e.cachedAt,
+              ),
+            )
+            .toList()
+          ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 
-    final beforePaths = _playCache.values
-        .map((e) => e.filePath)
-        .toSet();
     await _service.prunePlayCache(
       entries,
-      excludePaths: {...excludePaths, ...beforePaths.difference(excludePaths)},
+      excludePaths: excludePaths,
+      maxBytes: playCacheMaxBytes,
     );
 
     // 清理后校验索引，移除已删除的条目
