@@ -78,6 +78,9 @@ class MainActivity : AudioServiceActivity() {
                         }
                         result.success(null)
                     }
+                    "moveTaskToBack" -> {
+                        result.success(moveTaskToBack(true))
+                    }
                     else -> result.notImplemented()
                 }
             }

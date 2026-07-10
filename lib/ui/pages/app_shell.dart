@@ -1,6 +1,8 @@
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/download_controller.dart';
@@ -39,6 +41,8 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
+  static const _screenChannel = MethodChannel('kgka_music_hl/screen');
+
   var _index = 0;
   late final List<Widget> _pages;
 
@@ -46,7 +50,12 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     _pages = [
-      HomePage(api: widget.api, auth: widget.auth, player: widget.player, cache: widget.cache),
+      HomePage(
+        api: widget.api,
+        auth: widget.auth,
+        player: widget.player,
+        cache: widget.cache,
+      ),
       LibraryPage(
         api: widget.api,
         auth: widget.auth,
@@ -73,11 +82,9 @@ class _AppShellState extends State<AppShell> {
         Positioned(
           left: 0,
           right: 0,
-          bottom: bottomInset + (useNavRail ? 16 : kBottomNavigationBarHeight + 10),
-          child: MiniPlayer(
-            player: widget.player,
-            auth: widget.auth,
-          ),
+          bottom:
+              bottomInset + (useNavRail ? 16 : kBottomNavigationBarHeight + 10),
+          child: MiniPlayer(player: widget.player, auth: widget.auth),
         ),
       ],
     );
@@ -91,7 +98,9 @@ class _AppShellState extends State<AppShell> {
             backgroundColor: colorScheme.surfaceContainerLow,
             labelType: NavigationRailLabelType.all,
             selectedIconTheme: IconThemeData(color: colorScheme.primary),
-            unselectedIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
+            unselectedIconTheme: IconThemeData(
+              color: colorScheme.onSurfaceVariant,
+            ),
             selectedLabelTextStyle: TextStyle(
               color: colorScheme.primary,
               fontWeight: FontWeight.w800,
@@ -119,12 +128,9 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
-    return Scaffold(
+    final scaffold = Scaffold(
       extendBody: true,
-      body: AdaptiveContentPadding(
-        maxWidth: 1150,
-        child: mainContent,
-      ),
+      body: AdaptiveContentPadding(maxWidth: 1150, child: mainContent),
       bottomNavigationBar: useNavRail
           ? null
           : ClipRect(
@@ -133,11 +139,17 @@ class _AppShellState extends State<AppShell> {
                 child: Container(
                   decoration: BoxDecoration(
                     color: Theme.of(context).brightness == Brightness.dark
-                        ? colorScheme.surfaceContainerHighest.withValues(alpha: .72)
-                        : colorScheme.surfaceContainerHighest.withValues(alpha: .64),
+                        ? colorScheme.surfaceContainerHighest.withValues(
+                            alpha: .72,
+                          )
+                        : colorScheme.surfaceContainerHighest.withValues(
+                            alpha: .64,
+                          ),
                     border: Border(
                       top: BorderSide(
-                        color: colorScheme.outlineVariant.withValues(alpha: .38),
+                        color: colorScheme.outlineVariant.withValues(
+                          alpha: .38,
+                        ),
                       ),
                     ),
                   ),
@@ -148,8 +160,12 @@ class _AppShellState extends State<AppShell> {
                     elevation: 0,
                     selectedItemColor: colorScheme.primary,
                     unselectedItemColor: colorScheme.onSurface,
-                    selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w800),
-                    unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+                    selectedLabelStyle: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                    ),
+                    unselectedLabelStyle: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                    ),
                     items: const [
                       BottomNavigationBarItem(
                         icon: Icon(Icons.home_outlined),
@@ -167,5 +183,27 @@ class _AppShellState extends State<AppShell> {
               ),
             ),
     );
+
+    if (defaultTargetPlatform != TargetPlatform.android) {
+      return scaffold;
+    }
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _moveTaskToBack();
+      },
+      child: scaffold,
+    );
+  }
+
+  Future<void> _moveTaskToBack() async {
+    try {
+      await _screenChannel.invokeMethod<bool>('moveTaskToBack');
+    } catch (_) {
+      // If the native channel is unavailable, keep the route alive instead of
+      // finishing the Activity and dropping active audio effects.
+    }
   }
 }
