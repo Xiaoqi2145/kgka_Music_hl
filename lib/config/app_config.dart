@@ -8,6 +8,7 @@ class AppConfig {
   static const appVersionCode = '220';
 
   static const _defaultApiBaseUrl = 'https://music.api.hoilai.cn';
+  static const _legacyDefaultApiBaseUrls = {'https://music.api.hoilai.com'};
   static const _customBaseUrlKey = 'settings.custom_api_base_url';
 
   static const apiBaseUrl = String.fromEnvironment(
@@ -59,8 +60,16 @@ class AppConfig {
   static Future<void> loadCustomBaseUrl() async {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_customBaseUrlKey);
-    if (stored != null && stored.trim().isNotEmpty) {
-      _customBaseUrl = stored.trim();
+    final normalized = stored?.trim();
+    if (normalized != null &&
+        normalized.isNotEmpty &&
+        !_legacyDefaultApiBaseUrls.contains(normalized)) {
+      _customBaseUrl = normalized;
+    } else {
+      _customBaseUrl = null;
+      if (stored != null) {
+        await prefs.remove(_customBaseUrlKey);
+      }
     }
   }
 
@@ -68,7 +77,10 @@ class AppConfig {
   static Future<void> saveCustomBaseUrl(String? url) async {
     final prefs = await SharedPreferences.getInstance();
     final trimmed = url?.trim();
-    if (trimmed == null || trimmed.isEmpty || trimmed == apiBaseUrl) {
+    if (trimmed == null ||
+        trimmed.isEmpty ||
+        trimmed == apiBaseUrl ||
+        _legacyDefaultApiBaseUrls.contains(trimmed)) {
       _customBaseUrl = null;
       await prefs.remove(_customBaseUrlKey);
     } else {
