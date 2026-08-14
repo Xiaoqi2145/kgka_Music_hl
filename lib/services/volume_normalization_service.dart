@@ -70,12 +70,15 @@ class VolumeNormalizationService {
         .toDouble();
 
     // 叠加服务端建议增益
-    if (data.gain != null && data.gain != 0.0) {
+    if (data.gain != null && data.gain!.isFinite && data.gain != 0.0) {
       gain *= math.pow(10.0, data.gain! / 20.0).toDouble();
     }
 
     // 峰值限制防削波
-    if (data.peak != null && data.peak! > 0) {
+    if (data.peak != null &&
+        data.peak!.isFinite &&
+        data.peak! > 0 &&
+        data.peak! <= 4.0) {
       gain = math.min(gain, 0.95 / data.peak!);
     }
 

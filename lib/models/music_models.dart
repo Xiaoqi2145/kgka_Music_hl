@@ -132,8 +132,10 @@ class UserProfile {
     );
   }
 
-  Map<String, dynamic> toCache() =>
-      {'nickname': nickname, 'avatarUrl': avatarUrl};
+  Map<String, dynamic> toCache() => {
+    'nickname': nickname,
+    'avatarUrl': avatarUrl,
+  };
 
   factory UserProfile.fromCache(Map<String, dynamic> json) {
     return UserProfile(
@@ -413,8 +415,10 @@ class PlaylistSummary {
 enum SongSource {
   /// 酷狗音乐（默认）
   kugou,
+
   /// 网易云音乐
   netease,
+
   /// 本地音乐
   local,
 }
@@ -696,24 +700,20 @@ class Song {
   }
 
   Map<String, dynamic> toCache() => {
-        'id': id,
-        'title': title,
-        'artist': artist,
-        'hash': hash,
-        'albumId': albumId,
-        'albumAudioId': albumAudioId,
-        'albumName': albumName,
-        'coverUrl': coverUrl,
-        'durationMs': duration?.inMilliseconds,
-        'artists': artists
-            .map((a) => {
-                  'id': a.id,
-                  'name': a.name,
-                  'avatarUrl': a.avatarUrl,
-                })
-            .toList(),
-        if (isCloudDrive) 'isCloudDrive': true,
-      };
+    'id': id,
+    'title': title,
+    'artist': artist,
+    'hash': hash,
+    'albumId': albumId,
+    'albumAudioId': albumAudioId,
+    'albumName': albumName,
+    'coverUrl': coverUrl,
+    'durationMs': duration?.inMilliseconds,
+    'artists': artists
+        .map((a) => {'id': a.id, 'name': a.name, 'avatarUrl': a.avatarUrl})
+        .toList(),
+    if (isCloudDrive) 'isCloudDrive': true,
+  };
 
   factory Song.fromCache(Map<String, dynamic> json) {
     return Song(
@@ -728,11 +728,13 @@ class Song {
       duration: durationFromMilliseconds(json['durationMs']),
       artists: asList(json['artists'])
           .whereType<Map<String, dynamic>>()
-          .map((a) => ArtistRef(
-                id: asString(a['id']) ?? '',
-                name: asString(a['name']) ?? '',
-                avatarUrl: asString(a['avatarUrl']),
-              ))
+          .map(
+            (a) => ArtistRef(
+              id: asString(a['id']) ?? '',
+              name: asString(a['name']) ?? '',
+              avatarUrl: asString(a['avatarUrl']),
+            ),
+          )
           .where((artist) => artist.name.isNotEmpty)
           .toList(),
       isCloudDrive: json['isCloudDrive'] == true,
@@ -1018,7 +1020,13 @@ List<ArtistRef> parseArtists(
     );
   }
 
-  for (final key in const ['singerinfo', 'authors', 'author', 'singers', 'Singers']) {
+  for (final key in const [
+    'singerinfo',
+    'authors',
+    'author',
+    'singers',
+    'Singers',
+  ]) {
     final value = json[key];
     if (value is List) {
       for (final item in value.whereType<Map<String, dynamic>>()) {
@@ -1070,11 +1078,11 @@ class DailyRecommend {
   }
 
   Map<String, dynamic> toCache() => {
-        'title': title,
-        'subtitle': subtitle,
-        'coverUrl': coverUrl,
-        'songs': songs.map((s) => s.toCache()).toList(),
-      };
+    'title': title,
+    'subtitle': subtitle,
+    'coverUrl': coverUrl,
+    'songs': songs.map((s) => s.toCache()).toList(),
+  };
 
   factory DailyRecommend.fromCache(Map<String, dynamic> json) {
     return DailyRecommend(
@@ -1132,14 +1140,14 @@ class AlbumShopItem {
   }
 
   Map<String, dynamic> toCache() => {
-        'albumName': albumName,
-        'singerName': singerName,
-        'mediaId': mediaId,
-        'topicId': topicId,
-        'pic': pic,
-        'price': price,
-        'buyNum': buyNum,
-      };
+    'albumName': albumName,
+    'singerName': singerName,
+    'mediaId': mediaId,
+    'topicId': topicId,
+    'pic': pic,
+    'price': price,
+    'buyNum': buyNum,
+  };
 
   factory AlbumShopItem.fromCache(Map<String, dynamic> json) {
     return AlbumShopItem(
@@ -1218,13 +1226,13 @@ class LyricLine {
   }
 
   Map<String, dynamic> toCache() => {
-        'timeMs': time.inMilliseconds,
-        'text': text,
-        'durationMs': duration?.inMilliseconds,
-        'translation': translation,
-        'romanization': romanization,
-        'words': words.map((w) => w.toCache()).toList(),
-      };
+    'timeMs': time.inMilliseconds,
+    'text': text,
+    'durationMs': duration?.inMilliseconds,
+    'translation': translation,
+    'romanization': romanization,
+    'words': words.map((w) => w.toCache()).toList(),
+  };
 
   factory LyricLine.fromCache(Map<String, dynamic> json) {
     return LyricLine(
@@ -1241,6 +1249,73 @@ class LyricLine {
   }
 }
 
+enum LyricDisplayMode {
+  lyricsWithTranslation,
+  lyricsOnly,
+  lyricsWithRomanization,
+}
+
+class LyricCandidate {
+  const LyricCandidate({
+    required this.id,
+    required this.accessKey,
+    this.title,
+    this.artist,
+    this.album,
+    this.score,
+  });
+
+  final String id;
+  final String accessKey;
+  final String? title;
+  final String? artist;
+  final String? album;
+  final double? score;
+
+  factory LyricCandidate.fromJson(Map<String, dynamic> json) {
+    return LyricCandidate(
+      id:
+          asString(json['id']) ??
+          asString(json['lyrics_id']) ??
+          asString(json['lyric_id']) ??
+          asString(json['lyricid']) ??
+          '',
+      accessKey:
+          asString(json['accesskey']) ??
+          asString(json['access_key']) ??
+          asString(json['accessKey']) ??
+          '',
+      title:
+          asString(json['song']) ??
+          asString(json['songname']) ??
+          asString(json['song_name']) ??
+          asString(json['title']) ??
+          asString(json['name']),
+      artist:
+          asString(json['singer']) ??
+          asString(json['singername']) ??
+          asString(json['artist']) ??
+          asString(json['author_name']),
+      album: asString(json['album_name']) ?? asString(json['album']),
+      score: _candidateScore(json['score'] ?? json['similarity']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'accesskey': accessKey,
+    if (title != null) 'title': title,
+    if (artist != null) 'artist': artist,
+    if (album != null) 'album': album,
+    if (score != null) 'score': score,
+  };
+
+  static double? _candidateScore(Object? value) {
+    if (value is num) return value.toDouble();
+    return value is String ? double.tryParse(value) : null;
+  }
+}
+
 class LyricWord {
   const LyricWord({
     required this.time,
@@ -1253,10 +1328,10 @@ class LyricWord {
   final String text;
 
   Map<String, dynamic> toCache() => {
-        'timeMs': time.inMilliseconds,
-        'durationMs': duration.inMilliseconds,
-        'text': text,
-      };
+    'timeMs': time.inMilliseconds,
+    'durationMs': duration.inMilliseconds,
+    'text': text,
+  };
 
   factory LyricWord.fromCache(Map<String, dynamic> json) {
     return LyricWord(
@@ -1787,7 +1862,9 @@ class CloudDriveSongMeta {
 
   factory CloudDriveSongMeta.fromJson(Map<String, dynamic> json) {
     final albumInfo = asMap(json['album_info']);
-    final authorsRaw = asList(json['authors']).whereType<Map<String, dynamic>>();
+    final authorsRaw = asList(
+      json['authors'],
+    ).whereType<Map<String, dynamic>>();
     final artists = authorsRaw
         .map(
           (item) => ArtistRef(
@@ -1811,11 +1888,13 @@ class CloudDriveSongMeta {
 
     // 云盘歌曲的 name 字段通常是上传时的文件名（如 "xxx.mp3"），这里移除后缀。
     final ext = asString(json['ext']);
-    final rawName = asString(json['name']) ?? asString(json['audio_name']) ?? '';
+    final rawName =
+        asString(json['name']) ?? asString(json['audio_name']) ?? '';
     final cleanName = _stripCloudFileExtension(rawName, ext);
 
     final song = Song(
-      id: asString(json['audio_id']) ??
+      id:
+          asString(json['audio_id']) ??
           asString(json['album_audio_id']) ??
           asString(json['hash']) ??
           '',
@@ -1861,8 +1940,10 @@ String _stripCloudFileExtension(String name, String? ext) {
   }
 
   // 兜底：移除常见音频文件后缀
-  final match = RegExp(r'\.(mp3|flac|ape|wav|aac|m4a|ogg|wma|opus)$', caseSensitive: false)
-      .firstMatch(result);
+  final match = RegExp(
+    r'\.(mp3|flac|ape|wav|aac|m4a|ogg|wma|opus)$',
+    caseSensitive: false,
+  ).firstMatch(result);
   if (match != null) {
     result = result.substring(0, match.start);
   }

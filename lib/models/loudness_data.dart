@@ -18,8 +18,8 @@ class LoudnessData {
     if (json == null) return const LoudnessData();
     return LoudnessData(
       lufs: _asDouble(json['volume']),
-      gain: _asDouble(json['volume_gain']),
-      peak: _asDouble(json['volume_peak']),
+      gain: _asDouble(json['volume_gain'] ?? json['volumeGain']),
+      peak: _asDouble(json['volume_peak'] ?? json['volumePeak']),
     );
   }
 
@@ -30,7 +30,8 @@ class LoudnessData {
   };
 
   /// 是否有有效的 LUFS 数据。
-  bool get isValid => lufs != null && lufs!.isFinite;
+  bool get isValid =>
+      lufs != null && lufs!.isFinite && lufs! > -70.0 && lufs! < 0.0;
 
   /// 是否可以用于音量归一化。
   bool get canNormalize => isValid;

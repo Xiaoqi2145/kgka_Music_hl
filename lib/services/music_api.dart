@@ -205,7 +205,10 @@ class MusicApi {
     return DailyRecommend.fromJson(json);
   }
 
-  Future<List<AlbumShopItem>> albumShop({int page = 1, int pageSize = 30}) async {
+  Future<List<AlbumShopItem>> albumShop({
+    int page = 1,
+    int pageSize = 30,
+  }) async {
     final json = asMap(
       await _client.get('/album/shop', {'page': page, 'pagesize': pageSize}),
     );
@@ -418,7 +421,11 @@ class MusicApi {
     bool fetchAll = false,
   }) async {
     if (!fetchAll) {
-      final songPage = await playlistSongPage(id, page: page, pageSize: pageSize);
+      final songPage = await playlistSongPage(
+        id,
+        page: page,
+        pageSize: pageSize,
+      );
       return songPage.songs;
     }
 
@@ -488,18 +495,17 @@ class MusicApi {
     // 🔍 调试：检查 API 是否返回 volume 响度数据
     debugPrint('[KA Music][loudness] /song/url response keys: ${json.keys}');
     if (json.containsKey('volume')) {
-      debugPrint('[KA Music][loudness] volume=${json['volume']}'
-          ' volume_gain=${json['volume_gain']}'
-          ' volume_peak=${json['volume_peak']}');
+      debugPrint(
+        '[KA Music][loudness] volume=${json['volume']}'
+        ' volume_gain=${json['volume_gain']}'
+        ' volume_peak=${json['volume_peak']}',
+      );
     }
     return PlayUrl.fromJson(json);
   }
 
   /// 获取云盘歌曲列表（分页）。
-  Future<CloudDriveResult> cloudDrive({
-    int page = 1,
-    int pageSize = 30,
-  }) async {
+  Future<CloudDriveResult> cloudDrive({int page = 1, int pageSize = 30}) async {
     final json = asMap(
       await _client.get('/user/cloud', {'page': page, 'pagesize': pageSize}),
     );
@@ -701,9 +707,11 @@ class MusicApi {
     );
     final searchResponse = await _client.getRaw(searchUri);
     final searchJson = asMap(searchResponse);
-    final rawSongs = asList(searchJson['result'] is Map
-        ? asMap(searchJson['result'])['songs']
-        : searchJson['songs']);
+    final rawSongs = asList(
+      searchJson['result'] is Map
+          ? asMap(searchJson['result'])['songs']
+          : searchJson['songs'],
+    );
     final ids = rawSongs
         .whereType<Map>()
         .map((item) => asInt(asMap(item)['id']))
@@ -732,19 +740,74 @@ class MusicApi {
     _debugLyricLog(
       'request song="${song.title}" artist="${song.artist}" hash="${song.hash}" albumAudioId="${song.albumAudioId}"',
     );
-    final candidate = await _searchLyricCandidate(song);
-    _debugLyricLogObject('selected candidate', candidate);
-    if (candidate == null) {
+    // 请求多个候选并选择解析行数最多的版本。部分后端会把片段歌词排在
+    // 完整歌词前面，直接取第一项会导致播放器只显示一行。
+    final candidates = await searchLyricCandidates(song);
+    _debugLyricLog('lyric candidate count=${candidates.length}');
+    if (candidates.isEmpty) {
       _debugLyricLog('no lyric candidate found');
       return const [];
     }
 
-    final krcLyrics = await _lyricByFormat(candidate, 'krc');
-    if (krcLyrics.isNotEmpty) {
-      return krcLyrics;
+    var best = const <LyricLine>[];
+    for (final candidate in candidates) {
+      final lines = await lyricsFromCandidate(candidate);
+      if (lines.length > best.length) {
+        best = lines;
+      }
+    }
+    return best;
+  }
+
+  Future<List<LyricCandidate>> searchLyricCandidates(Song song) async {
+    final raw = await _client.get('/search/lyric', {
+      'hash': song.hash,
+      'album_audio_id': song.albumAudioId,
+      'keywords': '${song.title} ${song.artist}',
+      'keyword': '${song.title} ${song.artist}',
+      'duration': song.duration?.inMilliseconds,
+      // EchoMusic/API 使用 yes/no 开关返回候选列表。
+      'man': 'yes',
+    });
+    final root = asMap(raw);
+    final values = [
+      root['candidates'],
+      root['candidate'],
+      root['list'],
+      root['lyrics'],
+      root['items'],
+      root['info'],
+      root['data'],
+    ];
+    final result = <LyricCandidate>[];
+    void collect(Object? value) {
+      if (value is List) {
+        for (final item in value) collect(item);
+      } else if (value is Map) {
+        final candidate = LyricCandidate.fromJson(asMap(value));
+        if (candidate.id.isNotEmpty && candidate.accessKey.isNotEmpty) {
+          result.add(candidate);
+        } else {
+          for (final child in asMap(value).values) collect(child);
+        }
+      }
     }
 
-    return _lyricByFormat(candidate, 'lrc');
+    // API 在不同版本中可能直接返回数组，或把候选放在未约定名称的字段中。
+    // 从根节点递归收集，避免只拿到一个摘要/片段歌词。
+    collect(raw);
+    for (final value in values) collect(value);
+    final unique = <String, LyricCandidate>{};
+    for (final candidate in result) {
+      unique['${candidate.id}:${candidate.accessKey}'] = candidate;
+    }
+    return unique.values.toList(growable: false);
+  }
+
+  Future<List<LyricLine>> lyricsFromCandidate(LyricCandidate candidate) async {
+    final map = {'id': candidate.id, 'accesskey': candidate.accessKey};
+    final krc = await _lyricByFormat(map, 'krc');
+    return krc.isNotEmpty ? krc : _lyricByFormat(map, 'lrc');
   }
 
   Future<Map<String, dynamic>?> _searchLyricCandidate(Song song) async {
@@ -796,9 +859,11 @@ class MusicApi {
     ].whereType<String>().toList();
     _debugLyricLog('$format content candidate count=${candidates.length}');
 
-    candidates.sort(
-      (a, b) => _lyricContentScore(b).compareTo(_lyricContentScore(a)),
-    );
+    candidates.sort((a, b) {
+      final score = _lyricContentScore(b).compareTo(_lyricContentScore(a));
+      return score != 0 ? score : b.length.compareTo(a.length);
+    });
+    var best = const <LyricLine>[];
     for (var index = 0; index < candidates.length; index++) {
       final content = candidates[index];
       _debugLyricContent(
@@ -816,12 +881,12 @@ class MusicApi {
         translationContent: translationContent,
       );
       _debugLyricLog('$format content[$index] parsed lines=${lines.length}');
-      if (lines.isNotEmpty) {
-        return lines;
+      if (lines.length > best.length) {
+        best = lines;
       }
     }
-    _debugLyricLog('$format lyric parsed no lines');
-    return const [];
+    _debugLyricLog('$format lyric parsed lines=${best.length}');
+    return best;
   }
 
   Map<String, dynamic>? _findLyricCandidate(Object? value) {

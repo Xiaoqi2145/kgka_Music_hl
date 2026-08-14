@@ -52,6 +52,8 @@ class PlayerController extends ChangeNotifier {
       'settings.volume_normalization_enabled';
   static const _volumeNormRefLufsSettingKey =
       'settings.volume_normalization_ref_lufs';
+  static const _manualLyricCandidatesSettingKey =
+      'settings.manual_lyric_candidates';
   static const _listenTimeReportInterval = Duration(minutes: 30);
   static const _listenTimeCheckInterval = Duration(minutes: 1);
   static const _defaultEqualizerLevels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -206,11 +208,12 @@ class PlayerController extends ChangeNotifier {
   bool autoResumeAfterInterruption = false;
   bool autoPlayOnDeviceConnected = true;
   bool desktopLyricsEnabled = false;
+  LyricDisplayMode lyricDisplayMode = LyricDisplayMode.lyricsWithTranslation;
   DesktopLyricsSettings desktopLyricsSettings = const DesktopLyricsSettings();
 
   /// 音量均衡（LUFS 响度标准化）。
   bool volumeNormalizationEnabled = false;
-  double volumeNormalizationRefLufs = -11.0;
+  double volumeNormalizationRefLufs = -14.0;
   final VolumeNormalizationService _volNormService =
       VolumeNormalizationService();
   Timer? _autoResumeTimer;
@@ -223,6 +226,54 @@ class PlayerController extends ChangeNotifier {
   int seekRevision = 0;
   int? _androidAudioSessionId;
   int _volumeNormApplySerial = 0;
+  final Map<String, LyricCandidate> _manualLyricCandidates = {};
+
+  LyricCandidate? manualLyricCandidateFor(Song song) =>
+      _manualLyricCandidates[song.hash];
+
+  Future<List<LyricCandidate>> searchLyricCandidates(Song song) =>
+      _api.searchLyricCandidates(song);
+
+  Future<bool> selectLyricCandidate(Song song, LyricCandidate candidate) async {
+    final selected = await _api.lyricsFromCandidate(candidate);
+    if (selected.isEmpty) return false;
+    _manualLyricCandidates[song.hash] = candidate;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _manualLyricCandidatesSettingKey,
+      jsonEncode({
+        for (final entry in _manualLyricCandidates.entries)
+          entry.key: entry.value.toJson(),
+      }),
+    );
+    if (currentSong?.hash == song.hash) {
+      lyrics = selected;
+      notifyListeners();
+      _syncDesktopLyrics();
+    }
+    return true;
+  }
+
+  Future<void> restoreAutomaticLyrics(Song song) async {
+    _manualLyricCandidates.remove(song.hash);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _manualLyricCandidatesSettingKey,
+      jsonEncode({
+        for (final entry in _manualLyricCandidates.entries)
+          entry.key: entry.value.toJson(),
+      }),
+    );
+    await loadLyrics(song, force: true);
+  }
+
+  Future<void> setLyricDisplayMode(LyricDisplayMode mode) async {
+    lyricDisplayMode = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('settings.lyric_display_mode', mode.name);
+    notifyListeners();
+  }
+
   bool get isScrubbing => _isScrubbing;
   bool get isAudioEffectsSupported => _audioEffects.isAudioEffectsSupported;
   bool get isBassBoostSupported => _audioEffects.isBassBoostSupported;
@@ -333,34 +384,29 @@ class PlayerController extends ChangeNotifier {
     unawaited(_syncDesktopLyricsVisibility());
 
     try {
-      String url;
       String? networkUrl;
+      var cacheQuality = audioQuality;
       final local = downloadController?.localPathFor(song, audioQuality);
       if (local != null) {
-        url = local;
-      } else if (song.source == SongSource.local) {
-        url = song.id;
-      } else {
-        final playUrl = await _resolvePlayUrl(song);
-        if (playUrl.url.isEmpty) {
-          throw Exception(
-            song.isCloudDrive
-                ? '云盘歌曲暂时没有可播放地址'
-                : song.source == SongSource.netease
-                ? '网易云歌曲暂时没有可播放地址'
-                : '这首歌暂时没有可播放地址',
+        try {
+          await _loadAudioSource(song, local);
+        } catch (error) {
+          if (song.source == SongSource.local) rethrow;
+          debugPrint(
+            '[KA Music][playback] local source failed for ${song.hash}: $error',
           );
+          await downloadController?.deletePlayCache(song, audioQuality);
+          final loaded = await _loadNetworkSourceWithFallback(song);
+          networkUrl = loaded.url;
+          cacheQuality = loaded.quality;
         }
-        url = playUrl.url;
-        networkUrl = playUrl.url;
-        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
+      } else if (song.source == SongSource.local) {
+        await _loadAudioSource(song, song.id);
+      } else {
+        final loaded = await _loadNetworkSourceWithFallback(song);
+        networkUrl = loaded.url;
+        cacheQuality = loaded.quality;
       }
-      await _audioHandler.loadSong(
-        song: song,
-        url: url,
-        queueSongs: this.queue,
-        queueIndex: currentIndex,
-      );
       isPreparing = false;
       notifyListeners();
       unawaited(loadLyrics(song));
@@ -373,7 +419,7 @@ class PlayerController extends ChangeNotifier {
       // 首播后后台缓存（仅当本次用的是网络 URL）
       if (networkUrl != null) {
         unawaited(
-          downloadController?.cacheForPlayback(song, audioQuality, networkUrl),
+          downloadController?.cacheForPlayback(song, cacheQuality, networkUrl),
         );
       }
     } catch (error) {
@@ -388,55 +434,76 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 解析播放地址。
-  ///
-  /// - 云盘歌曲走 [MusicApi.cloudSongUrl]
-  /// - 网易云歌曲使用外链地址
-  /// - 其它歌曲走 [MusicApi.songUrl]，开启智能音质时在网络请求失败
-  ///   或返回空地址时自动降级重试（lossless -> high -> standard）。
-  Future<PlayUrl> _resolvePlayUrl(Song song) async {
-    if (song.source == SongSource.local) {
-      return PlayUrl(url: song.id, hash: song.hash);
-    }
+  Future<void> _loadAudioSource(Song song, String url) {
+    return _audioHandler.loadSong(
+      song: song,
+      url: url,
+      queueSongs: queue,
+      queueIndex: currentIndex,
+    );
+  }
+
+  /// 获取并实际加载网络播放源。播放器拒绝 URL 时也会降级音质重试。
+  Future<({String url, AudioQuality quality})> _loadNetworkSourceWithFallback(
+    Song song,
+  ) async {
     if (song.isCloudDrive) {
-      return _api.cloudSongUrl(song);
+      final playUrl = await _api.cloudSongUrl(song);
+      if (playUrl.url.isEmpty) {
+        throw Exception('云盘歌曲暂时没有可播放地址');
+      }
+      await _loadAudioSource(song, playUrl.url);
+      _volNormService.cacheLoudness(song.hash, playUrl.loudness);
+      return (url: playUrl.url, quality: audioQuality);
     }
     if (song.source == SongSource.netease) {
-      // 网易云歌曲使用外链播放地址
-      return PlayUrl(
-        url: 'https://music.163.com/song/media/outer/url?id=${song.id}.mp3',
-        hash: song.hash,
-      );
+      final url =
+          'https://music.163.com/song/media/outer/url?id=${song.id}.mp3';
+      await _loadAudioSource(song, url);
+      return (url: url, quality: audioQuality);
     }
 
-    try {
-      final playUrl = await _api.songUrl(song, quality: audioQuality);
-      if (playUrl.url.isNotEmpty || !smartQualityEnabled) {
-        return playUrl;
+    final qualities = <AudioQuality>[audioQuality];
+    if (smartQualityEnabled) {
+      var quality = _nextLowerQuality(audioQuality);
+      while (quality != null) {
+        qualities.add(quality);
+        quality = _nextLowerQuality(quality);
       }
-      // 返回空地址：按智能音质策略降级重试
-      final fallback = _nextLowerQuality(audioQuality);
-      if (fallback == null) return playUrl;
-      return _api.songUrl(song, quality: fallback);
-    } catch (error) {
-      if (!smartQualityEnabled) rethrow;
-      // 网络请求失败：尝试降级重试
-      final fallback = _nextLowerQuality(audioQuality);
-      if (fallback == null) rethrow;
-      try {
-        final retryUrl = await _api.songUrl(song, quality: fallback);
-        if (retryUrl.url.isNotEmpty) {
-          debugPrint(
-            '[KA Music][smart-quality] ${audioQuality.badge} 失败，'
-            '已降级为 ${fallback.badge}',
-          );
-          return retryUrl;
-        }
-      } catch (_) {
-        // 降级也失败，抛出原始错误
-      }
-      rethrow;
     }
+
+    Object? lastError;
+    StackTrace? lastStackTrace;
+    for (final quality in qualities) {
+      try {
+        final playUrl = await _api.songUrl(song, quality: quality);
+        if (playUrl.url.isEmpty) {
+          throw Exception('${quality.badge} 暂时没有可播放地址');
+        }
+        await _loadAudioSource(song, playUrl.url);
+        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
+        if (quality != audioQuality) {
+          debugPrint(
+            '[KA Music][smart-quality] ${audioQuality.badge} source failed; '
+            'using ${quality.badge}',
+          );
+        }
+        return (url: playUrl.url, quality: quality);
+      } catch (error, stackTrace) {
+        lastError = error;
+        lastStackTrace = stackTrace;
+        debugPrint(
+          '[KA Music][playback] ${quality.badge} source failed for '
+          '${song.hash}: $error',
+        );
+        await audioPlayer.stop();
+      }
+    }
+
+    Error.throwWithStackTrace(
+      lastError ?? Exception('这首歌暂时没有可播放地址'),
+      lastStackTrace ?? StackTrace.current,
+    );
   }
 
   /// 返回更低一档的音质；已是最低档时返回 null。
@@ -488,6 +555,33 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     return true;
   }
+
+  Future<void> replaceQueue(List<Song> songs) async {
+    if (songs.isEmpty) return;
+    final current = currentSong;
+    final currentKey = current == null ? '' : _songKey(current);
+    final updated = <Song>[];
+    final seen = <String>{};
+    for (final song in songs) {
+      final key = _songKey(song);
+      if (key.isNotEmpty && seen.add(key)) updated.add(song);
+    }
+    if (updated.isEmpty) return;
+    queue = updated;
+    if (current != null &&
+        currentKey.isNotEmpty &&
+        !queue.any((song) => _songKey(song) == currentKey)) {
+      queue.insert(0, current);
+    }
+    await _audioHandler.replaceSongQueue(
+      queueSongs: queue,
+      queueIndex: currentIndex,
+      currentSong: current,
+    );
+    notifyListeners();
+  }
+
+  String _songKey(Song song) => song.hash.isNotEmpty ? song.hash : song.id;
 
   Future<void> setAudioQuality(
     AudioQuality quality, {
@@ -628,7 +722,7 @@ class PlayerController extends ChangeNotifier {
     await applyEqualizerPreset(equalizerPresets.first);
   }
 
-  Future<void> loadLyrics(Song song) async {
+  Future<void> loadLyrics(Song song, {bool force = false}) async {
     final cache = cacheService;
     final cacheKey = 'cache_lyric_${song.hash}';
 
@@ -667,7 +761,7 @@ class PlayerController extends ChangeNotifier {
     }
 
     // 1. 先读缓存，命中则立即显示（无感）
-    if (cache != null) {
+    if (cache != null && !force) {
       try {
         final cached = await cache.read<List<LyricLine>>(
           cacheKey,
@@ -689,7 +783,10 @@ class PlayerController extends ChangeNotifier {
 
     // 2. 后台静默刷新
     try {
-      final fresh = await _api.lyrics(song);
+      final manual = _manualLyricCandidates[song.hash];
+      final fresh = manual != null
+          ? await _api.lyricsFromCandidate(manual)
+          : await _api.lyrics(song);
       if (currentSong?.hash != song.hash) return; // 已切歌，丢弃
       if (!listEquals(lyrics, fresh)) {
         lyrics = fresh;
@@ -1424,6 +1521,28 @@ class PlayerController extends ChangeNotifier {
     volumeNormalizationRefLufs =
         prefs.getDouble(_volumeNormRefLufsSettingKey) ??
         volumeNormalizationRefLufs;
+    final lyricMode = prefs.getString('settings.lyric_display_mode');
+    lyricDisplayMode = LyricDisplayMode.values.firstWhere(
+      (mode) => mode.name == lyricMode,
+      orElse: () => lyricDisplayMode,
+    );
+    final manualLyricsRaw = prefs.getString(_manualLyricCandidatesSettingKey);
+    if (manualLyricsRaw != null) {
+      try {
+        final decoded = jsonDecode(manualLyricsRaw);
+        if (decoded is Map) {
+          _manualLyricCandidates
+            ..clear()
+            ..addAll({
+              for (final entry in decoded.entries)
+                if (entry.value is Map)
+                  entry.key.toString(): LyricCandidate.fromJson(
+                    asMap(entry.value),
+                  ),
+            });
+        }
+      } catch (_) {}
+    }
     _volNormService.enabled = volumeNormalizationEnabled;
     _volNormService.referenceLufs = volumeNormalizationRefLufs;
     final dlSettingsRaw = prefs.getString(_desktopLyricsSettingsKey);

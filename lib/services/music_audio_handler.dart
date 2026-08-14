@@ -68,6 +68,19 @@ class MusicAudioHandler extends BaseAudioHandler
     }
   }
 
+  /// Replace the service queue while a song is already playing.
+  Future<void> replaceSongQueue({
+    required List<Song> queueSongs,
+    required int queueIndex,
+    Song? currentSong,
+  }) async {
+    _queueIndex = queueIndex < 0 ? 0 : queueIndex;
+    queue.add(queueSongs.map(_mediaItemFor).toList(growable: false));
+    if (currentSong != null) {
+      mediaItem.add(_mediaItemFor(currentSong));
+    }
+  }
+
   @override
   Future<void> play() async {
     await audioPlayer.play();

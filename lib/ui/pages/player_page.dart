@@ -24,12 +24,10 @@ import 'artist_detail_page.dart';
 import 'comment_page.dart';
 import 'desktop_lyrics_settings_page.dart';
 
+typedef _LyricDisplayMode = LyricDisplayMode;
+
 class PlayerPage extends StatefulWidget {
-  const PlayerPage({
-    super.key,
-    required this.player,
-    required this.auth,
-  });
+  const PlayerPage({super.key, required this.player, required this.auth});
 
   final PlayerController player;
   final AuthController auth;
@@ -56,7 +54,7 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     unawaited(_setKeepScreenOn(false));
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    
+
     final isTablet = AdaptiveLayout.isTabletByPlatform();
     if (isTablet || ThemeController.instance.landscapeEnabled) {
       SystemChrome.setPreferredOrientations(const [
@@ -66,7 +64,9 @@ class _PlayerPageState extends State<PlayerPage> {
         DeviceOrientation.landscapeRight,
       ]);
     } else {
-      SystemChrome.setPreferredOrientations(const [DeviceOrientation.portraitUp]);
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+      ]);
     }
     super.dispose();
   }
@@ -389,18 +389,12 @@ class _PlayerBodyState extends State<_PlayerBody> {
   }
 }
 
-enum _LyricDisplayMode {
-  lyricsWithTranslation,
-  lyricsOnly,
-  lyricsWithRomanization,
-}
-
-List<_LyricDisplayMode> _availableLyricDisplayModes(List<LyricLine> lyrics) {
+List<LyricDisplayMode> _availableLyricDisplayModes(List<LyricLine> lyrics) {
   if (lyrics.isEmpty) {
     return const [];
   }
 
-  final modes = <_LyricDisplayMode>[];
+  final modes = <LyricDisplayMode>[];
   final hasTranslation = lyrics.any(
     (line) => line.translation != null && line.translation!.isNotEmpty,
   );
@@ -409,24 +403,24 @@ List<_LyricDisplayMode> _availableLyricDisplayModes(List<LyricLine> lyrics) {
   );
 
   if (hasTranslation) {
-    modes.add(_LyricDisplayMode.lyricsWithTranslation);
+    modes.add(LyricDisplayMode.lyricsWithTranslation);
   }
-  modes.add(_LyricDisplayMode.lyricsOnly);
+  modes.add(LyricDisplayMode.lyricsOnly);
   if (hasRomanization) {
-    modes.add(_LyricDisplayMode.lyricsWithRomanization);
+    modes.add(LyricDisplayMode.lyricsWithRomanization);
   }
   return modes;
 }
 
-String? _secondaryLyricText(LyricLine line, _LyricDisplayMode mode) {
+String? _secondaryLyricText(LyricLine line, LyricDisplayMode mode) {
   return switch (mode) {
-    _LyricDisplayMode.lyricsWithTranslation => line.translation,
-    _LyricDisplayMode.lyricsWithRomanization => line.romanization,
-    _LyricDisplayMode.lyricsOnly => null,
+    LyricDisplayMode.lyricsWithTranslation => line.translation,
+    LyricDisplayMode.lyricsWithRomanization => line.romanization,
+    LyricDisplayMode.lyricsOnly => null,
   };
 }
 
-String _lyricDisplayModeLabel(_LyricDisplayMode mode) {
+String _lyricDisplayModeLabel(LyricDisplayMode mode) {
   return switch (mode) {
     _LyricDisplayMode.lyricsWithTranslation => '歌词 + 翻译',
     _LyricDisplayMode.lyricsWithRomanization => '歌词 + 音译',
@@ -655,11 +649,10 @@ class _LandscapeHeader extends StatelessWidget {
                         song.artist,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall
-                            ?.copyWith(
-                              color: Colors.white.withValues(alpha: .7),
-                              fontWeight: FontWeight.w700,
-                            ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.white.withValues(alpha: .7),
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                   ],
                 ),
@@ -717,8 +710,11 @@ class _LandscapeHeader extends StatelessWidget {
           SongSheetAction(
             icon: Icons.playlist_add_rounded,
             title: '添加到歌单',
-            onTap: () =>
-                showAddToPlaylistSheet(context: context, auth: auth, song: song),
+            onTap: () => showAddToPlaylistSheet(
+              context: context,
+              auth: auth,
+              song: song,
+            ),
           ),
         SongSheetAction(
           icon: Icons.bedtime_rounded,
@@ -726,8 +722,8 @@ class _LandscapeHeader extends StatelessWidget {
           subtitle: player.isSleepTimerActive
               ? '剩余 ${_formatSleepRemaining(player.sleepTimerRemaining)}'
               : player.isSleepFinishCurrentSong
-                  ? '播完歌曲后停止'
-                  : null,
+              ? '播完歌曲后停止'
+              : null,
           onTap: () => showSleepTimerSheet(context: context, player: player),
         ),
         if (player.isDesktopLyricsSupported) ...[
@@ -739,7 +735,9 @@ class _LandscapeHeader extends StatelessWidget {
             subtitle: player.desktopLyricsEnabled ? '已开启' : '已关闭',
             onTap: () async {
               Navigator.of(context).pop();
-              await player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled);
+              await player.setDesktopLyricsEnabled(
+                !player.desktopLyricsEnabled,
+              );
             },
           ),
           if (player.desktopLyricsEnabled)
@@ -1283,7 +1281,9 @@ class _TopBar extends StatelessWidget {
             isGrid: true,
             onTap: () async {
               Navigator.of(context).pop();
-              await player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled);
+              await player.setDesktopLyricsEnabled(
+                !player.desktopLyricsEnabled,
+              );
             },
           ),
           if (player.desktopLyricsEnabled)
@@ -1313,8 +1313,11 @@ class _TopBar extends StatelessWidget {
           SongSheetAction(
             icon: Icons.playlist_add_rounded,
             title: '添加到歌单',
-            onTap: () =>
-                showAddToPlaylistSheet(context: context, auth: auth, song: song),
+            onTap: () => showAddToPlaylistSheet(
+              context: context,
+              auth: auth,
+              song: song,
+            ),
           ),
       ],
     );
@@ -1693,7 +1696,7 @@ class _LyricPlayerPage extends StatefulWidget {
 
 class _LyricPlayerPageState extends State<_LyricPlayerPage>
     with AutomaticKeepAliveClientMixin {
-  late _LyricDisplayMode _displayMode;
+  late LyricDisplayMode _displayMode;
 
   /// 歌词字体缩放倍率（持久化）。
   static const _lyricScaleKey = 'settings.lyric_scale';
@@ -1702,7 +1705,7 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
   @override
   void initState() {
     super.initState();
-    _displayMode = _initialLyricDisplayMode(widget.player.lyrics);
+    _displayMode = widget.player.lyricDisplayMode;
     _loadLyricScale();
   }
 
@@ -1735,16 +1738,9 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
     }
   }
 
-  _LyricDisplayMode _initialLyricDisplayMode(List<LyricLine> lyrics) {
-    final availableModes = _availableLyricDisplayModes(lyrics);
-    return availableModes.isNotEmpty
-        ? availableModes.first
-        : _LyricDisplayMode.lyricsOnly;
-  }
-
-  _LyricDisplayMode _normalizeLyricDisplayMode(
+  LyricDisplayMode _normalizeLyricDisplayMode(
     List<LyricLine> lyrics,
-    _LyricDisplayMode currentMode,
+    LyricDisplayMode currentMode,
   ) {
     final availableModes = _availableLyricDisplayModes(lyrics);
     if (availableModes.contains(currentMode)) {
@@ -1765,7 +1761,67 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
     final nextIndex = currentIndex >= 0
         ? (currentIndex + 1) % availableModes.length
         : 0;
-    setState(() => _displayMode = availableModes[nextIndex]);
+    final nextMode = availableModes[nextIndex];
+    setState(() => _displayMode = nextMode);
+    widget.player.setLyricDisplayMode(nextMode);
+  }
+
+  Future<void> _showLyricCandidates() async {
+    final candidates = await widget.player.searchLyricCandidates(widget.song);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('选择歌词'),
+        content: SizedBox(
+          width: 420,
+          child: candidates.isEmpty
+              ? const Text('没有找到可用歌词')
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: candidates.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (_, index) {
+                    final candidate = candidates[index];
+                    return ListTile(
+                      title: Text(candidate.title ?? widget.song.title),
+                      subtitle: Text(
+                        [
+                          candidate.artist ?? widget.song.artist,
+                          if (candidate.album?.isNotEmpty == true)
+                            candidate.album!,
+                        ].join(' · '),
+                      ),
+                      onTap: () async {
+                        final ok = await widget.player.selectLyricCandidate(
+                          widget.song,
+                          candidate,
+                        );
+                        if (!dialogContext.mounted) return;
+                        Navigator.of(dialogContext).pop();
+                        if (!ok && mounted) {
+                          Toast.error('歌词加载失败');
+                        }
+                      },
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await widget.player.restoreAutomaticLyrics(widget.song);
+              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+            },
+            child: const Text('恢复智能推荐'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1833,6 +1889,15 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
                 },
               ),
             ),
+          Positioned(
+            right: 52,
+            bottom: 16,
+            child: _GlassIconButton(
+              tooltip: '更换歌词',
+              onPressed: _showLyricCandidates,
+              icon: Icons.manage_search_rounded,
+            ),
+          ),
         ],
       ),
     );
@@ -1861,7 +1926,7 @@ class _LyricViewport extends StatefulWidget {
   final int activeIndex;
   final int seekRevision;
   final bool isPreparing;
-  final _LyricDisplayMode displayMode;
+  final LyricDisplayMode displayMode;
   final int focusRequest;
   final bool isPageActive;
   final bool isPageVisible;
@@ -2294,9 +2359,7 @@ class _LyricViewportState extends State<_LyricViewport>
                             },
                             // 长按复制歌词
                             onLongPress: () {
-                              Clipboard.setData(
-                                ClipboardData(text: line.text),
-                              );
+                              Clipboard.setData(ClipboardData(text: line.text));
                               Toast.success('已复制歌词');
                             },
                             child: Padding(
@@ -2327,8 +2390,7 @@ class _LyricViewportState extends State<_LyricViewport>
                                             ),
                                             height: 1.28,
                                             fontWeight: FontWeight.w700,
-                                            fontSize:
-                                                16 * widget.lyricScale,
+                                            fontSize: 16 * widget.lyricScale,
                                           ),
                                     ),
                                   ],
