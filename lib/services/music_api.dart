@@ -1169,7 +1169,7 @@ _ParsedLyricVariants _parseLyricVariants({
 }
 
 _TimedLyricVariant _parseTimedVariant(String? content) {
-  final lines = parseLyrics(content);
+  final lines = _removeLyricMetadataLines(parseLyrics(content));
   return _TimedLyricVariant(
     byTime: {
       for (final line in lines)
@@ -1202,19 +1202,70 @@ _ParsedLyricVariants _parseKrcLanguageVariants(String content) {
       romanizationByTime: romanizationByTime,
       romanizationByIndex: romanizationByIndex,
     );
+    final cleanedTranslationByTime = _removeLyricMetadataFromTimedMap(
+      translationByTime,
+    );
+    final cleanedRomanizationByTime = _removeLyricMetadataFromTimedMap(
+      romanizationByTime,
+    );
+    final cleanedTranslationByIndex = _removeLyricMetadataLinesFromTexts(
+      translationByIndex,
+    );
+    final cleanedRomanizationByIndex = _removeLyricMetadataLinesFromTexts(
+      romanizationByIndex,
+    );
     return _ParsedLyricVariants(
       translation: _TimedLyricVariant(
-        byTime: translationByTime,
-        byIndex: translationByIndex,
+        byTime: cleanedTranslationByTime,
+        byIndex: cleanedTranslationByIndex,
       ),
       romanization: _TimedLyricVariant(
-        byTime: romanizationByTime,
-        byIndex: romanizationByIndex,
+        byTime: cleanedRomanizationByTime,
+        byIndex: cleanedRomanizationByIndex,
       ),
     );
   } catch (_) {
     return const _ParsedLyricVariants();
   }
+}
+
+/// 歌词接口有时会把歌曲标题、歌手和制作信息编码成带时间戳的歌词行。
+/// 这些行不能参与翻译/音译对齐，否则同一时间点的元数据会覆盖第一句歌词。
+List<LyricLine> _removeLyricMetadataLines(List<LyricLine> lines) {
+  return [
+    for (var index = 0; index < lines.length; index++)
+      if (!_isLyricMetadataText(lines[index].text) &&
+          !_looksLikeLeadingTitleCredit(lines, index))
+        lines[index],
+  ];
+}
+
+List<String> _removeLyricMetadataLinesFromTexts(List<String> texts) {
+  return [
+    for (var index = 0; index < texts.length; index++)
+      if (!_isLyricMetadataText(texts[index]) &&
+          !_looksLikeLeadingTitleCreditText(texts, index))
+        texts[index],
+  ];
+}
+
+bool _looksLikeLeadingTitleCreditText(List<String> lines, int index) {
+  if (index > 2) {
+    return false;
+  }
+  final text = lines[index];
+  final looksLikeTitle =
+      RegExp(r'\s[-–—]\s').hasMatch(text) || text.contains('/');
+  if (!looksLikeTitle) {
+    return false;
+  }
+  return lines.skip(index + 1).take(6).any(_isLyricMetadataText);
+}
+
+Map<int, String> _removeLyricMetadataFromTimedMap(Map<int, String> values) {
+  return Map.fromEntries(
+    values.entries.where((entry) => !_isLyricMetadataText(entry.value)),
+  );
 }
 
 void _collectKrcLanguageRows(
@@ -1247,6 +1298,9 @@ void _collectKrcLanguageRows(
     for (final row in lyricContent) {
       final parsedRow = _parseKrcLanguageRow(row, sectionType);
       if (parsedRow == null) {
+        continue;
+      }
+      if (_isLyricMetadataText(parsedRow.text)) {
         continue;
       }
 
