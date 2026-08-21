@@ -43,6 +43,7 @@ class DownloadService {
     ),
   );
   final Map<String, CancelToken> _cancelTokens = {};
+  final Map<String, _PendingTask> _runningTasks = {};
   final int _maxConcurrent = AppConfig.maxConcurrentDownloads;
   int _running = 0;
   final List<_PendingTask> _queue = [];
@@ -164,13 +165,14 @@ class DownloadService {
         : await playCacheDir();
     final targetPath = '${dir.path}/$fileName';
     final partPath = '$targetPath.part';
+    final partFile = File(partPath);
     final cancelToken = CancelToken();
     _cancelTokens[key] = cancelToken;
+    _runningTasks[key] = task;
 
     try {
       // 断点续传：检查已有 .part 文件大小
       int startOffset = 0;
-      final partFile = File(partPath);
       if (partFile.existsSync()) {
         startOffset = await partFile.length();
       }
@@ -199,16 +201,63 @@ class DownloadService {
       }
 
       return targetPath;
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error) &&
+          task.kind == DownloadTaskKind.playCache) {
+        if (partFile.existsSync()) await partFile.delete();
+      }
+      rethrow;
     } finally {
       _cancelTokens.remove(key);
+      _runningTasks.remove(key);
     }
   }
 
   /// 取消下载/缓存任务。
   Future<void> cancel(String cacheKey) async {
+    final queued = _queue
+        .where((task) => cacheKeyFor(task.song, task.quality) == cacheKey)
+        .toList();
+    _queue.removeWhere(
+      (task) => cacheKeyFor(task.song, task.quality) == cacheKey,
+    );
+    for (final task in queued) {
+      if (!task.completer.isCompleted) {
+        task.completer.completeError(StateError('download cancelled'));
+      }
+    }
     final token = _cancelTokens[cacheKey];
     if (token != null && !token.isCancelled) {
       token.cancel();
+    }
+  }
+
+  Future<void> cancelPlayCache(String cacheKey) async {
+    final queued = _queue
+        .where(
+          (task) =>
+              task.kind == DownloadTaskKind.playCache &&
+              cacheKeyFor(task.song, task.quality) == cacheKey,
+        )
+        .toList();
+    _queue.removeWhere(
+      (task) =>
+          task.kind == DownloadTaskKind.playCache &&
+          cacheKeyFor(task.song, task.quality) == cacheKey,
+    );
+    for (final task in queued) {
+      if (!task.completer.isCompleted) {
+        task.completer.completeError(StateError('play cache cancelled'));
+      }
+      final directory = await playCacheDir();
+      final part = File(
+        '${directory.path}/${fileNameFor(task.song, task.quality)}.part',
+      );
+      if (part.existsSync()) await part.delete();
+    }
+    if (_runningTasks[cacheKey]?.kind == DownloadTaskKind.playCache) {
+      final token = _cancelTokens[cacheKey];
+      if (token != null && !token.isCancelled) token.cancel();
     }
   }
 
@@ -279,20 +328,16 @@ class DownloadService {
   ///
   /// [entries] 为当前缓存索引（按 cachedAt 升序排列）。
   /// [excludePaths] 中的文件跳过清理（如正在播放的文件）。
-  Future<void> prunePlayCache(
-    List<({String cacheKey, String filePath, DateTime cachedAt})> entries, {
+  Future<Set<String>> prunePlayCache(
+    List<({String cacheKey, String filePath, int size, DateTime cachedAt})>
+    entries, {
     Set<String> excludePaths = const {},
     int maxBytes = AppConfig.defaultPlayCacheMaxBytes,
   }) async {
-    int totalSize = 0;
-    final fileSizes = <String, int>{};
-    for (final entry in entries) {
-      final size = await fileSize(entry.filePath);
-      fileSizes[entry.filePath] = size;
-      totalSize += size;
-    }
+    var totalSize = entries.fold<int>(0, (total, entry) => total + entry.size);
+    final removed = <String>{};
 
-    if (totalSize <= maxBytes) return;
+    if (totalSize <= maxBytes) return removed;
 
     // 按 cachedAt 升序删除最旧条目
     final sorted = List.of(entries)
@@ -301,10 +346,11 @@ class DownloadService {
     for (final entry in sorted) {
       if (totalSize <= maxBytes) break;
       if (excludePaths.contains(entry.filePath)) continue;
-      final size = fileSizes[entry.filePath] ?? 0;
       await deleteFile(entry.filePath);
-      totalSize -= size;
+      totalSize -= entry.size;
+      removed.add(entry.cacheKey);
     }
+    return removed;
   }
 
   /// 关闭 Dio（应用退出时调用）。

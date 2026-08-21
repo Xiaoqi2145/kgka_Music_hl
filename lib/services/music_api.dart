@@ -419,6 +419,7 @@ class MusicApi {
     int page = 1,
     int pageSize = 80,
     bool fetchAll = false,
+    bool Function()? shouldCancel,
   }) async {
     if (!fetchAll) {
       final songPage = await playlistSongPage(
@@ -433,6 +434,7 @@ class MusicApi {
     var currentPage = 1;
     const perPage = 200;
     while (true) {
+      if (shouldCancel?.call() == true) break;
       final songPage = await playlistSongPage(
         id,
         page: currentPage,
@@ -441,6 +443,7 @@ class MusicApi {
       final songs = songPage.songs;
       if (songs.isEmpty) break;
       allSongs.addAll(songs);
+      if (shouldCancel?.call() == true) break;
       if (songPage.rawItemCount < perPage) break;
       currentPage++;
     }

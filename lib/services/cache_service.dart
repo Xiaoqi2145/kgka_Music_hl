@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 缓存读取结果。
@@ -26,6 +29,20 @@ class CacheService {
 
   static const _savedAtKey = 'savedAt';
   static const _payloadKey = 'payload';
+  static const _cacheDirectoryName = 'data_cache';
+
+  Future<Directory> _cacheDirectory() async {
+    final base = await getTemporaryDirectory();
+    final directory = Directory('${base.path}/$_cacheDirectoryName');
+    if (!directory.existsSync()) await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<File> _cacheFile(String key) async {
+    final directory = await _cacheDirectory();
+    final name = base64Url.encode(utf8.encode(key)).replaceAll('=', '');
+    return File('${directory.path}/$name.json');
+  }
 
   // ===== key 命名规范 =====
   // 首页（匿名可访问，登出不清理）：cache_home
@@ -49,16 +66,27 @@ class CacheService {
     required T Function(Map<String, dynamic> json) decode,
     Duration ttl = const Duration(hours: 24),
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(key);
+    final file = await _cacheFile(key);
+    String? raw;
+    if (file.existsSync()) {
+      raw = await file.readAsString();
+    } else {
+      final prefs = await SharedPreferences.getInstance();
+      raw = prefs.getString(key);
+      if (raw != null) {
+        await _writeRaw(file, raw);
+        await prefs.remove(key);
+      }
+    }
     if (raw == null) return null;
     try {
-      final decoded = jsonDecode(raw);
+      final decoded = await compute(_decodeJson, raw);
       if (decoded is! Map<String, dynamic>) return null;
       final payload = decoded[_payloadKey];
       if (payload is! Map<String, dynamic>) return null;
       final savedAt = decoded[_savedAtKey];
-      final isStale = savedAt is! num ||
+      final isStale =
+          savedAt is! num ||
           DateTime.now().millisecondsSinceEpoch - savedAt.toInt() >
               ttl.inMilliseconds;
       return CacheResult<T>(data: decode(payload), isStale: isStale);
@@ -69,16 +97,24 @@ class CacheService {
 
   /// 写入缓存（记录 savedAt = 当前时间）。
   Future<void> write(String key, Map<String, dynamic> payload) async {
-    final prefs = await SharedPreferences.getInstance();
-    final wrapper = jsonEncode({
+    final wrapper = await compute(_encodeJson, {
       _savedAtKey: DateTime.now().millisecondsSinceEpoch,
       _payloadKey: payload,
     });
-    await prefs.setString(key, wrapper);
+    await _writeRaw(await _cacheFile(key), wrapper);
+  }
+
+  Future<void> _writeRaw(File file, String raw) async {
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(raw, flush: false);
+    if (file.existsSync()) await file.delete();
+    await temporary.rename(file.path);
   }
 
   /// 移除单条缓存。
   Future<void> remove(String key) async {
+    final file = await _cacheFile(key);
+    if (file.existsSync()) await file.delete();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(key);
   }
@@ -95,6 +131,18 @@ class CacheService {
         }
       }
     }
+    final directory = await _cacheDirectory();
+    await for (final entity in directory.list()) {
+      if (entity is! File || !entity.path.endsWith('.json')) continue;
+      try {
+        final fileName = entity.uri.pathSegments.last.replaceFirst('.json', '');
+        final padding = '=' * ((4 - fileName.length % 4) % 4);
+        final cacheKey = utf8.decode(base64Url.decode('$fileName$padding'));
+        if (_userCachePrefixes.any(cacheKey.startsWith)) {
+          await entity.delete();
+        }
+      } catch (_) {}
+    }
   }
 
   /// 获取所有数据缓存的总大小（字节）。
@@ -102,8 +150,12 @@ class CacheService {
   /// 遍历 SharedPreferences 中的所有 key，计算以 `cache_` 开头或
   /// 歌单缓存相关 key 的字符串大小（UTF-16 每字符约 2 字节）。
   Future<int> getCacheSize() async {
+    final directory = await _cacheDirectory();
     final prefs = await SharedPreferences.getInstance();
     var total = 0;
+    await for (final entity in directory.list()) {
+      if (entity is File) total += await entity.length();
+    }
     for (final key in prefs.getKeys()) {
       if (key.startsWith('cache_') ||
           key.startsWith('ka_music_cached_playlists')) {
@@ -118,15 +170,20 @@ class CacheService {
 
   /// 获取缓存条目数量。
   Future<int> getCacheCount() async {
+    final directory = await _cacheDirectory();
+    var count = 0;
+    await for (final entity in directory.list()) {
+      if (entity is File && entity.path.endsWith('.json')) count++;
+    }
     final prefs = await SharedPreferences.getInstance();
-    return prefs
-        .getKeys()
-        .where((key) => key.startsWith('cache_'))
-        .length;
+    return count +
+        prefs.getKeys().where((key) => key.startsWith('cache_')).length;
   }
 
   /// 清除所有数据缓存（保留用户歌单索引等必要数据）。
   Future<void> clearAllCache() async {
+    final directory = await _cacheDirectory();
+    if (directory.existsSync()) await directory.delete(recursive: true);
     final prefs = await SharedPreferences.getInstance();
     final keys = prefs.getKeys().toList();
     for (final key in keys) {
@@ -187,3 +244,7 @@ class CacheService {
     }
   }
 }
+
+dynamic _decodeJson(String raw) => jsonDecode(raw);
+
+String _encodeJson(Map<String, dynamic> value) => jsonEncode(value);

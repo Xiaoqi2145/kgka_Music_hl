@@ -5,10 +5,10 @@ import 'dart:math' as math;
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/loudness_data.dart';
 import '../models/music_models.dart';
 import '../services/audio_effects_service.dart';
 import '../services/cache_service.dart';
@@ -103,15 +103,6 @@ class PlayerController extends ChangeNotifier {
       _maybeSyncDesktopLyricFromPosition();
       notifyListeners();
     });
-    // Send timing anchors; Android animates karaoke progress at display refresh.
-    SchedulerBinding.instance.addPersistentFrameCallback((_) {
-      if (_shouldShowDesktopLyrics &&
-          isPlaying &&
-          lyrics.isNotEmpty &&
-          !_isScrubbing) {
-        _syncDesktopKaraokeProgress();
-      }
-    });
     _durationSub = audioPlayer.durationStream.listen((value) {
       duration = value ?? Duration.zero;
       notifyListeners();
@@ -125,6 +116,11 @@ class PlayerController extends ChangeNotifier {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
       _syncListeningTimeTracker();
+      if (isPlaying) {
+        _resumePendingPlaybackCache();
+      } else {
+        _pausePendingPlaybackCache();
+      }
       _syncDesktopPlayState();
       notifyListeners();
     });
@@ -169,6 +165,11 @@ class PlayerController extends ChangeNotifier {
   final Stopwatch _positionClock = Stopwatch();
   final _random = math.Random();
   Timer? _completionFallbackTimer;
+  Timer? _playCacheDelayTimer;
+  Song? _pendingPlayCacheSong;
+  AudioQuality? _pendingPlayCacheQuality;
+  String? _pendingPlayCacheUrl;
+  LoudnessData? _pendingPlayCacheLoudness;
   Timer? _listenTimeTimer;
   DateTime? _listenTimeStartedAt;
   Duration _pendingListenTime = Duration.zero;
@@ -226,10 +227,14 @@ class PlayerController extends ChangeNotifier {
   int seekRevision = 0;
   int? _androidAudioSessionId;
   int _volumeNormApplySerial = 0;
+  int _queueRevision = 0;
+  Future<void>? _queueExpansionFuture;
   final Map<String, LyricCandidate> _manualLyricCandidates = {};
 
   LyricCandidate? manualLyricCandidateFor(Song song) =>
       _manualLyricCandidates[song.hash];
+
+  int get queueRevision => _queueRevision;
 
   Future<List<LyricCandidate>> searchLyricCandidates(Song song) =>
       _api.searchLyricCandidates(song);
@@ -323,15 +328,20 @@ class PlayerController extends ChangeNotifier {
     if (lyrics.isEmpty) {
       return -1;
     }
-    var index = 0;
-    for (var i = 0; i < lyrics.length; i++) {
-      if (smoothPosition >= lyrics[i].time) {
-        index = i;
+    final target = smoothPosition;
+    var low = 0;
+    var high = lyrics.length - 1;
+    var result = 0;
+    while (low <= high) {
+      final middle = (low + high) >> 1;
+      if (target >= lyrics[middle].time) {
+        result = middle;
+        low = middle + 1;
       } else {
-        break;
+        high = middle - 1;
       }
     }
-    return index;
+    return result;
   }
 
   String get playbackModeLabel {
@@ -368,6 +378,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> playSong(Song song, {List<Song>? queue}) async {
+    _cancelPendingPlaybackCache();
     _completionFallbackTimer?.cancel();
     _completedSongHash = null;
     isPreparing = true;
@@ -375,6 +386,8 @@ class PlayerController extends ChangeNotifier {
     currentSong = song;
     if (queue != null && queue.isNotEmpty) {
       this.queue = queue;
+      _queueRevision++;
+      _queueExpansionFuture = null;
     } else if (this.queue.isEmpty) {
       this.queue = [song];
     }
@@ -386,10 +399,12 @@ class PlayerController extends ChangeNotifier {
     try {
       String? networkUrl;
       var cacheQuality = audioQuality;
-      final local = downloadController?.localPathFor(song, audioQuality);
+      LoudnessData? cacheLoudness;
+      final local = downloadController?.localSourceFor(song, audioQuality);
       if (local != null) {
         try {
-          await _loadAudioSource(song, local);
+          _restoreLocalLoudness(song, audioQuality, local.loudness);
+          await _loadAudioSource(song, local.path);
         } catch (error) {
           if (song.source == SongSource.local) rethrow;
           debugPrint(
@@ -399,6 +414,7 @@ class PlayerController extends ChangeNotifier {
           final loaded = await _loadNetworkSourceWithFallback(song);
           networkUrl = loaded.url;
           cacheQuality = loaded.quality;
+          cacheLoudness = loaded.loudness;
         }
       } else if (song.source == SongSource.local) {
         await _loadAudioSource(song, song.id);
@@ -406,6 +422,7 @@ class PlayerController extends ChangeNotifier {
         final loaded = await _loadNetworkSourceWithFallback(song);
         networkUrl = loaded.url;
         cacheQuality = loaded.quality;
+        cacheLoudness = loaded.loudness;
       }
       isPreparing = false;
       notifyListeners();
@@ -416,10 +433,13 @@ class PlayerController extends ChangeNotifier {
       // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
       unawaited(_historyService.record(song));
       unawaited(_statsService.recordPlay(song));
-      // 首播后后台缓存（仅当本次用的是网络 URL）
+      // 连续稳定播放 30 秒后再缓存，避免快速切歌产生无效网络与磁盘 IO。
       if (networkUrl != null) {
-        unawaited(
-          downloadController?.cacheForPlayback(song, cacheQuality, networkUrl),
+        _schedulePlaybackCache(
+          song,
+          cacheQuality,
+          networkUrl,
+          loudness: cacheLoudness,
         );
       }
     } catch (error) {
@@ -443,10 +463,47 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
-  /// 获取并实际加载网络播放源。播放器拒绝 URL 时也会降级音质重试。
-  Future<({String url, AudioQuality quality})> _loadNetworkSourceWithFallback(
+  void _restoreLocalLoudness(
     Song song,
-  ) async {
+    AudioQuality quality,
+    LoudnessData? loudness,
+  ) {
+    if (loudness?.canNormalize == true) {
+      _volNormService.cacheLoudness(song.hash, loudness);
+      return;
+    }
+    if (volumeNormalizationEnabled) {
+      unawaited(_hydrateLocalLoudness(song, quality));
+    }
+  }
+
+  Future<void> _hydrateLocalLoudness(Song song, AudioQuality quality) async {
+    if (song.source == SongSource.local || song.source == SongSource.netease) {
+      return;
+    }
+    try {
+      final playUrl = song.isCloudDrive
+          ? await _api.cloudSongUrl(song)
+          : await _api.songUrl(song, quality: quality);
+      final loudness = playUrl.loudness;
+      if (loudness == null || !loudness.canNormalize) return;
+
+      _volNormService.cacheLoudness(song.hash, loudness);
+      await downloadController?.updateLocalLoudness(song, quality, loudness);
+      if (currentSong?.hash == song.hash && audioQuality == quality) {
+        await _applyVolumeNormalization();
+      }
+    } catch (error) {
+      debugPrint(
+        '[KA Music][volume-norm] failed to restore cached loudness for '
+        '${song.hash}: $error',
+      );
+    }
+  }
+
+  /// 获取并实际加载网络播放源。播放器拒绝 URL 时也会降级音质重试。
+  Future<({String url, AudioQuality quality, LoudnessData? loudness})>
+  _loadNetworkSourceWithFallback(Song song) async {
     if (song.isCloudDrive) {
       final playUrl = await _api.cloudSongUrl(song);
       if (playUrl.url.isEmpty) {
@@ -454,13 +511,17 @@ class PlayerController extends ChangeNotifier {
       }
       await _loadAudioSource(song, playUrl.url);
       _volNormService.cacheLoudness(song.hash, playUrl.loudness);
-      return (url: playUrl.url, quality: audioQuality);
+      return (
+        url: playUrl.url,
+        quality: audioQuality,
+        loudness: playUrl.loudness,
+      );
     }
     if (song.source == SongSource.netease) {
       final url =
           'https://music.163.com/song/media/outer/url?id=${song.id}.mp3';
       await _loadAudioSource(song, url);
-      return (url: url, quality: audioQuality);
+      return (url: url, quality: audioQuality, loudness: null);
     }
 
     final qualities = <AudioQuality>[audioQuality];
@@ -488,7 +549,7 @@ class PlayerController extends ChangeNotifier {
             'using ${quality.badge}',
           );
         }
-        return (url: playUrl.url, quality: quality);
+        return (url: playUrl.url, quality: quality, loudness: playUrl.loudness);
       } catch (error, stackTrace) {
         lastError = error;
         lastStackTrace = stackTrace;
@@ -556,8 +617,11 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
-  Future<void> replaceQueue(List<Song> songs) async {
-    if (songs.isEmpty) return;
+  Future<bool> replaceQueue(List<Song> songs, {int? expectedRevision}) async {
+    if (expectedRevision != null && expectedRevision != _queueRevision) {
+      return false;
+    }
+    if (songs.isEmpty) return false;
     final current = currentSong;
     final currentKey = current == null ? '' : _songKey(current);
     final updated = <Song>[];
@@ -566,7 +630,7 @@ class PlayerController extends ChangeNotifier {
       final key = _songKey(song);
       if (key.isNotEmpty && seen.add(key)) updated.add(song);
     }
-    if (updated.isEmpty) return;
+    if (updated.isEmpty) return false;
     queue = updated;
     if (current != null &&
         currentKey.isNotEmpty &&
@@ -578,7 +642,84 @@ class PlayerController extends ChangeNotifier {
       queueIndex: currentIndex,
       currentSong: current,
     );
+    _queueRevision++;
     notifyListeners();
+    return true;
+  }
+
+  void registerQueueExpansion(Future<void> future, int expectedRevision) {
+    if (expectedRevision != _queueRevision) return;
+    _queueExpansionFuture = future;
+    future.whenComplete(() {
+      if (identical(_queueExpansionFuture, future)) {
+        _queueExpansionFuture = null;
+      }
+    });
+  }
+
+  void _schedulePlaybackCache(
+    Song song,
+    AudioQuality quality,
+    String url, {
+    LoudnessData? loudness,
+  }) {
+    _pendingPlayCacheSong = song;
+    _pendingPlayCacheQuality = quality;
+    _pendingPlayCacheUrl = url;
+    _pendingPlayCacheLoudness = loudness;
+    _playCacheDelayTimer = Timer(const Duration(seconds: 30), () {
+      _playCacheDelayTimer = null;
+      if (!isPlaying || currentSong?.hash != song.hash) return;
+      final controller = downloadController;
+      if (controller == null) return;
+      unawaited(
+        controller
+            .cacheForPlayback(song, quality, url, loudness: loudness)
+            .whenComplete(() {
+              if (_pendingPlayCacheSong?.hash == song.hash) {
+                _pendingPlayCacheSong = null;
+                _pendingPlayCacheQuality = null;
+                _pendingPlayCacheUrl = null;
+                _pendingPlayCacheLoudness = null;
+              }
+            }),
+      );
+    });
+  }
+
+  void _cancelPendingPlaybackCache() {
+    _playCacheDelayTimer?.cancel();
+    _playCacheDelayTimer = null;
+    final song = _pendingPlayCacheSong;
+    final quality = _pendingPlayCacheQuality;
+    _pendingPlayCacheSong = null;
+    _pendingPlayCacheQuality = null;
+    _pendingPlayCacheUrl = null;
+    _pendingPlayCacheLoudness = null;
+    if (song != null && quality != null) {
+      unawaited(downloadController?.cancelPlaybackCache(song, quality));
+    }
+  }
+
+  void _pausePendingPlaybackCache() {
+    _playCacheDelayTimer?.cancel();
+    _playCacheDelayTimer = null;
+    final song = _pendingPlayCacheSong;
+    final quality = _pendingPlayCacheQuality;
+    if (song != null && quality != null) {
+      unawaited(downloadController?.cancelPlaybackCache(song, quality));
+    }
+  }
+
+  void _resumePendingPlaybackCache() {
+    if (_playCacheDelayTimer != null) return;
+    final song = _pendingPlayCacheSong;
+    final quality = _pendingPlayCacheQuality;
+    final url = _pendingPlayCacheUrl;
+    final loudness = _pendingPlayCacheLoudness;
+    if (song == null || quality == null || url == null) return;
+    if (currentSong?.hash != song.hash) return;
+    _schedulePlaybackCache(song, quality, url, loudness: loudness);
   }
 
   String _songKey(Song song) => song.hash.isNotEmpty ? song.hash : song.id;
@@ -844,6 +985,8 @@ class PlayerController extends ChangeNotifier {
         return;
       }
       _setPositionBase(target, playing: isPlaying);
+      _lastDesktopLyricIndex = -1;
+      _maybeSyncDesktopLyricFromPosition();
       notifyListeners();
     } finally {
       if (serial == _seekSerial) {
@@ -854,7 +997,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> next() async {
-    final nextSong = _nextSong();
+    final nextSong = await _nextSong();
     if (nextSong == null) return;
     await playSong(nextSong, queue: queue);
   }
@@ -892,7 +1035,7 @@ class PlayerController extends ChangeNotifier {
         return;
       }
 
-      final nextSong = _nextSong();
+      final nextSong = await _nextSong();
       if (nextSong == null) {
         await _audioHandler.seek(Duration.zero);
         return;
@@ -943,9 +1086,12 @@ class PlayerController extends ChangeNotifier {
     try {
       String url;
       String? networkUrl;
-      final local = downloadController?.localPathFor(song, audioQuality);
+      LoudnessData? loudness;
+      final local = downloadController?.localSourceFor(song, audioQuality);
       if (local != null) {
-        url = local;
+        url = local.path;
+        loudness = local.loudness;
+        _restoreLocalLoudness(song, audioQuality, loudness);
       } else if (song.source == SongSource.local) {
         url = song.id;
       } else {
@@ -965,6 +1111,7 @@ class PlayerController extends ChangeNotifier {
         }
         url = playUrl.url;
         networkUrl = playUrl.url;
+        loudness = playUrl.loudness;
         _volNormService.cacheLoudness(song.hash, playUrl.loudness);
       }
       await _audioHandler.loadSong(
@@ -981,8 +1128,12 @@ class PlayerController extends ChangeNotifier {
       }
       // 切音质后后台缓存
       if (networkUrl != null) {
-        unawaited(
-          downloadController?.cacheForPlayback(song, audioQuality, networkUrl),
+        _cancelPendingPlaybackCache();
+        _schedulePlaybackCache(
+          song,
+          audioQuality,
+          networkUrl,
+          loudness: loudness,
         );
       }
       // 音质切换后重新应用音量均衡
@@ -1210,9 +1361,8 @@ class PlayerController extends ChangeNotifier {
     if (index != _lastDesktopLyricIndex) {
       _lastDesktopLyricIndex = index;
       _syncDesktopLyrics();
+      _syncDesktopKaraokeProgress();
     }
-    // Karaoke progress for current line
-    _syncDesktopKaraokeProgress();
   }
 
   void _syncDesktopKaraokeProgress() {
@@ -1302,6 +1452,14 @@ class PlayerController extends ChangeNotifier {
       _desktopLyrics.setAppForeground(isForeground: isForeground);
       unawaited(_syncDesktopLyricsVisibility());
     }
+  }
+
+  Future<void> flushPersistence() async {
+    await Future.wait([
+      _historyService.flush(),
+      _statsService.flush(),
+      if (downloadController case final downloads?) downloads.flush(),
+    ]);
   }
 
   Future<void> setDesktopLyricsPreviewVisible(bool visible) async {
@@ -1463,6 +1621,15 @@ class PlayerController extends ChangeNotifier {
     await prefs.setBool(_volumeNormEnabledSettingKey, enabled);
     notifyListeners();
 
+    if (enabled) {
+      final song = currentSong;
+      if (song != null) {
+        final local = downloadController?.localSourceFor(song, audioQuality);
+        if (local != null) {
+          _restoreLocalLoudness(song, audioQuality, local.loudness);
+        }
+      }
+    }
     await _applyVolumeNormalization();
   }
 
@@ -1711,7 +1878,10 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  Song? _nextSong() {
+  Future<Song?> _nextSong() async {
+    if (playbackMode == PlaybackMode.shuffle) {
+      await _queueExpansionFuture;
+    }
     if (queue.isEmpty) {
       return currentSong;
     }
@@ -1738,7 +1908,9 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    unawaited(flushPersistence());
     _pauseListeningTimeTracker();
+    _cancelPendingPlaybackCache();
     _autoResumeTimer?.cancel();
     _sleepTimer?.cancel();
     _positionSub.cancel();

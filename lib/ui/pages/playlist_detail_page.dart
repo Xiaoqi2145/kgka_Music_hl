@@ -57,8 +57,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   bool _isSearching = false;
   bool _isLoadingAllSongs = false;
   bool _allSongsLoaded = false;
+  Future<List<Song>>? _fullSongsFuture;
+  int _queueLoadGeneration = 0;
   String _searchQuery = '';
   _SongSortMode _sortMode = _SongSortMode.defaultOrder;
+  int _songsVersion = 0;
+  int _filteredSongsVersion = -1;
+  String _filteredSongsQuery = '';
+  _SongSortMode? _filteredSongsSortMode;
+  List<Song> _filteredSongsCache = const [];
 
   String get _sortModeLabel {
     return switch (_sortMode) {
@@ -143,6 +150,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   @override
   void dispose() {
+    _queueLoadGeneration++;
     _scrollController
       ..removeListener(_maybeLoadMore)
       ..dispose();
@@ -151,6 +159,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   List<Song> get _filteredSongs {
+    if (_filteredSongsVersion == _songsVersion &&
+        _filteredSongsQuery == _searchQuery &&
+        _filteredSongsSortMode == _sortMode) {
+      return _filteredSongsCache;
+    }
     List<Song> list;
     if (_searchQuery.isEmpty) {
       list = List<Song>.of(_songs);
@@ -176,7 +189,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       case _SongSortMode.defaultOrder:
         break;
     }
-    return list;
+    _filteredSongsVersion = _songsVersion;
+    _filteredSongsQuery = _searchQuery;
+    _filteredSongsSortMode = _sortMode;
+    _filteredSongsCache = List<Song>.unmodifiable(list);
+    return _filteredSongsCache;
   }
 
   void _toggleSearch() {
@@ -192,8 +209,21 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  Future<void> _loadAllSongs() async {
-    if (_isLoadingAllSongs || _allSongsLoaded) return;
+  Future<List<Song>> _loadAllSongs({bool Function()? shouldCancel}) async {
+    if (_allSongsLoaded) return List<Song>.of(_songs);
+    final pending = _fullSongsFuture;
+    if (pending != null) return pending;
+    final future = _loadAllSongsImpl(shouldCancel: shouldCancel);
+    _fullSongsFuture = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_fullSongsFuture, future)) _fullSongsFuture = null;
+    }
+  }
+
+  Future<List<Song>> _loadAllSongsImpl({bool Function()? shouldCancel}) async {
+    if (_isLoadingAllSongs) return List<Song>.of(_songs);
     setState(() => _isLoadingAllSongs = true);
     try {
       final id = _isAlbum
@@ -222,16 +252,41 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             .where((song) => song.hash.isNotEmpty)
             .toList();
       } else {
-        allSongs = _isAlbum
-            ? await widget.api.albumSongs(id, page: 1, pageSize: 5000)
-            : await widget.api.playlistSongs(id, fetchAll: true);
+        if (_isAlbum) {
+          allSongs = <Song>[];
+          var page = 1;
+          const pageSize = 200;
+          while (shouldCancel?.call() != true) {
+            final result = await widget.api.albumSongPage(
+              id,
+              page: page,
+              pageSize: pageSize,
+            );
+            allSongs.addAll(result.songs);
+            if (result.rawItemCount < pageSize) break;
+            page++;
+          }
+        } else {
+          allSongs = await widget.api.playlistSongs(
+            id,
+            fetchAll: true,
+            shouldCancel: shouldCancel,
+          );
+        }
+        if (shouldCancel?.call() == true) {
+          if (mounted) setState(() => _isLoadingAllSongs = false);
+          return allSongs;
+        }
         // 写入完整歌单缓存，后续播放可直接复用
         await _cache.write(fullCacheKey, {
           'songs': allSongs.map((s) => s.toCache()).toList(),
         });
       }
 
-      if (!mounted) return;
+      if (!mounted || shouldCancel?.call() == true) {
+        if (mounted) setState(() => _isLoadingAllSongs = false);
+        return allSongs;
+      }
       setState(() {
         // 增量追加：保留已有歌曲，仅追加尚未加载的歌曲，
         // 避免先清空再重建列表导致滚动位置被强制重置。
@@ -242,12 +297,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             existingHashes.add(song.hash);
           }
         }
+        _songsVersion++;
         _allSongsLoaded = true;
         _hasMore = false;
         _isLoadingAllSongs = false;
       });
+      return allSongs;
     } catch (_) {
       if (mounted) setState(() => _isLoadingAllSongs = false);
+      return List<Song>.of(_songs);
     }
   }
 
@@ -281,13 +339,27 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     return [...songs.skip(index), ...songs.take(index)];
   }
 
-  void _startBackgroundQueueLoad() {
+  void _startBackgroundQueueLoad(int expectedRevision) {
     if (_searchQuery.isEmpty && !_allSongsLoaded) {
-      unawaited(
-        _loadAllSongs().then((_) {
-          if (mounted) unawaited(widget.player.replaceQueue(_filteredSongs));
-        }),
-      );
+      final generation = ++_queueLoadGeneration;
+      final task =
+          _loadAllSongs(
+            shouldCancel: () =>
+                !mounted ||
+                generation != _queueLoadGeneration ||
+                widget.player.queueRevision != expectedRevision,
+          ).then((_) async {
+            if (mounted &&
+                generation == _queueLoadGeneration &&
+                widget.player.queueRevision == expectedRevision) {
+              await widget.player.replaceQueue(
+                _filteredSongs,
+                expectedRevision: expectedRevision,
+              );
+            }
+          });
+      widget.player.registerQueueExpansion(task, expectedRevision);
+      unawaited(task);
     }
   }
 
@@ -301,6 +373,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       _hasMore = true;
       _info = null;
       _songs.clear();
+      _songsVersion++;
     });
 
     final cacheKey = _isAlbum
@@ -330,6 +403,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               .map(Song.fromCache)
               .toList(),
         );
+        _songsVersion++;
         _isInitialLoading = false;
       });
     }
@@ -353,6 +427,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             _songs
               ..clear()
               ..addAll(songs);
+            _songsVersion++;
           }
           _nextPage = 2;
           _hasMore =
@@ -388,6 +463,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             _songs
               ..clear()
               ..addAll(songs);
+            _songsVersion++;
           }
           _nextPage = 2;
           _hasMore =
@@ -459,6 +535,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       setState(() {
         final songs = songPage.songs;
         _songs.addAll(songs);
+        _songsVersion++;
         _nextPage++;
         _hasMore =
             songPage.rawItemCount == _pageSize &&
@@ -516,7 +593,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     await _runMutation(() async {
       await widget.auth.removeSongFromPlaylist(_libraryPlaylist, song);
       if (mounted) {
-        setState(() => _songs.removeWhere((item) => item.id == song.id));
+        setState(() {
+          _songs.removeWhere((item) => item.id == song.id);
+          _songsVersion++;
+        });
       }
     });
   }
@@ -841,7 +921,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 queue.first,
                                 queue: List<Song>.of(queue),
                               );
-                              _startBackgroundQueueLoad();
+                              final revision = widget.player.queueRevision;
+                              _startBackgroundQueueLoad(revision);
                             },
                       searchQuery: _searchQuery,
                       searchResultCount: _searchQuery.isNotEmpty
@@ -886,7 +967,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 song,
                                 queue: List<Song>.of(queue),
                               );
-                              _startBackgroundQueueLoad();
+                              final revision = widget.player.queueRevision;
+                              _startBackgroundQueueLoad(revision);
                             },
                             onAddToPlaylist: () => _addSongToPlaylist(song),
                             onDelete: () => _removeSong(song),

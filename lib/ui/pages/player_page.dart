@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -36,13 +37,17 @@ class PlayerPage extends StatefulWidget {
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
+class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   static const _screenChannel = MethodChannel('kgka_music_hl/screen');
+  var _appResumed = true;
+  bool? _keepScreenOn;
+  bool _keepScreenSyncScheduled = false;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_setKeepScreenOn(true));
+    WidgetsBinding.instance.addObserver(this);
+    widget.player.addListener(_syncKeepScreenOn);
     SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
       DeviceOrientation.landscapeLeft,
@@ -52,6 +57,8 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.player.removeListener(_syncKeepScreenOn);
     unawaited(_setKeepScreenOn(false));
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
@@ -71,6 +78,32 @@ class _PlayerPageState extends State<PlayerPage> {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final resumed = state == AppLifecycleState.resumed;
+    if (_appResumed == resumed) return;
+    setState(() => _appResumed = resumed);
+    _syncKeepScreenOn();
+  }
+
+  void _syncKeepScreenOn() {
+    if (!mounted) return;
+    final routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    final enabled = _appResumed && routeCurrent && widget.player.isPlaying;
+    if (_keepScreenOn == enabled) return;
+    _keepScreenOn = enabled;
+    unawaited(_setKeepScreenOn(enabled));
+  }
+
+  void _scheduleKeepScreenSync() {
+    if (_keepScreenSyncScheduled) return;
+    _keepScreenSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _keepScreenSyncScheduled = false;
+      if (mounted) _syncKeepScreenOn();
+    });
+  }
+
   Future<void> _setKeepScreenOn(bool enabled) async {
     try {
       await _screenChannel.invokeMethod<void>('setKeepScreenOn', enabled);
@@ -83,22 +116,27 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.player,
-      builder: (context, _) {
-        final song = widget.player.currentSong;
-        if (song == null) {
-          return const Scaffold(body: SizedBox.shrink());
-        }
+    final routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    _scheduleKeepScreenSync();
+    return TickerMode(
+      enabled: _appResumed && routeCurrent,
+      child: AnimatedBuilder(
+        animation: widget.player,
+        builder: (context, _) {
+          final song = widget.player.currentSong;
+          if (song == null) {
+            return const Scaffold(body: SizedBox.shrink());
+          }
 
-        return _PlayerBody(
-          player: widget.player,
-          auth: widget.auth,
-          song: song,
-          onClose: () => Navigator.of(context).pop(),
-          onQueue: () => _showQueue(context),
-        );
-      },
+          return _PlayerBody(
+            player: widget.player,
+            auth: widget.auth,
+            song: song,
+            onClose: () => Navigator.of(context).pop(),
+            onQueue: () => _showQueue(context),
+          );
+        },
+      ),
     );
   }
 
@@ -244,24 +282,30 @@ class _PlayerBodyState extends State<_PlayerBody> {
                               onPageChanged: (value) =>
                                   _setPageState(page: value),
                               children: [
-                                _PosterPlayerPage(
-                                  key: const PageStorageKey(
-                                    'poster-player-page',
+                                TickerMode(
+                                  enabled: _page == 0 || _pageScrolling,
+                                  child: _PosterPlayerPage(
+                                    key: const PageStorageKey(
+                                      'poster-player-page',
+                                    ),
+                                    player: widget.player,
+                                    song: widget.song,
+                                    onQueue: widget.onQueue,
                                   ),
-                                  player: widget.player,
-                                  song: widget.song,
-                                  onQueue: widget.onQueue,
                                 ),
-                                _LyricPlayerPage(
-                                  key: const PageStorageKey(
-                                    'lyric-player-page',
+                                TickerMode(
+                                  enabled: _lyricPageVisible,
+                                  child: _LyricPlayerPage(
+                                    key: const PageStorageKey(
+                                      'lyric-player-page',
+                                    ),
+                                    player: widget.player,
+                                    song: widget.song,
+                                    focusRequest: _lyricFocusRequest,
+                                    isPageActive: _lyricPageActive,
+                                    isPageVisible: _lyricPageVisible,
+                                    isPageTransitioning: _pageScrolling,
                                   ),
-                                  player: widget.player,
-                                  song: widget.song,
-                                  focusRequest: _lyricFocusRequest,
-                                  isPageActive: _lyricPageActive,
-                                  isPageVisible: _lyricPageVisible,
-                                  isPageTransitioning: _pageScrolling,
                                 ),
                               ],
                             ),
@@ -1400,15 +1444,19 @@ int _activeLyricIndexFor(List<LyricLine> lyrics, Duration position) {
   if (lyrics.isEmpty) {
     return -1;
   }
-  var index = 0;
-  for (var i = 0; i < lyrics.length; i++) {
-    if (position >= lyrics[i].time) {
-      index = i;
+  var low = 0;
+  var high = lyrics.length - 1;
+  var result = 0;
+  while (low <= high) {
+    final middle = (low + high) >> 1;
+    if (position >= lyrics[middle].time) {
+      result = middle;
+      low = middle + 1;
     } else {
-      break;
+      high = middle - 1;
     }
   }
-  return index;
+  return result;
 }
 
 class _LyricScrollCurve extends Curve {
@@ -1945,6 +1993,7 @@ class _LyricViewportState extends State<_LyricViewport>
   var _lineKeys = <GlobalKey>[];
   Timer? _resumeAutoScrollTimer;
   Duration _framePosition = Duration.zero;
+  late final ValueNotifier<Duration> _framePositionNotifier;
   int _frameActiveIndex = -1;
   int _motionFromIndex = -1;
   int _motionToIndex = -1;
@@ -1958,6 +2007,7 @@ class _LyricViewportState extends State<_LyricViewport>
     super.initState();
     _syncLineKeys();
     _framePosition = widget.player.smoothPosition;
+    _framePositionNotifier = ValueNotifier(_framePosition);
     _frameActiveIndex = _activeIndexFor(_framePosition);
     _motionFromIndex = _frameActiveIndex;
     _motionToIndex = _frameActiveIndex;
@@ -2030,6 +2080,7 @@ class _LyricViewportState extends State<_LyricViewport>
       ..removeListener(_handleLineMotionTick)
       ..dispose();
     _ticker.dispose();
+    _framePositionNotifier.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -2102,10 +2153,11 @@ class _LyricViewportState extends State<_LyricViewport>
         _finishLineMotion(activeIndex);
       }
     }
-    setState(() {
-      _framePosition = position;
-      _frameActiveIndex = activeIndex;
-    });
+    _framePosition = position;
+    _framePositionNotifier.value = position;
+    if (_frameActiveIndex != activeIndex) {
+      setState(() => _frameActiveIndex = activeIndex);
+    }
   }
 
   void _startLineMotion(int fromIndex, int toIndex) {
@@ -2372,6 +2424,9 @@ class _LyricViewportState extends State<_LyricViewport>
                                       line: line,
                                       active: active,
                                       position: _framePosition,
+                                      positionListenable: active
+                                          ? _framePositionNotifier
+                                          : null,
                                       reserveActiveLayout: true,
                                       textScale: widget.lyricScale,
                                     ),
@@ -2455,6 +2510,7 @@ class _LyricText extends StatelessWidget {
     this.singleLine = false,
     this.reserveActiveLayout = false,
     this.textScale = 1.0,
+    this.positionListenable,
   });
 
   final LyricLine line;
@@ -2465,6 +2521,7 @@ class _LyricText extends StatelessWidget {
   final bool singleLine;
   final bool reserveActiveLayout;
   final double textScale;
+  final ValueListenable<Duration>? positionListenable;
 
   @override
   Widget build(BuildContext context) {
@@ -2509,6 +2566,7 @@ class _LyricText extends StatelessWidget {
       final painter = _KaraokeLinePainter(
         line: line,
         position: position,
+        positionListenable: positionListenable,
         style: style,
         baseColor: Colors.white.withValues(alpha: .34),
         activeColor: Colors.white,
@@ -2528,6 +2586,7 @@ class _LyricText extends StatelessWidget {
         final painter = _KaraokeLinePainter(
           line: line,
           position: position,
+          positionListenable: positionListenable,
           style: style,
           baseColor: Colors.white.withValues(alpha: .34),
           activeColor: Colors.white,
@@ -2559,6 +2618,7 @@ class _LyricText extends StatelessWidget {
           final painter = _KaraokeLinePainter(
             line: line,
             position: position,
+            positionListenable: positionListenable,
             style: style,
             baseColor: Colors.white.withValues(alpha: .34),
             activeColor: Colors.white,
@@ -2596,7 +2656,8 @@ class _KaraokeLinePainter extends CustomPainter {
     required this.textAlign,
     required this.maxLines,
     required this.maxWidth,
-  }) {
+    this.positionListenable,
+  }) : super(repaint: positionListenable) {
     _textPainter = TextPainter(
       text: TextSpan(
         text: line.text,
@@ -2610,6 +2671,7 @@ class _KaraokeLinePainter extends CustomPainter {
 
   final LyricLine line;
   final Duration position;
+  final ValueListenable<Duration>? positionListenable;
   final TextStyle style;
   final Color baseColor;
   final Color activeColor;
@@ -2639,14 +2701,15 @@ class _KaraokeLinePainter extends CustomPainter {
   }
 
   double _wordProgress(LyricWord word) {
-    if (position < word.time) {
+    final currentPosition = positionListenable?.value ?? position;
+    if (currentPosition < word.time) {
       return 0;
     }
     final durationMs = word.duration.inMilliseconds;
     if (durationMs <= 0) {
       return 1;
     }
-    final elapsed = position.inMilliseconds - word.time.inMilliseconds;
+    final elapsed = currentPosition.inMilliseconds - word.time.inMilliseconds;
     return (elapsed / durationMs).clamp(0, 1).toDouble();
   }
 

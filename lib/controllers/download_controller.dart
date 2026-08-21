@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
+import '../models/loudness_data.dart';
 import '../models/music_models.dart';
 import '../services/download_service.dart';
 import '../services/music_api.dart';
@@ -22,6 +23,7 @@ class DownloadEntry {
     this.filePath,
     this.error,
     this.downloadedAt,
+    this.loudness,
   });
 
   final Song song;
@@ -31,6 +33,7 @@ class DownloadEntry {
   final String? filePath;
   final String? error;
   final DateTime? downloadedAt;
+  final LoudnessData? loudness;
 
   DownloadEntry copyWith({
     DownloadStatus? status,
@@ -38,6 +41,7 @@ class DownloadEntry {
     String? filePath,
     String? error,
     DateTime? downloadedAt,
+    LoudnessData? loudness,
   }) {
     return DownloadEntry(
       song: song,
@@ -47,6 +51,7 @@ class DownloadEntry {
       filePath: filePath ?? this.filePath,
       error: error,
       downloadedAt: downloadedAt ?? this.downloadedAt,
+      loudness: loudness ?? this.loudness,
     );
   }
 }
@@ -60,6 +65,7 @@ class PlayCacheEntry {
     required this.filePath,
     required this.size,
     required this.cachedAt,
+    this.loudness,
   });
 
   final String cacheKey;
@@ -68,6 +74,7 @@ class PlayCacheEntry {
   final String filePath;
   final int size;
   final DateTime cachedAt;
+  final LoudnessData? loudness;
 }
 
 /// 下载与播放缓存控制器。
@@ -87,6 +94,8 @@ class DownloadController extends ChangeNotifier {
   final Map<String, DownloadEntry> _downloads = {}; // key = hash
   final Map<String, PlayCacheEntry> _playCache = {}; // key = hash_quality
   bool _initialized = false;
+  Timer? _playCachePersistTimer;
+  Future<void>? _playCachePersistFuture;
   int playCacheMaxBytes = AppConfig.defaultPlayCacheMaxBytes;
 
   /// 启动时加载索引并校验文件存在性。
@@ -131,6 +140,7 @@ class DownloadController extends ChangeNotifier {
         // 校验文件存在性
         if (!await _service.fileSize(filePath).then((s) => s > 0)) continue;
         final downloadedAtStr = item['downloadedAt'] as String?;
+        final loudnessJson = item['loudness'];
         _downloads[song.hash] = DownloadEntry(
           song: song,
           quality: quality,
@@ -138,6 +148,9 @@ class DownloadController extends ChangeNotifier {
           filePath: filePath,
           downloadedAt: downloadedAtStr != null
               ? DateTime.tryParse(downloadedAtStr)
+              : null,
+          loudness: loudnessJson is Map
+              ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
               : null,
         );
       }
@@ -163,6 +176,7 @@ class DownloadController extends ChangeNotifier {
         );
         final quality = AudioQuality.fromApiValue(item['quality'] as String?);
         final cachedAtStr = item['cachedAt'] as String?;
+        final loudnessJson = item['loudness'];
         _playCache[cacheKey] = PlayCacheEntry(
           cacheKey: cacheKey,
           song: song,
@@ -172,6 +186,9 @@ class DownloadController extends ChangeNotifier {
           cachedAt: cachedAtStr != null
               ? DateTime.tryParse(cachedAtStr) ?? DateTime.now()
               : DateTime.now(),
+          loudness: loudnessJson is Map
+              ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
+              : null,
         );
       }
     } catch (_) {}
@@ -187,6 +204,7 @@ class DownloadController extends ChangeNotifier {
             'quality': e.quality.apiValue,
             'filePath': e.filePath,
             'downloadedAt': e.downloadedAt?.toIso8601String(),
+            if (e.loudness != null) 'loudness': e.loudness!.toJson(),
           },
         )
         .toList();
@@ -204,28 +222,61 @@ class DownloadController extends ChangeNotifier {
             'filePath': e.filePath,
             'size': e.size,
             'cachedAt': e.cachedAt.toIso8601String(),
+            if (e.loudness != null) 'loudness': e.loudness!.toJson(),
           },
         )
         .toList();
     await prefs.setString(_playCacheIndexKey, jsonEncode(list));
   }
 
+  void _schedulePlayCachePersist() {
+    _playCachePersistTimer?.cancel();
+    _playCachePersistTimer = Timer(
+      const Duration(seconds: 5),
+      () => unawaited(flush()),
+    );
+  }
+
+  Future<void> flush() async {
+    _playCachePersistTimer?.cancel();
+    _playCachePersistTimer = null;
+    final pending = _playCachePersistFuture;
+    if (pending != null) return pending;
+    final future = _persistPlayCache();
+    _playCachePersistFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_playCachePersistFuture, future)) {
+        _playCachePersistFuture = null;
+      }
+    }
+  }
+
   // ===== 查询 =====
 
   /// 返回本地文件路径：优先已下载 > 播放缓存（按当前音质）。无则 null。
   String? localPathFor(Song song, AudioQuality quality) {
+    return localSourceFor(song, quality)?.path;
+  }
+
+  /// 返回本地音频及其持久化响度元数据，优先级与 [localPathFor] 一致。
+  ({String path, LoudnessData? loudness})? localSourceFor(
+    Song song,
+    AudioQuality quality,
+  ) {
     final key = _service.cacheKeyFor(song, quality);
     // 优先已下载（同音质）
     final download = _downloads[song.hash];
     if (download?.status == DownloadStatus.downloaded &&
         download?.filePath != null &&
         _service.cacheKeyFor(download!.song, download.quality) == key) {
-      return download.filePath;
+      return (path: download.filePath!, loudness: download.loudness);
     }
     // 其次播放缓存
     final cache = _playCache[key];
     if (cache != null) {
-      return cache.filePath;
+      return (path: cache.filePath, loudness: cache.loudness);
     }
     return null;
   }
@@ -304,6 +355,7 @@ class DownloadController extends ChangeNotifier {
         progress: 1,
         filePath: path,
         downloadedAt: DateTime.now(),
+        loudness: playUrl.loudness,
       );
       notifyListeners();
       await _persistDownloads();
@@ -359,11 +411,27 @@ class DownloadController extends ChangeNotifier {
   Future<void> cacheForPlayback(
     Song song,
     AudioQuality quality,
-    String url,
-  ) async {
+    String url, {
+    LoudnessData? loudness,
+  }) async {
     final key = _service.cacheKeyFor(song, quality);
     // 已有缓存或已在下载则跳过
-    if (_playCache[key] != null) return;
+    final existing = _playCache[key];
+    if (existing != null) {
+      if (existing.loudness == null && loudness?.canNormalize == true) {
+        _playCache[key] = PlayCacheEntry(
+          cacheKey: existing.cacheKey,
+          song: existing.song,
+          quality: existing.quality,
+          filePath: existing.filePath,
+          size: existing.size,
+          cachedAt: existing.cachedAt,
+          loudness: loudness,
+        );
+        _schedulePlayCachePersist();
+      }
+      return;
+    }
     if (_downloads[song.hash]?.status == DownloadStatus.downloading) return;
 
     try {
@@ -380,9 +448,10 @@ class DownloadController extends ChangeNotifier {
         filePath: path,
         size: size,
         cachedAt: DateTime.now(),
+        loudness: loudness,
       );
       notifyListeners();
-      await _persistPlayCache();
+      _schedulePlayCachePersist();
       // LRU 清理
       await _prunePlayCache(excludePaths: {path});
     } catch (_) {
@@ -390,12 +459,48 @@ class DownloadController extends ChangeNotifier {
     }
   }
 
+  /// 为旧版索引中的本地音频补写响度元数据。
+  Future<void> updateLocalLoudness(
+    Song song,
+    AudioQuality quality,
+    LoudnessData loudness,
+  ) async {
+    if (!loudness.canNormalize) return;
+    final key = _service.cacheKeyFor(song, quality);
+    final download = _downloads[song.hash];
+    if (download?.status == DownloadStatus.downloaded &&
+        download?.filePath != null &&
+        _service.cacheKeyFor(download!.song, download.quality) == key) {
+      _downloads[song.hash] = download.copyWith(loudness: loudness);
+      await _persistDownloads();
+      return;
+    }
+
+    final cache = _playCache[key];
+    if (cache == null) return;
+    _playCache[key] = PlayCacheEntry(
+      cacheKey: cache.cacheKey,
+      song: cache.song,
+      quality: cache.quality,
+      filePath: cache.filePath,
+      size: cache.size,
+      cachedAt: cache.cachedAt,
+      loudness: loudness,
+    );
+    _schedulePlayCachePersist();
+  }
+
+  Future<void> cancelPlaybackCache(Song song, AudioQuality quality) async {
+    final key = _service.cacheKeyFor(song, quality);
+    await _service.cancelPlayCache(key);
+  }
+
   /// 清空所有播放缓存。
   Future<void> clearPlayCache() async {
     await _service.clearPlayCacheDir();
     _playCache.clear();
     notifyListeners();
-    await _persistPlayCache();
+    await flush();
   }
 
   /// 删除单首播放缓存。
@@ -406,7 +511,7 @@ class DownloadController extends ChangeNotifier {
       await _service.deleteFile(entry.filePath);
       _playCache.remove(key);
       notifyListeners();
-      await _persistPlayCache();
+      _schedulePlayCachePersist();
     }
   }
 
@@ -417,32 +522,31 @@ class DownloadController extends ChangeNotifier {
               (e) => (
                 cacheKey: e.cacheKey,
                 filePath: e.filePath,
+                size: e.size,
                 cachedAt: e.cachedAt,
               ),
             )
             .toList()
           ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 
-    await _service.prunePlayCache(
+    final removed = await _service.prunePlayCache(
       entries,
       excludePaths: excludePaths,
       maxBytes: playCacheMaxBytes,
     );
 
-    // 清理后校验索引，移除已删除的条目
-    final toRemove = <String>[];
-    for (final entry in _playCache.values) {
-      final size = await _service.fileSize(entry.filePath);
-      if (size == 0 && !excludePaths.contains(entry.filePath)) {
-        toRemove.add(entry.cacheKey);
-      }
-    }
-    if (toRemove.isNotEmpty) {
-      for (final key in toRemove) {
+    if (removed.isNotEmpty) {
+      for (final key in removed) {
         _playCache.remove(key);
       }
       notifyListeners();
-      await _persistPlayCache();
+      _schedulePlayCachePersist();
     }
+  }
+
+  @override
+  void dispose() {
+    unawaited(flush());
+    super.dispose();
   }
 }

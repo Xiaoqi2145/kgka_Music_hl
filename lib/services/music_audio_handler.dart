@@ -5,6 +5,8 @@ import '../models/music_models.dart';
 
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
+  static const _queueWindowRadius = 25;
+
   MusicAudioHandler() {
     audioPlayer.playbackEventStream
         .map(_playbackStateForEvent)
@@ -36,9 +38,10 @@ class MusicAudioHandler extends BaseAudioHandler
     required List<Song> queueSongs,
     required int queueIndex,
   }) async {
-    _queueIndex = queueIndex < 0 ? 0 : queueIndex;
     final currentItem = _mediaItemFor(song);
-    final items = queueSongs.map(_mediaItemFor).toList(growable: false);
+    final window = _windowedQueue(queueSongs, queueIndex);
+    _queueIndex = window.index;
+    final items = window.songs.map(_mediaItemFor).toList(growable: false);
 
     if (items.isNotEmpty) {
       queue.add(items);
@@ -61,8 +64,9 @@ class MusicAudioHandler extends BaseAudioHandler
     required int queueIndex,
     Song? currentSong,
   }) async {
-    _queueIndex = queueIndex < 0 ? 0 : queueIndex;
-    queue.add(queueSongs.map(_mediaItemFor).toList(growable: false));
+    final window = _windowedQueue(queueSongs, queueIndex);
+    _queueIndex = window.index;
+    queue.add(window.songs.map(_mediaItemFor).toList(growable: false));
     if (currentSong != null) {
       mediaItem.add(_mediaItemFor(currentSong));
     }
@@ -74,8 +78,9 @@ class MusicAudioHandler extends BaseAudioHandler
     required int queueIndex,
     Song? currentSong,
   }) async {
-    _queueIndex = queueIndex < 0 ? 0 : queueIndex;
-    queue.add(queueSongs.map(_mediaItemFor).toList(growable: false));
+    final window = _windowedQueue(queueSongs, queueIndex);
+    _queueIndex = window.index;
+    queue.add(window.songs.map(_mediaItemFor).toList(growable: false));
     if (currentSong != null) {
       mediaItem.add(_mediaItemFor(currentSong));
     }
@@ -113,6 +118,17 @@ class MusicAudioHandler extends BaseAudioHandler
 
   Future<void> close() async {
     await audioPlayer.dispose();
+  }
+
+  ({List<Song> songs, int index}) _windowedQueue(
+    List<Song> songs,
+    int queueIndex,
+  ) {
+    if (songs.isEmpty) return (songs: const [], index: 0);
+    final current = queueIndex.clamp(0, songs.length - 1);
+    final start = (current - _queueWindowRadius).clamp(0, songs.length);
+    final end = (current + _queueWindowRadius + 1).clamp(start, songs.length);
+    return (songs: songs.sublist(start, end), index: current - start);
   }
 
   MediaItem _mediaItemFor(Song song) {

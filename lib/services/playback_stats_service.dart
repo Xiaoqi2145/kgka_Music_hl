@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -87,24 +88,47 @@ class PlaybackStats {
 /// 提供本地播放统计的记录与查询：每次播放记 +1，每上报一次听歌时长同步累加。
 class PlaybackStatsService {
   static const _key = 'playback_stats';
+  PlaybackStats? _stats;
+  Future<void>? _loadFuture;
+  Timer? _persistTimer;
+  bool _dirty = false;
+
+  Future<void> _ensureLoaded() async {
+    if (_stats != null) return;
+    final pending = _loadFuture;
+    if (pending != null) return pending;
+    final future = _load();
+    _loadFuture = future;
+    try {
+      await future;
+    } finally {
+      _loadFuture = null;
+    }
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+    try {
+      final json = raw == null ? null : jsonDecode(raw);
+      _stats = json is Map<String, dynamic>
+          ? PlaybackStats.fromJson(json)
+          : const PlaybackStats();
+    } catch (_) {
+      _stats = const PlaybackStats();
+    }
+  }
 
   /// 读取当前统计；无数据时返回空的 [PlaybackStats]。
   Future<PlaybackStats> getStats() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_key);
-    if (raw == null) return const PlaybackStats();
-    try {
-      final json = jsonDecode(raw);
-      if (json is Map<String, dynamic>) {
-        return PlaybackStats.fromJson(json);
-      }
-    } catch (_) {}
-    return const PlaybackStats();
+    await _ensureLoaded();
+    return _stats!;
   }
 
   /// 记录一次播放：累加播放次数，统计歌手/歌曲计数。
   Future<void> recordPlay(Song song) async {
-    final stats = await getStats();
+    await _ensureLoaded();
+    final stats = _stats!;
     final artistCount = Map<String, int>.of(stats.artistPlayCount);
     final songCount = Map<String, int>.of(stats.songPlayCount);
 
@@ -120,13 +144,16 @@ class PlaybackStatsService {
       songPlayCount: songCount,
       firstPlayDate: stats.firstPlayDate ?? DateTime.now(),
     );
-    await _save(updated);
+    _stats = updated;
+    _dirty = true;
+    _schedulePersist();
   }
 
   /// 累加听歌时长。
   Future<void> addListenTime(Duration duration) async {
     if (duration <= Duration.zero) return;
-    final stats = await getStats();
+    await _ensureLoaded();
+    final stats = _stats!;
     final updated = PlaybackStats(
       totalPlays: stats.totalPlays,
       totalListenTime: stats.totalListenTime + duration,
@@ -134,11 +161,16 @@ class PlaybackStatsService {
       songPlayCount: stats.songPlayCount,
       firstPlayDate: stats.firstPlayDate,
     );
-    await _save(updated);
+    _stats = updated;
+    _dirty = true;
+    _schedulePersist();
   }
 
   /// 清空统计。
   Future<void> clear() async {
+    _stats = const PlaybackStats();
+    _dirty = false;
+    _persistTimer?.cancel();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_key);
   }
@@ -146,5 +178,19 @@ class PlaybackStatsService {
   Future<void> _save(PlaybackStats stats) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, jsonEncode(stats.toJson()));
+  }
+
+  void _schedulePersist() {
+    _persistTimer?.cancel();
+    _persistTimer = Timer(const Duration(seconds: 5), () => unawaited(flush()));
+  }
+
+  Future<void> flush() async {
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    await _ensureLoaded();
+    if (!_dirty) return;
+    _dirty = false;
+    await _save(_stats!);
   }
 }

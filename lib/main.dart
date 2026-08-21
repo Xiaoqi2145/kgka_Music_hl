@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -112,7 +113,6 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (!_player.desktopLyricsEnabled) return;
     switch (state) {
       case AppLifecycleState.resumed:
         _player.setAppForeground(true);
@@ -121,6 +121,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
         _player.setAppForeground(false);
+        unawaited(_player.flushPersistence());
     }
   }
 
