@@ -1403,18 +1403,13 @@ Map<int, String> _indexedLyricVariants(
   }
 
   final result = <int, String>{};
-  final targetLooksChinese = _variantLooksChinese(variant.byIndex);
   var variantIndex = 0;
 
   for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     if (variantIndex >= variant.byIndex.length) {
       break;
     }
-    if (!_shouldConsumeIndexedVariantLine(
-      lines,
-      lineIndex,
-      targetLooksChinese: targetLooksChinese,
-    )) {
+    if (!_shouldConsumeIndexedVariantLine(lines, lineIndex)) {
       continue;
     }
 
@@ -1429,11 +1424,7 @@ Map<int, String> _indexedLyricVariants(
   return result;
 }
 
-bool _shouldConsumeIndexedVariantLine(
-  List<LyricLine> lines,
-  int index, {
-  required bool targetLooksChinese,
-}) {
+bool _shouldConsumeIndexedVariantLine(List<LyricLine> lines, int index) {
   final text = lines[index].text.trim();
   if (text.isEmpty ||
       _isDecorativeLyricText(text) ||
@@ -1441,9 +1432,6 @@ bool _shouldConsumeIndexedVariantLine(
     return false;
   }
   if (_looksLikeLeadingTitleCredit(lines, index)) {
-    return false;
-  }
-  if (targetLooksChinese && _lineAlreadyLooksChinese(text)) {
     return false;
   }
   return true;
@@ -1472,7 +1460,11 @@ bool _isLyricMetadataText(String text) {
     return false;
   }
 
-  final prefix = normalized.substring(0, colonIndex).trim().toLowerCase();
+  final prefix = normalized
+      .substring(0, colonIndex)
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ');
   if (prefix.isEmpty) {
     return false;
   }
@@ -1538,11 +1530,46 @@ bool _isLyricMetadataText(String text) {
     'guitar',
     'bass',
     'drums',
+    'piano',
+    'strings',
     'keyboard',
+    'keyboards',
+    'percussion',
+    'synth',
+    'synthesizer',
+    'orchestra',
+    'chorus',
+    'programming',
+    'engineer',
+    'engineers',
+    'recording engineer',
+    'recording engineers',
+    'mixing engineer',
+    'mixing engineers',
+    'recording & mixing engineer',
+    'recording & mixing engineers',
+    'recording and mixing engineer',
+    'recording and mixing engineers',
     'publisher',
     'copyright',
   };
-  return prefixes.contains(prefix);
+  if (prefixes.contains(prefix)) {
+    return true;
+  }
+
+  // Some KRC files use compound production credits such as
+  // "Recording&Mixing Engineers" or append a role qualifier.
+  final compactPrefix = prefix.replaceAll(RegExp(r'[\s&+/_-]+'), '');
+  const productionRoleTokens = {
+    'recording',
+    'mixing',
+    'mastering',
+    'engineer',
+    'engineers',
+    'producer',
+    'arranger',
+  };
+  return productionRoleTokens.any(compactPrefix.contains);
 }
 
 bool _isDecorativeLyricText(String text) {
@@ -1556,39 +1583,6 @@ bool _isDecorativeLyricText(String text) {
     }
   }
   return meaningful == 0;
-}
-
-bool _variantLooksChinese(List<String> values) {
-  var han = 0;
-  var otherLetters = 0;
-  for (final value in values.take(12)) {
-    for (final rune in value.runes) {
-      if (_isHanRune(rune)) {
-        han++;
-      } else if (_isKanaRune(rune) ||
-          _isHangulRune(rune) ||
-          _isLatinRune(rune)) {
-        otherLetters++;
-      }
-    }
-  }
-  return han >= 3 && han >= otherLetters;
-}
-
-bool _lineAlreadyLooksChinese(String text) {
-  var han = 0;
-  var kanaOrHangul = 0;
-  var latin = 0;
-  for (final rune in text.runes) {
-    if (_isHanRune(rune)) {
-      han++;
-    } else if (_isKanaRune(rune) || _isHangulRune(rune)) {
-      kanaOrHangul++;
-    } else if (_isLatinRune(rune)) {
-      latin++;
-    }
-  }
-  return han >= 2 && kanaOrHangul == 0 && latin == 0;
 }
 
 bool _sameLyricText(String a, String b) {

@@ -239,8 +239,15 @@ class PlayerController extends ChangeNotifier {
   Future<List<LyricCandidate>> searchLyricCandidates(Song song) =>
       _api.searchLyricCandidates(song);
 
-  Future<bool> selectLyricCandidate(Song song, LyricCandidate candidate) async {
-    final selected = await _api.lyricsFromCandidate(candidate);
+  Future<List<LyricLine>> previewLyricCandidate(LyricCandidate candidate) =>
+      _api.lyricsFromCandidate(candidate);
+
+  Future<bool> selectLyricCandidate(
+    Song song,
+    LyricCandidate candidate, {
+    List<LyricLine>? preview,
+  }) async {
+    final selected = preview ?? await _api.lyricsFromCandidate(candidate);
     if (selected.isEmpty) return false;
     _manualLyricCandidates[song.hash] = candidate;
     final prefs = await SharedPreferences.getInstance();

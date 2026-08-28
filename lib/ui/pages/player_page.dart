@@ -1815,59 +1815,26 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
   }
 
   Future<void> _showLyricCandidates() async {
-    final candidates = await widget.player.searchLyricCandidates(widget.song);
+    List<LyricCandidate> candidates;
+    try {
+      candidates = await widget.player.searchLyricCandidates(widget.song);
+    } catch (_) {
+      if (mounted) Toast.error('歌词搜索失败');
+      return;
+    }
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('选择歌词'),
-        content: SizedBox(
-          width: 420,
-          child: candidates.isEmpty
-              ? const Text('没有找到可用歌词')
-              : ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: candidates.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (_, index) {
-                    final candidate = candidates[index];
-                    return ListTile(
-                      title: Text(candidate.title ?? widget.song.title),
-                      subtitle: Text(
-                        [
-                          candidate.artist ?? widget.song.artist,
-                          if (candidate.album?.isNotEmpty == true)
-                            candidate.album!,
-                        ].join(' · '),
-                      ),
-                      onTap: () async {
-                        final ok = await widget.player.selectLyricCandidate(
-                          widget.song,
-                          candidate,
-                        );
-                        if (!dialogContext.mounted) return;
-                        Navigator.of(dialogContext).pop();
-                        if (!ok && mounted) {
-                          Toast.error('歌词加载失败');
-                        }
-                      },
-                    );
-                  },
-                ),
+    if (candidates.isEmpty) {
+      Toast.info('没有找到可用歌词');
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _LyricCandidatePreviewPage(
+          player: widget.player,
+          song: widget.song,
+          candidates: candidates,
         ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await widget.player.restoreAutomaticLyrics(widget.song);
-              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-            },
-            child: const Text('恢复智能推荐'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-        ],
       ),
     );
   }
@@ -1945,6 +1912,350 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
               onPressed: _showLyricCandidates,
               icon: Icons.manage_search_rounded,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LyricCandidatePreviewPage extends StatefulWidget {
+  const _LyricCandidatePreviewPage({
+    required this.player,
+    required this.song,
+    required this.candidates,
+  });
+
+  final PlayerController player;
+  final Song song;
+  final List<LyricCandidate> candidates;
+
+  @override
+  State<_LyricCandidatePreviewPage> createState() =>
+      _LyricCandidatePreviewPageState();
+}
+
+class _LyricCandidatePreviewPageState
+    extends State<_LyricCandidatePreviewPage> {
+  late final PageController _pageController;
+  final Map<int, Future<List<LyricLine>>> _previews = {};
+  int _pageIndex = 0;
+  bool _applying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final selected = widget.player.manualLyricCandidateFor(widget.song);
+    final initialIndex = selected == null
+        ? 0
+        : widget.candidates.indexWhere(
+            (candidate) =>
+                candidate.id == selected.id &&
+                candidate.accessKey == selected.accessKey,
+          );
+    _pageIndex = initialIndex < 0 ? 0 : initialIndex;
+    _pageController = PageController(initialPage: _pageIndex);
+    _previewFor(_pageIndex);
+    _preloadAdjacent(_pageIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Future<List<LyricLine>> _previewFor(int index) {
+    return _previews.putIfAbsent(
+      index,
+      () => widget.player.previewLyricCandidate(widget.candidates[index]),
+    );
+  }
+
+  void _preloadAdjacent(int index) {
+    for (final adjacent in [index - 1, index + 1]) {
+      if (adjacent >= 0 && adjacent < widget.candidates.length) {
+        _previewFor(adjacent);
+      }
+    }
+  }
+
+  Future<void> _applyCurrent() async {
+    if (_applying) return;
+    setState(() => _applying = true);
+    try {
+      final preview = await _previewFor(_pageIndex);
+      final ok = await widget.player.selectLyricCandidate(
+        widget.song,
+        widget.candidates[_pageIndex],
+        preview: preview,
+      );
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pop();
+      } else {
+        Toast.error('歌词加载失败');
+      }
+    } catch (_) {
+      if (mounted) Toast.error('歌词加载失败');
+    } finally {
+      if (mounted) setState(() => _applying = false);
+    }
+  }
+
+  Future<void> _restoreAutomatic() async {
+    if (_applying) return;
+    setState(() => _applying = true);
+    try {
+      await widget.player.restoreAutomaticLyrics(widget.song);
+      if (mounted) Navigator.of(context).pop();
+    } catch (_) {
+      if (mounted) Toast.error('恢复智能推荐失败');
+    } finally {
+      if (mounted) setState(() => _applying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final candidate = widget.candidates[_pageIndex];
+    final title = candidate.title?.trim().isNotEmpty == true
+        ? candidate.title!.trim()
+        : widget.song.title;
+    final artist = candidate.artist?.trim().isNotEmpty == true
+        ? candidate.artist!.trim()
+        : widget.song.artist;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF181A14),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        titleSpacing: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            Text(
+              '$artist · ${_pageIndex + 1}/${widget.candidates.length}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: .62),
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: '恢复智能推荐',
+            onPressed: _applying ? null : _restoreAutomatic,
+            icon: const Icon(Icons.auto_awesome_rounded),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Opacity(
+              opacity: .16,
+              child: _ArtworkBackground(song: widget.song),
+            ),
+          ),
+          Positioned.fill(
+            child: ColoredBox(color: Colors.black.withValues(alpha: .42)),
+          ),
+          Column(
+            children: [
+              Expanded(
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: widget.candidates.length,
+                  onPageChanged: (index) {
+                    setState(() => _pageIndex = index);
+                    _preloadAdjacent(index);
+                  },
+                  itemBuilder: (context, index) =>
+                      FutureBuilder<List<LyricLine>>(
+                        future: _previewFor(index),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState !=
+                              ConnectionState.done) {
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                              ),
+                            );
+                          }
+                          if (snapshot.hasError) {
+                            return _LyricPreviewError(
+                              onRetry: () {
+                                setState(() {
+                                  _previews.remove(index);
+                                  _previewFor(index);
+                                });
+                              },
+                            );
+                          }
+                          final lines = snapshot.data ?? const <LyricLine>[];
+                          if (lines.isEmpty) {
+                            return const Center(
+                              child: Text(
+                                '这份歌词没有可预览内容',
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                            );
+                          }
+                          return _CandidateLyricPreview(
+                            player: widget.player,
+                            lines: lines,
+                          );
+                        },
+                      ),
+                ),
+              ),
+              SafeArea(
+                top: false,
+                minimum: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.swipe_rounded,
+                      size: 20,
+                      color: Colors.white.withValues(alpha: .58),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '左右滑动切换歌词',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: .58),
+                      ),
+                    ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: _applying ? null : _applyCurrent,
+                      icon: _applying
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.check_rounded),
+                      label: const Text('使用此歌词'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CandidateLyricPreview extends StatelessWidget {
+  const _CandidateLyricPreview({required this.player, required this.lines});
+
+  final PlayerController player;
+  final List<LyricLine> lines;
+
+  int _activeIndex(Duration position) {
+    var low = 0;
+    var high = lines.length - 1;
+    var result = 0;
+    while (low <= high) {
+      final middle = (low + high) >> 1;
+      if (position >= lines[middle].time) {
+        result = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return result;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: player,
+      builder: (context, _) {
+        final active = _activeIndex(player.smoothPosition);
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(28, 44, 28, 96),
+          itemCount: lines.length,
+          itemBuilder: (context, index) {
+            final line = lines[index];
+            final isActive = index == active;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 180),
+                opacity: isActive ? 1 : .52,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text(
+                      line.text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isActive ? 24 : 20,
+                        height: 1.35,
+                        fontWeight: isActive
+                            ? FontWeight.w800
+                            : FontWeight.w500,
+                      ),
+                    ),
+                    if (line.translation?.trim().isNotEmpty == true) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        line.translation!.trim(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: .78),
+                          fontSize: isActive ? 17 : 15,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _LyricPreviewError extends StatelessWidget {
+  const _LyricPreviewError({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Colors.white70),
+          const SizedBox(height: 12),
+          const Text('歌词预览加载失败', style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('重试'),
           ),
         ],
       ),
