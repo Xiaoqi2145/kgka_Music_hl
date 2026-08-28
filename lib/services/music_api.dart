@@ -813,20 +813,6 @@ class MusicApi {
     return krc.isNotEmpty ? krc : _lyricByFormat(map, 'lrc');
   }
 
-  Future<Map<String, dynamic>?> _searchLyricCandidate(Song song) async {
-    final query = {'hash': song.hash};
-    _debugLyricLogObject('search query', query);
-    final searchJson = await _client.get('/search/lyric', query);
-    _debugLyricLogObject('search response', searchJson);
-
-    final candidate = _findLyricCandidate(searchJson);
-    if (candidate != null) {
-      _debugLyricLog('search found candidate by hash');
-      return candidate;
-    }
-    return null;
-  }
-
   Future<List<LyricLine>> _lyricByFormat(
     Map<String, dynamic> candidate,
     String format,
@@ -891,56 +877,6 @@ class MusicApi {
     _debugLyricLog('$format lyric parsed lines=${best.length}');
     return best;
   }
-
-  Map<String, dynamic>? _findLyricCandidate(Object? value) {
-    final root = asMap(value);
-    final direct = _asLyricCandidate(root);
-    if (direct != null) {
-      return direct;
-    }
-
-    final candidates = [
-      root['candidates'],
-      root['candidate'],
-      root['list'],
-      root['lyrics'],
-      root['items'],
-      root['info'],
-      root['data'],
-    ];
-
-    for (final candidate in candidates) {
-      if (candidate is List && candidate.isNotEmpty) {
-        for (final item in candidate) {
-          final found = _findLyricCandidate(item);
-          if (found != null) {
-            return found;
-          }
-        }
-      }
-      if (candidate is Map) {
-        final found = _findLyricCandidate(candidate);
-        if (found != null) {
-          return found;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  Map<String, dynamic>? _asLyricCandidate(Map<String, dynamic> value) {
-    final hasId =
-        asString(value['id']) != null ||
-        asString(value['lyrics_id']) != null ||
-        asString(value['lyric_id']) != null ||
-        asString(value['lyricid']) != null;
-    final hasAccessKey =
-        asString(value['accesskey']) != null ||
-        asString(value['access_key']) != null ||
-        asString(value['accessKey']) != null;
-    return hasId && hasAccessKey ? value : null;
-  }
 }
 
 List<PlaylistSummary> _orderUserPlaylistsForDisplay(
@@ -968,12 +904,40 @@ List<LyricLine> parseLyrics(String? content, {String? translationContent}) {
   if (parsed.isEmpty) {
     return const [];
   }
+  // 水印署名行（如 "以下歌词翻译由文曲大模型提供"）不是歌词内容，
+  // 直接从主歌词移除，避免显示并挤占翻译对齐位。
+  final lyricLines = _removeLyricAttributionLines(parsed);
 
   final variants = _parseLyricVariants(
     translationContent: translationContent,
     originalContent: normalized,
   );
-  return _mergeLyricVariants(parsed, variants);
+  return _mergeLyricVariants(lyricLines, variants);
+}
+
+/// LLM/翻译工具在歌词或翻译轨道开头插入的水印署名行，
+/// 如 "以下歌词翻译由文曲大模型提供"、"翻译由文曲大模型生成"。
+final _lyricAttributionPattern = RegExp(
+  '('
+  r'^(以下|下述|本).*(翻译|译文|音译|罗马音|罗马字|拼音)'
+  r'|(歌词)?(翻译|译文|音译|罗马音|罗马字|拼音)(内容)?(由|来自).{1,32}'
+  r'(提供|生成|完成|输出|制作)[。.!！?？]?\s*$'
+  ')',
+);
+
+bool _isLyricAttributionText(String text) {
+  final normalized = text.trim();
+  return normalized.isNotEmpty && _lyricAttributionPattern.hasMatch(normalized);
+}
+
+List<LyricLine> _removeLyricAttributionLines(List<LyricLine> lines) {
+  if (!lines.any((line) => _isLyricAttributionText(line.text))) {
+    return lines;
+  }
+  return [
+    for (final line in lines)
+      if (!_isLyricAttributionText(line.text)) line,
+  ];
 }
 
 List<LyricLine> _parseKrc(String content) {
@@ -1372,6 +1336,13 @@ List<LyricLine> _mergeLyricVariants(
   final merged = <LyricLine>[];
   for (var index = 0; index < lines.length; index++) {
     final line = lines[index];
+    // 元数据行（词曲/制作署名等）只展示原文，不参与翻译/音译对齐，
+    // 否则与首句时间相近的署名会错误挂上首句翻译。
+    if (_isLyricMetadataText(line.text) ||
+        _looksLikeLeadingTitleCredit(lines, index)) {
+      merged.add(line);
+      continue;
+    }
     merged.add(
       line.copyWith(
         translation:
@@ -1453,10 +1424,50 @@ bool _looksLikeLeadingTitleCredit(List<LyricLine> lines, int index) {
       .any((line) => _isLyricMetadataText(line.text));
 }
 
+/// 署名前缀中常见繁体/日文汉字到简体的映射，
+/// 使 "作詞"（繁体/日文）与 "作词"（简体）命中同一词表。
+const _creditPrefixSimplified = {
+  '詞': '词',
+  '編': '编',
+  '製': '制',
+  '發': '发',
+  '劃': '划',
+  '監': '监',
+  '統': '统',
+  '籌': '筹',
+  '權': '权',
+  '錄': '录',
+  '師': '师',
+  '帶': '带',
+  '聲': '声',
+  '貝': '贝',
+  '鍵': '键',
+  '盤': '盘',
+  '樂': '乐',
+  '藝': '艺',
+};
+
+String _simplifyCreditPrefix(String prefix) {
+  final buffer = StringBuffer();
+  for (final rune in prefix.runes) {
+    if (rune <= 0xFFFF) {
+      final char = String.fromCharCode(rune);
+      buffer.write(_creditPrefixSimplified[char] ?? char);
+    } else {
+      buffer.writeCharCode(rune);
+    }
+  }
+  return buffer.toString();
+}
+
 bool _isLyricMetadataText(String text) {
   final normalized = text.trim();
+  if (_isLyricAttributionText(normalized)) {
+    return true;
+  }
   final colonIndex = normalized.indexOf(RegExp(r'[:：]'));
-  if (colonIndex < 0 || colonIndex > 24) {
+  // 40 覆盖最长的英文复合署名前缀（如 "recording and mixing engineers"）。
+  if (colonIndex < 0 || colonIndex > 40) {
     return false;
   }
 
@@ -1468,16 +1479,24 @@ bool _isLyricMetadataText(String text) {
   if (prefix.isEmpty) {
     return false;
   }
+  final simplifiedPrefix = _simplifyCreditPrefix(prefix);
 
   const prefixes = {
     '词',
     '曲',
     '作词',
+    '填词',
     '作曲',
     '词曲',
     '编曲',
     '演唱',
     '歌手',
+    '翻译',
+    '译文',
+    '音译',
+    '罗马音',
+    '罗马字',
+    '拼音',
     '艺人',
     '原唱',
     '翻唱',
@@ -1499,13 +1518,19 @@ bool _isLyricMetadataText(String text) {
     '母带师',
     '母带室',
     '和声',
+    '和声编写',
+    '和声编配',
     '配唱',
     '吉他',
     '贝斯',
     '鼓',
     '键盘',
     '弦乐',
+    '乐器独奏',
+    '演奏',
+    '录制',
     '人声',
+    '助理',
     'op',
     'sp',
     'cp',
@@ -1513,6 +1538,8 @@ bool _isLyricMetadataText(String text) {
     'upc',
     'vocal',
     'vocals',
+    'translation',
+    'translated by',
     'lyric',
     'lyrics',
     'lyricist',
@@ -1553,13 +1580,24 @@ bool _isLyricMetadataText(String text) {
     'publisher',
     'copyright',
   };
-  if (prefixes.contains(prefix)) {
+  if (prefixes.contains(simplifiedPrefix)) {
+    return true;
+  }
+
+  // 复合/双语署名前缀，如 "词 Lyricist"、"作词/作曲"：
+  // 空格、斜杠或 & 分隔的每一段都是已知署名词时视为元数据。
+  final segments = simplifiedPrefix
+      .split(RegExp(r'[\s/&+]+'))
+      .where((segment) => segment.isNotEmpty)
+      .toList();
+  if (segments.length > 1 && segments.every(prefixes.contains)) {
     return true;
   }
 
   // Some KRC files use compound production credits such as
-  // "Recording&Mixing Engineers" or append a role qualifier.
-  final compactPrefix = prefix.replaceAll(RegExp(r'[\s&+/_-]+'), '');
+  // "Recording&Mixing Engineers" or bilingual forms such as
+  // "和声编写 Voicing Arrangement" / "出品 Produced by".
+  final compactPrefix = simplifiedPrefix.replaceAll(RegExp(r'[\s&+/_-]+'), '');
   const productionRoleTokens = {
     'recording',
     'mixing',
@@ -1567,7 +1605,20 @@ bool _isLyricMetadataText(String text) {
     'engineer',
     'engineers',
     'producer',
+    'produced',
     'arranger',
+    'arrangement',
+    'instrument',
+    'supervisor',
+    'assistant',
+    'recorded',
+    'translated',
+    'editing',
+    'written',
+    'director',
+    'executive',
+    'coordinator',
+    'planning',
   };
   return productionRoleTokens.any(compactPrefix.contains);
 }

@@ -750,6 +750,16 @@ class _LandscapeHeader extends StatelessWidget {
           subtitle: player.audioEffectsLabel,
           onTap: () => showAudioEffectsSheet(context: context, player: player),
         ),
+        SongSheetAction(
+          icon: Icons.manage_search_rounded,
+          title: '更换歌词',
+          subtitle: '搜索并选择其他歌词版本',
+          onTap: () => showLyricCandidatePicker(
+            context: context,
+            player: player,
+            song: song,
+          ),
+        ),
         if (song.source == SongSource.kugou)
           SongSheetAction(
             icon: Icons.playlist_add_rounded,
@@ -777,12 +787,9 @@ class _LandscapeHeader extends StatelessWidget {
                 : Icons.lyrics_outlined,
             title: '桌面歌词',
             subtitle: player.desktopLyricsEnabled ? '已开启' : '已关闭',
-            onTap: () async {
-              Navigator.of(context).pop();
-              await player.setDesktopLyricsEnabled(
-                !player.desktopLyricsEnabled,
-              );
-            },
+            onTap: () => player.setDesktopLyricsEnabled(
+              !player.desktopLyricsEnabled,
+            ),
           ),
           if (player.desktopLyricsEnabled)
             SongSheetAction(
@@ -1323,12 +1330,9 @@ class _TopBar extends StatelessWidget {
                 : Icons.lyrics_outlined,
             title: '桌面歌词',
             isGrid: true,
-            onTap: () async {
-              Navigator.of(context).pop();
-              await player.setDesktopLyricsEnabled(
-                !player.desktopLyricsEnabled,
-              );
-            },
+            onTap: () => player.setDesktopLyricsEnabled(
+              !player.desktopLyricsEnabled,
+            ),
           ),
           if (player.desktopLyricsEnabled)
             SongSheetAction(
@@ -1815,27 +1819,10 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
   }
 
   Future<void> _showLyricCandidates() async {
-    List<LyricCandidate> candidates;
-    try {
-      candidates = await widget.player.searchLyricCandidates(widget.song);
-    } catch (_) {
-      if (mounted) Toast.error('歌词搜索失败');
-      return;
-    }
-    if (!mounted) return;
-    if (candidates.isEmpty) {
-      Toast.info('没有找到可用歌词');
-      return;
-    }
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => _LyricCandidatePreviewPage(
-          player: widget.player,
-          song: widget.song,
-          candidates: candidates,
-        ),
-      ),
+    await showLyricCandidatePicker(
+      context: context,
+      player: widget.player,
+      song: widget.song,
     );
   }
 
@@ -1917,6 +1904,36 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
       ),
     );
   }
+}
+
+/// 搜索并打开歌词候选选择页（竖屏歌词页按钮与横屏"更多"面板共用入口）。
+Future<void> showLyricCandidatePicker({
+  required BuildContext context,
+  required PlayerController player,
+  required Song song,
+}) async {
+  List<LyricCandidate> candidates;
+  try {
+    candidates = await player.searchLyricCandidates(song);
+  } catch (_) {
+    Toast.error('歌词搜索失败');
+    return;
+  }
+  if (candidates.isEmpty) {
+    Toast.info('没有找到可用歌词');
+    return;
+  }
+  if (!context.mounted) return;
+  await Navigator.of(context).push<void>(
+    MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => _LyricCandidatePreviewPage(
+        player: player,
+        song: song,
+        candidates: candidates,
+      ),
+    ),
+  );
 }
 
 class _LyricCandidatePreviewPage extends StatefulWidget {

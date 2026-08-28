@@ -385,6 +385,29 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> playSong(Song song, {List<Song>? queue}) async {
+    // 点击当前正在播放的歌曲：保持播放进度，仅同步队列上下文并继续播放。
+    final current = currentSong;
+    if (current != null &&
+        errorMessage == null &&
+        _songKey(song) == _songKey(current)) {
+      if (queue != null && queue.isNotEmpty && !listEquals(queue, this.queue)) {
+        this.queue = queue;
+        _queueRevision++;
+        _queueExpansionFuture = null;
+        await _audioHandler.setSongQueue(
+          queueSongs: this.queue,
+          queueIndex: currentIndex,
+          currentSong: current,
+        );
+        notifyListeners();
+      }
+      if (audioPlayer.processingState == ProcessingState.completed) {
+        _completedSongHash = null;
+        await _audioHandler.seek(Duration.zero);
+      }
+      await _audioHandler.play();
+      return;
+    }
     _cancelPendingPlaybackCache();
     _completionFallbackTimer?.cancel();
     _completedSongHash = null;
@@ -872,7 +895,8 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> loadLyrics(Song song, {bool force = false}) async {
     final cache = cacheService;
-    final cacheKey = 'cache_lyric_${song.hash}';
+    // v4：新增 LLM 翻译水印行过滤后与旧缓存不兼容，升版使旧缓存失效。
+    final cacheKey = 'cache_lyric_v4_${song.hash}';
 
     if (song.source == SongSource.local) {
       try {
@@ -1006,6 +1030,13 @@ class PlayerController extends ChangeNotifier {
   Future<void> next() async {
     final nextSong = await _nextSong();
     if (nextSong == null) return;
+    // 队列只有当前一首歌时，"下一曲"语义为从头重播而不是保持进度。
+    final current = currentSong;
+    if (current != null && _songKey(nextSong) == _songKey(current)) {
+      await seek(Duration.zero);
+      await _audioHandler.play();
+      return;
+    }
     await playSong(nextSong, queue: queue);
   }
 

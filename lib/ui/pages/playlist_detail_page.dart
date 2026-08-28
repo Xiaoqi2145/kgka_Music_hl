@@ -309,27 +309,6 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  /// 确保播放队列包含完整歌单内容。
-  ///
-  /// 当歌单因分页仅加载前 N 首时，对比播放队列与歌单总歌曲数量。
-  /// 若不一致则自动获取完整歌单数据（优先读缓存），保障播放队列完整。
-  /// 搜索模式下仅返回过滤后的结果。
-  Future<List<Song>> _ensureFullQueueForPlayback() async {
-    // 搜索模式下仅播放搜索结果
-    if (_searchQuery.isNotEmpty) {
-      return _filteredSongs;
-    }
-    // 已加载全部或总数未知，直接返回当前列表
-    final totalCount = _currentPlaylist.songCount;
-    if (_allSongsLoaded || totalCount == null || _songs.length >= totalCount) {
-      return _filteredSongs;
-    }
-    // 队列数量与歌单总数不一致，需要加载完整歌单
-    Toast.info('正在加载完整歌单…');
-    await _loadAllSongs();
-    return _filteredSongs;
-  }
-
   List<Song> _queueForImmediatePlayback([Song? selected]) {
     final songs = _filteredSongs;
     if (songs.isEmpty) return const [];
@@ -930,22 +909,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           : null,
                     ),
                   ),
-                  if (_isLoadingAllSongs)
-                    const SliverToBoxAdapter(
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(vertical: 40),
-                        child: Center(
-                          child: Column(
-                            children: [
-                              CircularProgressIndicator(strokeWidth: 2.4),
-                              SizedBox(height: 12),
-                              Text('正在加载全部歌曲…'),
-                            ],
-                          ),
-                        ),
-                      ),
-                    )
-                  else if (_searchQuery.isNotEmpty && _filteredSongs.isEmpty)
+                  // 后台补拉完整歌单期间保留列表，仅由 footer 呈现加载态，
+                  // 避免整个列表被指示器替换导致滚动位置被重置回开头。
+                  if (_searchQuery.isNotEmpty && _filteredSongs.isEmpty)
                     const SliverToBoxAdapter(child: _SearchEmpty())
                   else ...[
                     SliverPadding(
@@ -981,7 +947,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       SliverToBoxAdapter(
                         child: _LoadMoreFooter(
                           hasMore: _hasMore,
-                          isLoading: _isLoadingMore,
+                          isLoading: _isLoadingMore || _isLoadingAllSongs,
+                          loadingLabel: _isLoadingAllSongs
+                              ? '正在加载全部歌曲…'
+                              : null,
                           errorMessage: _loadMoreError,
                           onRetry: _loadMore,
                         ),
@@ -1357,12 +1326,14 @@ class _LoadMoreFooter extends StatelessWidget {
     required this.isLoading,
     required this.errorMessage,
     required this.onRetry,
+    this.loadingLabel,
   });
 
   final bool hasMore;
   final bool isLoading;
   final String? errorMessage;
   final VoidCallback onRetry;
+  final String? loadingLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -1382,12 +1353,27 @@ class _LoadMoreFooter extends StatelessWidget {
     }
 
     if (isLoading) {
-      return const Padding(
-        padding: EdgeInsets.fromLTRB(18, 14, 18, 118),
+      final label = loadingLabel;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 118),
         child: Center(
-          child: SizedBox.square(
-            dimension: 22,
-            child: CircularProgressIndicator(strokeWidth: 2.4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox.square(
+                dimension: 22,
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              ),
+              if (label != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       );
