@@ -904,9 +904,9 @@ List<LyricLine> parseLyrics(String? content, {String? translationContent}) {
   if (parsed.isEmpty) {
     return const [];
   }
-  // 水印署名行（如 "以下歌词翻译由文曲大模型提供"）不是歌词内容，
-  // 直接从主歌词移除，避免显示并挤占翻译对齐位。
-  final lyricLines = _removeLyricAttributionLines(parsed);
+  // 署名/水印/标题卡等非歌词行不删除——删除会使主歌词与翻译轨的行号错开。
+  // 打上 hidden 标记保留原位，由 UI 层隐藏，行号与翻译轨保持一一对应。
+  final lyricLines = _markHiddenLyricLines(parsed);
 
   final variants = _parseLyricVariants(
     translationContent: translationContent,
@@ -930,13 +930,14 @@ bool _isLyricAttributionText(String text) {
   return normalized.isNotEmpty && _lyricAttributionPattern.hasMatch(normalized);
 }
 
-List<LyricLine> _removeLyricAttributionLines(List<LyricLine> lines) {
-  if (!lines.any((line) => _isLyricAttributionText(line.text))) {
-    return lines;
-  }
+List<LyricLine> _markHiddenLyricLines(List<LyricLine> lines) {
   return [
-    for (final line in lines)
-      if (!_isLyricAttributionText(line.text)) line,
+    for (var index = 0; index < lines.length; index++)
+      if (_isLyricMetadataText(lines[index].text) ||
+          _looksLikeLeadingTitleCredit(lines, index))
+        lines[index].copyWith(hidden: true)
+      else
+        lines[index],
   ];
 }
 
@@ -1172,20 +1173,16 @@ _ParsedLyricVariants _parseKrcLanguageVariants(String content) {
     final cleanedRomanizationByTime = _removeLyricMetadataFromTimedMap(
       romanizationByTime,
     );
-    final cleanedTranslationByIndex = _removeLyricMetadataLinesFromTexts(
-      translationByIndex,
-    );
-    final cleanedRomanizationByIndex = _removeLyricMetadataLinesFromTexts(
-      romanizationByIndex,
-    );
+    // 按行号对齐的翻译行不做任何过滤：每行主歌词（含标题卡/署名行）在
+    // 翻译轨里都有自己的一行（未翻译为空串占位），过滤会使行号错位。
     return _ParsedLyricVariants(
       translation: _TimedLyricVariant(
         byTime: cleanedTranslationByTime,
-        byIndex: cleanedTranslationByIndex,
+        byIndex: translationByIndex,
       ),
       romanization: _TimedLyricVariant(
         byTime: cleanedRomanizationByTime,
-        byIndex: cleanedRomanizationByIndex,
+        byIndex: romanizationByIndex,
       ),
     );
   } catch (_) {
@@ -1202,28 +1199,6 @@ List<LyricLine> _removeLyricMetadataLines(List<LyricLine> lines) {
           !_looksLikeLeadingTitleCredit(lines, index))
         lines[index],
   ];
-}
-
-List<String> _removeLyricMetadataLinesFromTexts(List<String> texts) {
-  return [
-    for (var index = 0; index < texts.length; index++)
-      if (!_isLyricMetadataText(texts[index]) &&
-          !_looksLikeLeadingTitleCreditText(texts, index))
-        texts[index],
-  ];
-}
-
-bool _looksLikeLeadingTitleCreditText(List<String> lines, int index) {
-  if (index > 2) {
-    return false;
-  }
-  final text = lines[index];
-  final looksLikeTitle =
-      RegExp(r'\s[-–—]\s').hasMatch(text) || text.contains('/');
-  if (!looksLikeTitle) {
-    return false;
-  }
-  return lines.skip(index + 1).take(6).any(_isLyricMetadataText);
 }
 
 Map<int, String> _removeLyricMetadataFromTimedMap(Map<int, String> values) {
@@ -1264,9 +1239,6 @@ void _collectKrcLanguageRows(
       if (parsedRow == null) {
         continue;
       }
-      if (_isLyricMetadataText(parsedRow.text)) {
-        continue;
-      }
 
       final byTime = sectionType == 0 ? romanizationByTime : translationByTime;
       final byIndex = sectionType == 0
@@ -1274,8 +1246,13 @@ void _collectKrcLanguageRows(
           : translationByIndex;
 
       if (parsedRow.time != null) {
-        byTime[parsedRow.time!] = parsedRow.text;
+        // 时间轨按时间对齐，空行没有意义，跳过以免遮蔽同时间的翻译。
+        if (parsedRow.text.isNotEmpty) {
+          byTime[parsedRow.time!] = parsedRow.text;
+        }
       } else {
+        // 行号轨不过滤：署名/标题卡行与未翻译的空串行都占一个行位，
+        // 丢弃会使后续行整体错位。
         byIndex.add(parsedRow.text);
       }
     }
@@ -1304,14 +1281,16 @@ void _collectKrcLanguageRows(
 
   final time = row.length > 1 ? asInt(row[0]) : null;
   final values = row.map(asString).whereType<String>().toList();
-  if (values.isEmpty) {
-    return null;
+  if (time == null && values.isEmpty) {
+    // 整行都是空串/空白：未翻译的占位行，保留空文本占住行号位。
+    return (time: null, text: '');
   }
 
   final text = time != null && row.length > 1
       ? asString(row[1])
       : (sectionType == 0 ? values.join('') : values.join(' ').trim());
-  if (text == null || text.isEmpty) {
+  // 空文本行是合法的占位行（未翻译的署名/标题卡行位），不能丢弃。
+  if (text == null) {
     return null;
   }
   return (time: time, text: text);
@@ -1336,10 +1315,9 @@ List<LyricLine> _mergeLyricVariants(
   final merged = <LyricLine>[];
   for (var index = 0; index < lines.length; index++) {
     final line = lines[index];
-    // 元数据行（词曲/制作署名等）只展示原文，不参与翻译/音译对齐，
-    // 否则与首句时间相近的署名会错误挂上首句翻译。
-    if (_isLyricMetadataText(line.text) ||
-        _looksLikeLeadingTitleCredit(lines, index)) {
+    // 署名/标题卡/水印等隐藏行不挂翻译/音译：它们与首句时间相近，
+    // 时间匹配会错误挂上首句翻译；锁定对齐时它们照常消耗自己的行位。
+    if (line.hidden) {
       merged.add(line);
       continue;
     }
@@ -1373,39 +1351,28 @@ Map<int, String> _indexedLyricVariants(
     return const {};
   }
 
+  // 按行号与主歌词锁定对齐：KRC language 轨的每一行主歌词（含标题卡/
+  // 署名行）都有自己的一行，未翻译的行是空串占位。隐藏行照常消耗行位，
+  // 保持后续行对齐。唯一例外是 LLM 插在翻译轨顶部的水印行——它没有
+  // 对应的歌词槽位，配到非隐藏行时直接丢弃。
   final result = <int, String>{};
-  var variantIndex = 0;
-
-  for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    if (variantIndex >= variant.byIndex.length) {
-      break;
-    }
-    if (!_shouldConsumeIndexedVariantLine(lines, lineIndex)) {
+  var lineIndex = 0;
+  var rowCursor = 0;
+  while (lineIndex < lines.length && rowCursor < variant.byIndex.length) {
+    final rowText = variant.byIndex[rowCursor].trim();
+    if (_isLyricAttributionText(rowText) && !lines[lineIndex].hidden) {
+      rowCursor++;
       continue;
     }
-
-    final text = variant.byIndex[variantIndex].trim();
-    variantIndex++;
-    if (text.isEmpty || _sameLyricText(lines[lineIndex].text, text)) {
-      continue;
+    rowCursor++;
+    final line = lines[lineIndex];
+    if (rowText.isNotEmpty && !_sameLyricText(line.text, rowText)) {
+      result[lineIndex] = rowText;
     }
-    result[lineIndex] = text;
+    lineIndex++;
   }
 
   return result;
-}
-
-bool _shouldConsumeIndexedVariantLine(List<LyricLine> lines, int index) {
-  final text = lines[index].text.trim();
-  if (text.isEmpty ||
-      _isDecorativeLyricText(text) ||
-      _isLyricMetadataText(text)) {
-    return false;
-  }
-  if (_looksLikeLeadingTitleCredit(lines, index)) {
-    return false;
-  }
-  return true;
 }
 
 bool _looksLikeLeadingTitleCredit(List<LyricLine> lines, int index) {
@@ -1413,6 +1380,9 @@ bool _looksLikeLeadingTitleCredit(List<LyricLine> lines, int index) {
     return false;
   }
   final text = lines[index].text;
+  if (_isTitleCardText(text) && _hasTitleCardTiming(lines, index)) {
+    return true;
+  }
   final looksLikeTitle =
       RegExp(r'\s[-–—]\s').hasMatch(text) || text.contains('/');
   if (!looksLikeTitle) {
@@ -1422,6 +1392,57 @@ bool _looksLikeLeadingTitleCredit(List<LyricLine> lines, int index) {
       .skip(index + 1)
       .take(6)
       .any((line) => _isLyricMetadataText(line.text));
+}
+
+/// 形如 "歌名 - 歌手" / "歌手-歌名" 的标题卡文本：
+/// 只有一个分隔符、两侧非空、无句末标点且整体较短。
+/// 部分歌词的标题卡后面没有任何署名行，此时只能靠文本与时序特征识别。
+final _titleCardSpacedSeparator = RegExp(r'\s[-–—]\s');
+final _titleCardMixedScriptSeparator = RegExp(
+  '[A-Za-z0-9][-–—][\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF]'
+  '|[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF][-–—][A-Za-z0-9]',
+);
+
+bool _isTitleCardText(String text) {
+  final normalized = text.trim();
+  if (normalized.isEmpty || normalized.length > 60) {
+    return false;
+  }
+  if (RegExp(r'[。．.!！?？,，、;；~～]+$').hasMatch(normalized)) {
+    return false;
+  }
+  final spaced = _titleCardSpacedSeparator.allMatches(normalized).toList();
+  if (spaced.length == 1) {
+    final left = normalized.substring(0, spaced.first.start).trim();
+    final right = normalized.substring(spaced.first.end).trim();
+    return left.isNotEmpty && right.isNotEmpty;
+  }
+  if (spaced.isNotEmpty) {
+    return false;
+  }
+  // 无空格连字符仅在两侧脚本不同时视为标题（如 "Ending Note-門谷純"）。
+  return RegExp(r'[-–—]').allMatches(normalized).length == 1 &&
+      _titleCardMixedScriptSeparator.hasMatch(normalized);
+}
+
+/// 标题卡通常出现在歌曲开头并横跨前奏：起点在 10 秒内，
+/// 且自身时长或与下一行的时间间隔达到 8 秒。
+/// 时序证据用来排除 "Wow - oh" 这类含连字符的真实歌词首行。
+bool _hasTitleCardTiming(List<LyricLine> lines, int index) {
+  final line = lines[index];
+  final start = line.time.inMilliseconds;
+  if (start > 10000) {
+    return false;
+  }
+  final duration = line.duration?.inMilliseconds ?? 0;
+  if (duration >= 8000) {
+    return true;
+  }
+  if (index + 1 >= lines.length) {
+    return false;
+  }
+  final gap = lines[index + 1].time.inMilliseconds - (start + duration);
+  return gap >= 8000;
 }
 
 /// 署名前缀中常见繁体/日文汉字到简体的映射，
@@ -1621,19 +1642,6 @@ bool _isLyricMetadataText(String text) {
     'planning',
   };
   return productionRoleTokens.any(compactPrefix.contains);
-}
-
-bool _isDecorativeLyricText(String text) {
-  var meaningful = 0;
-  for (final rune in text.runes) {
-    if (_isHanRune(rune) ||
-        _isKanaRune(rune) ||
-        _isHangulRune(rune) ||
-        _isLatinRune(rune)) {
-      meaningful++;
-    }
-  }
-  return meaningful == 0;
 }
 
 bool _sameLyricText(String a, String b) {

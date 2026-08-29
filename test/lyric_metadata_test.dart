@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 
 void main() {
@@ -167,15 +168,132 @@ void main() {
       expect(lines[1].translation, '第二句翻译');
     });
 
-    test('LLM attribution watermark in main lyrics is removed', () {
+    test('watermark line in main lyrics is kept but hidden', () {
       final lines = parseLyrics('''
 [00:00.00]以下歌词翻译由文曲大模型提供
 [00:00.00]この星では私の歌声
 [00:10.00]次の行の歌詞
 ''');
 
-      expect(lines.length, 2);
-      expect(lines.first.text, 'この星では私の歌声');
+      expect(lines.length, 3, reason: '不删行，保持与翻译轨行号对齐');
+      expect(lines[0].text, '以下歌词翻译由文曲大模型提供');
+      expect(lines[0].hidden, isTrue);
+      expect(lines[1].text, 'この星では私の歌声');
+      expect(lines[1].hidden, isFalse);
+      expect(lines[2].text, '次の行の歌詞');
+    });
+
+    test('leading title card never consumes the first indexed translation',
+        () {
+      final language = {
+        'type': 1,
+        'lyricContent': [
+          ['以下歌词翻译由文曲大模型提供'],
+          ['末班车即将发车的站台上 两人  '],
+          ['分饮着同一杯咖啡  '],
+        ],
+      };
+      final encoded = base64Encode(utf8.encode(jsonEncode(language)));
+      final content = '''
+[language:$encoded]
+[614,27446]<0,192,0>Ending <192,184,0>Note - <376,360,0>門<736,460,0>谷<1196,460,0>純
+[28060,6104]<0,664,0>終<664,992,0>電<1656,320,0>間<1976,832,0>際
+[34164,6649]<0,400,0>一<400,344,0>つ<744,376,0>の
+''';
+
+      final lines = parseLyrics(content);
+
+      expect(lines.length, 3);
+      expect(lines[0].text, 'Ending Note - 門谷純');
+      expect(lines[0].hidden, isTrue, reason: '标题卡打 hidden 标记');
+      expect(lines[0].translation, isNull, reason: '标题卡不应挂首句翻译');
+      expect(lines[1].text, '終電間際');
+      expect(lines[1].hidden, isFalse);
+      expect(lines[1].translation, '末班车即将发车的站台上 两人');
+      expect(lines[2].translation, '分饮着同一杯咖啡');
+    });
+
+    test('empty translation rows occupy title/credit line slots', () {
+      // 远航星的告别：标题卡+12 行署名在翻译轨里各有一行空串占位，
+      // 真正的歌词从第 13 行开始 1:1 对齐。
+      final language = {
+        'type': 1,
+        'lyricContent': [
+          [''],
+          [''],
+          ['那片雪花曾落在我的鼻尖'],
+          ['那些孤独路上的追光者'],
+        ],
+      };
+      final encoded = base64Encode(utf8.encode(jsonEncode(language)));
+      final content = '''
+[language:$encoded]
+[0,3000]<0,1500,0>远航星的告别 - 鸣潮先约电台
+[100,2000]<0,1000,0>词 Lyricist：Xulai
+[5000,3000]<0,1500,0>That snowflake once fell on my nose
+[8000,3000]<0,1500,0>Those who trace starlight on their lonely roads
+''';
+
+      final lines = parseLyrics(content);
+
+      expect(lines.length, 4);
+      expect(lines[0].hidden, isTrue, reason: '标题卡');
+      expect(lines[1].hidden, isTrue, reason: '署名行');
+      expect(lines[2].hidden, isFalse);
+      expect(lines[2].translation, '那片雪花曾落在我的鼻尖');
+      expect(lines[3].translation, '那些孤独路上的追光者');
+    });
+
+    test('watermark row pairs with hidden main line instead of shifting', () {
+      // 水印同时出现在主歌词与翻译轨顶部时，两处隐藏行互相配对，
+      // 真正的歌词保持对齐。
+      final language = {
+        'type': 1,
+        'lyricContent': [
+          ['以下歌词翻译由文曲大模型提供'],
+          ['第一句翻译'],
+          ['第二句翻译'],
+        ],
+      };
+      final encoded = base64Encode(utf8.encode(jsonEncode(language)));
+      final content = '''
+[language:$encoded]
+[0,2000]以下歌词翻译由文曲大模型提供
+[2000,2000]この星では私の歌声
+[4000,2000]次の行の歌詞
+''';
+
+      final lines = parseLyrics(content);
+
+      expect(lines.length, 3);
+      expect(lines[0].hidden, isTrue);
+      expect(lines[0].translation, isNull);
+      expect(lines[1].text, 'この星では私の歌声');
+      expect(lines[1].translation, '第一句翻译');
+      expect(lines[2].translation, '第二句翻译');
+    });
+
+    test('short hyphenated first lyric line still consumes its translation',
+        () {
+      final language = {
+        'type': 1,
+        'lyricContent': [
+          ['哇哦'],
+          ['下一句'],
+        ],
+      };
+      final encoded = base64Encode(utf8.encode(jsonEncode(language)));
+      final content = '''
+[language:$encoded]
+[0,3000]<0,1500,0>Wow - <1500,1500,0>oh
+[3000,3000]next line
+''';
+
+      final lines = parseLyrics(content);
+
+      expect(lines[0].text, 'Wow - oh');
+      expect(lines[0].translation, '哇哦');
+      expect(lines[1].translation, '下一句');
     });
 
     test('colon-form attribution prefixes are detected as metadata', () {
@@ -190,6 +308,19 @@ void main() {
       expect(credit.translation, isNull);
       final first = lines.firstWhere((line) => line.text == '第一句歌词');
       expect(first.translation, 'First line translated');
+    });
+
+    test('hidden flag survives cache round-trip', () {
+      const hiddenLine = LyricLine(
+        time: Duration.zero,
+        text: '作词：X',
+        hidden: true,
+      );
+      final restoredHidden = LyricLine.fromCache(hiddenLine.toCache());
+      expect(restoredHidden.hidden, isTrue);
+
+      const visibleLine = LyricLine(time: Duration.zero, text: '歌詞');
+      expect(LyricLine.fromCache(visibleLine.toCache()).hidden, isFalse);
     });
   });
 }

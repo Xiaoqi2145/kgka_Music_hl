@@ -234,6 +234,11 @@ class PlayerController extends ChangeNotifier {
   LyricCandidate? manualLyricCandidateFor(Song song) =>
       _manualLyricCandidates[song.hash];
 
+  /// hidden 行（署名/水印/标题卡）不进入播放与展示链路：
+  /// 解析层的翻译对齐已完成，展示层直接跳过这些行。
+  static List<LyricLine> _visibleLyrics(List<LyricLine> lines) =>
+      lines.where((line) => !line.hidden).toList(growable: false);
+
   int get queueRevision => _queueRevision;
 
   Future<List<LyricCandidate>> searchLyricCandidates(Song song) =>
@@ -259,7 +264,7 @@ class PlayerController extends ChangeNotifier {
       }),
     );
     if (currentSong?.hash == song.hash) {
-      lyrics = selected;
+      lyrics = _visibleLyrics(selected);
       notifyListeners();
       _syncDesktopLyrics();
     }
@@ -895,8 +900,8 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> loadLyrics(Song song, {bool force = false}) async {
     final cache = cacheService;
-    // v4：新增 LLM 翻译水印行过滤后与旧缓存不兼容，升版使旧缓存失效。
-    final cacheKey = 'cache_lyric_v4_${song.hash}';
+    // v6：hidden 行改为保留在解析结果中、展示层过滤，旧缓存无 hidden 标记。
+    final cacheKey = 'cache_lyric_v6_${song.hash}';
 
     if (song.source == SongSource.local) {
       try {
@@ -913,7 +918,7 @@ class PlayerController extends ChangeNotifier {
           } catch (_) {
             content = utf8.decode(bytes, allowMalformed: true);
           }
-          final lines = parseLyrics(content);
+          final lines = _visibleLyrics(parseLyrics(content));
           if (currentSong?.hash == song.hash) {
             lyrics = lines;
             notifyListeners();
@@ -943,10 +948,13 @@ class PlayerController extends ChangeNotifier {
               .toList(),
           ttl: const Duration(days: 30),
         );
+        final cachedVisible = cached == null
+            ? const <LyricLine>[]
+            : _visibleLyrics(cached.data);
         if (cached != null &&
-            !listEquals(lyrics, cached.data) &&
+            !listEquals(lyrics, cachedVisible) &&
             currentSong?.hash == song.hash) {
-          lyrics = cached.data;
+          lyrics = cachedVisible;
           notifyListeners();
           _syncDesktopLyrics();
         }
@@ -960,11 +968,12 @@ class PlayerController extends ChangeNotifier {
           ? await _api.lyricsFromCandidate(manual)
           : await _api.lyrics(song);
       if (currentSong?.hash != song.hash) return; // 已切歌，丢弃
-      if (!listEquals(lyrics, fresh)) {
-        lyrics = fresh;
+      final freshVisible = _visibleLyrics(fresh);
+      if (!listEquals(lyrics, freshVisible)) {
+        lyrics = freshVisible;
         notifyListeners();
       }
-      // 写缓存（空歌词也缓存，避免重复请求）
+      // 写缓存（缓存完整解析结果含 hidden 行，空歌词也缓存，避免重复请求）
       if (cache != null) {
         unawaited(
           cache.write(cacheKey, {

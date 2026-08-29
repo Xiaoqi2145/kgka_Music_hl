@@ -1189,6 +1189,7 @@ class LyricLine {
     this.translation,
     this.romanization,
     this.words = const [],
+    this.hidden = false,
   });
 
   final Duration time;
@@ -1198,7 +1199,15 @@ class LyricLine {
   final String? romanization;
   final List<LyricWord> words;
 
-  LyricLine copyWith({String? translation, String? romanization}) {
+  /// 署名/水印/标题卡等非歌词行：保留在列表中以维持与翻译轨的行号对齐，
+  /// 由 UI 层隐藏，不参与歌词展示。
+  final bool hidden;
+
+  LyricLine copyWith({
+    String? translation,
+    String? romanization,
+    bool? hidden,
+  }) {
     return LyricLine(
       time: time,
       text: text,
@@ -1206,6 +1215,7 @@ class LyricLine {
       translation: translation ?? this.translation,
       romanization: romanization ?? this.romanization,
       words: words,
+      hidden: hidden ?? this.hidden,
     );
   }
 
@@ -1232,6 +1242,7 @@ class LyricLine {
     'translation': translation,
     'romanization': romanization,
     'words': words.map((w) => w.toCache()).toList(),
+    if (hidden) 'hidden': true,
   };
 
   factory LyricLine.fromCache(Map<String, dynamic> json) {
@@ -1245,6 +1256,7 @@ class LyricLine {
           .whereType<Map>()
           .map((w) => LyricWord.fromCache(asMap(w)))
           .toList(),
+      hidden: json['hidden'] == true,
     );
   }
 }
