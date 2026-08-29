@@ -78,7 +78,7 @@ class AudioInterruptionSettingsPage extends StatelessWidget {
                         ),
                         title: const Text('阻止后台打断'),
                         subtitle: const Text(
-                          '其他 App 播放音频时不会暂停当前音乐',
+                          '被其他 App 抢占焦点后自动抢回（来电等系统级打断除外）',
                         ),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 14,

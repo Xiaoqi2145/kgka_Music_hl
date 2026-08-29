@@ -13,7 +13,11 @@ class MusicAudioHandler extends BaseAudioHandler
         .pipe(playbackState);
   }
 
-  final AudioPlayer audioPlayer = AudioPlayer();
+  // 关闭 just_audio 内置打断处理：其暂停/恢复/降音音量策略与
+  // PlayerController 的打断设置（阻止打断/自动恢复）相互冲突，
+  // 改由控制器在 interruptionEventStream 中统一实现完整策略。
+  // 焦点申请不受影响（handleAudioSessionActivation 默认开启，play 时照常请求）。
+  final AudioPlayer audioPlayer = AudioPlayer(handleInterruptions: false);
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;

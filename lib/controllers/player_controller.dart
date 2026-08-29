@@ -161,6 +161,9 @@ class PlayerController extends ChangeNotifier {
   late final StreamSubscription<int?> _androidAudioSessionSub;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSub;
   StreamSubscription<void>? _becomingNoisySub;
+  /// 打断开始时是否正在播放：恢复播放只针对被系统打断的情况，
+  /// 用户手动暂停后再被打断（其他 App 抢焦点）不自动恢复。
+  bool _wasPlayingOnInterruptionBegin = false;
   StreamSubscription<AudioDevicesChangedEvent>? _devicesChangedSub;
   final Stopwatch _positionClock = Stopwatch();
   final _random = math.Random();
@@ -1197,43 +1200,46 @@ class PlayerController extends ChangeNotifier {
     try {
       final session = await AudioSession.instance;
       await session.configure(_audioSessionConfiguration);
+      // just_audio 内置打断处理已关闭（handleInterruptions: false），
+      // 暂停/恢复策略由本监听统一实现：
+      // - begin(duck)：系统仅压低音量，忽略；
+      // - begin(pause/unknown)：记录打断时是否在播放并暂停；
+      //   阻止打断模式则不暂停，立即重新请求焦点抢回，
+      //   请求被拒（来电等系统级打断）时让位暂停；
+      // - end(pause/unknown)：焦点已随 GAIN 归还，立即恢复播放，
+      //   仅当打断时在播放且（自动恢复开启或阻止打断模式）；
+      // - 拔耳机（becomingNoisy）：固定暂停，不自动恢复，避免扬声器外放。
       _interruptionSub = session.interruptionEventStream.listen((event) {
+        if (event.type == AudioInterruptionType.duck) {
+          return;
+        }
         if (event.begin) {
-          // 打断开始：系统可能已自动暂停播放器。
-          // 若开启了"阻止打断"，立即恢复播放以对抗暂停。
-          if (!audioInterruptionEnabled && isPlaying && currentSong != null) {
-            _autoResumeTimer?.cancel();
-            _autoResumeTimer = Timer(const Duration(milliseconds: 300), () {
-              if (!isPlaying && currentSong != null) {
-                unawaited(_audioHandler.play());
-              }
-            });
+          _wasPlayingOnInterruptionBegin = isPlaying;
+          if (!_wasPlayingOnInterruptionBegin || currentSong == null) {
+            return;
+          }
+          if (!audioInterruptionEnabled) {
+            unawaited(_reclaimAudioFocus());
+          } else {
+            unawaited(_audioHandler.pause());
           }
         } else {
-          // 打断结束：若开启了"自动恢复"或"阻止打断"，恢复播放。
-          if ((autoResumeAfterInterruption || (!audioInterruptionEnabled)) &&
-              currentSong != null) {
-            _autoResumeTimer?.cancel();
-            _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
-              if (!isPlaying && currentSong != null) {
-                unawaited(_audioHandler.play());
-              }
-            });
+          final shouldResume = _wasPlayingOnInterruptionBegin &&
+              (autoResumeAfterInterruption || !audioInterruptionEnabled);
+          _wasPlayingOnInterruptionBegin = false;
+          if (!shouldResume || currentSong == null) {
+            return;
+          }
+          if (!isPlaying && !isPreparing) {
+            unawaited(_audioHandler.play());
           }
         }
       });
       _becomingNoisySub = session.becomingNoisyEventStream.listen((_) {
-        if (!audioInterruptionEnabled) {
-          // 阻止打断模式下忽略耳机拔出
-          return;
-        }
-        if (autoResumeAfterInterruption && currentSong != null) {
-          _autoResumeTimer?.cancel();
-          _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
-            if (!isPlaying && currentSong != null) {
-              unawaited(_audioHandler.play());
-            }
-          });
+        _autoResumeTimer?.cancel();
+        _wasPlayingOnInterruptionBegin = false;
+        if (isPlaying) {
+          unawaited(_audioHandler.pause());
         }
       });
       _devicesChangedSub = session.devicesChangedEventStream.listen((event) {
@@ -1250,6 +1256,20 @@ class PlayerController extends ChangeNotifier {
           }
         });
       });
+    } catch (_) {
+      // AudioSession not available on this platform
+    }
+  }
+
+  /// 阻止打断模式：焦点被抢后立即重新请求，成功则播放全程不中断；
+  /// 被拒（来电等系统级打断）时让位暂停，结束后由 end 事件恢复。
+  Future<void> _reclaimAudioFocus() async {
+    try {
+      final session = await AudioSession.instance;
+      final granted = await session.setActive(true);
+      if (!granted && isPlaying) {
+        await _audioHandler.pause();
+      }
     } catch (_) {
       // AudioSession not available on this platform
     }
@@ -1277,9 +1297,9 @@ class PlayerController extends ChangeNotifier {
 
   /// 根据打断设置生成 AudioSessionConfiguration。
   ///
-  /// 阻止打断时使用 [AndroidAudioFocusGainType.gain] 并禁用 androidWillPauseWhenDucked，
-  /// 向系统声明不希望被其他 App 打断。同时配合 interruptionEventStream 中的
-  /// 主动恢复播放作为双保险。
+  /// 两种模式都不声明 willPauseWhenDucked（导航播报等降音打断不暂停，
+  /// 由系统压低音量、结束后自动还原，app 侧不介入音量）。
+  /// 暂停/恢复策略全部由 [_setupAudioSessionListeners] 实现。
   AudioSessionConfiguration get _audioSessionConfiguration {
     if (audioInterruptionEnabled) {
       return const AudioSessionConfiguration.music();
