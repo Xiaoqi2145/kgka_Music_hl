@@ -447,6 +447,9 @@ class PlayerController extends ChangeNotifier {
     _lastDesktopLyricIndex = -1;
     notifyListeners();
     unawaited(_syncDesktopLyricsVisibility());
+    // 切歌即开始加载歌词（缓存命中立即显示，未命中走网络），
+    // 与音源解析并行进行，不等音频就绪。
+    unawaited(loadLyrics(song));
 
     try {
       String? networkUrl;
@@ -478,7 +481,6 @@ class PlayerController extends ChangeNotifier {
       }
       isPreparing = false;
       notifyListeners();
-      unawaited(loadLyrics(song));
       await _audioHandler.play();
       _scheduleSessionPersist();
       // 切歌后应用音量均衡
