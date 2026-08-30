@@ -125,6 +125,15 @@ class SettingsPage extends StatelessWidget {
                       ),
                       _SettingsDivider(),
                       _SettingsSwitchTile(
+                        icon: Icons.restore_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '接续播放',
+                        subtitle: '重新打开应用时恢复上次的歌曲和播放列表',
+                        value: player.resumePlaybackEnabled,
+                        onChanged: player.setResumePlaybackEnabled,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
                         icon: Icons.volume_up_rounded,
                         iconColor: colorScheme.primary,
                         title: '音量均衡',

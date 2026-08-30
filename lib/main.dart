@@ -93,6 +93,8 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _player = PlayerController(_api, widget.audioHandler)
       ..downloadController = _downloads
       ..cacheService = _cacheService;
+    // 接续上次退出时的播放会话（队列 + 当前歌曲 + 进度，不自动播放）。
+    unawaited(_player.restorePlaybackSession());
     _theme = widget.themeController;
     _auth.restore();
     _downloads.initialize();

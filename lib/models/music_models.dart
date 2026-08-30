@@ -713,9 +713,11 @@ class Song {
         .map((a) => {'id': a.id, 'name': a.name, 'avatarUrl': a.avatarUrl})
         .toList(),
     if (isCloudDrive) 'isCloudDrive': true,
+    if (source != SongSource.kugou) 'source': source.name,
   };
 
   factory Song.fromCache(Map<String, dynamic> json) {
+    final sourceName = asString(json['source']);
     return Song(
       id: asString(json['id']) ?? '',
       title: asString(json['title']) ?? '未知歌曲',
@@ -738,6 +740,8 @@ class Song {
           .where((artist) => artist.name.isNotEmpty)
           .toList(),
       isCloudDrive: json['isCloudDrive'] == true,
+      source:
+          SongSource.values.asNameMap()[sourceName] ?? SongSource.kugou,
     );
   }
 }

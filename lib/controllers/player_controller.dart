@@ -166,6 +166,16 @@ class PlayerController extends ChangeNotifier {
   bool _wasPlayingOnInterruptionBegin = false;
   StreamSubscription<AudioDevicesChangedEvent>? _devicesChangedSub;
   final Stopwatch _positionClock = Stopwatch();
+
+  // ===== 播放会话持久化（接续播放） =====
+  // 只记录队列与当前歌曲，不保存播放进度：会话仅在切歌/换队列/切模式时
+  // 写入一次（脏标记防重复），显著降低磁盘 IO 与功耗。
+  static const _playbackSessionCacheKey = 'cache_playback_session';
+  static const _resumePlaybackSettingKey = 'settings.resume_playback_enabled';
+  bool resumePlaybackEnabled = true;
+  bool _playbackSessionRestored = false;
+  bool _playbackSessionDirty = false;
+  Timer? _sessionSaveTimer;
   final _random = math.Random();
   Timer? _completionFallbackTimer;
   Timer? _playCacheDelayTimer;
@@ -373,6 +383,7 @@ class PlayerController extends ChangeNotifier {
       PlaybackMode.shuffle => PlaybackMode.singleLoop,
       PlaybackMode.singleLoop => PlaybackMode.playlistLoop,
     };
+    _scheduleSessionPersist();
     notifyListeners();
     return playbackMode;
   }
@@ -394,9 +405,11 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> playSong(Song song, {List<Song>? queue}) async {
     // 点击当前正在播放的歌曲：保持播放进度，仅同步队列上下文并继续播放。
+    // 恢复会话后音源尚未加载（idle），走完整加载路径以消费接续进度。
     final current = currentSong;
     if (current != null &&
         errorMessage == null &&
+        audioPlayer.processingState != ProcessingState.idle &&
         _songKey(song) == _songKey(current)) {
       if (queue != null && queue.isNotEmpty && !listEquals(queue, this.queue)) {
         this.queue = queue;
@@ -414,6 +427,7 @@ class PlayerController extends ChangeNotifier {
         await _audioHandler.seek(Duration.zero);
       }
       await _audioHandler.play();
+      _scheduleSessionPersist();
       return;
     }
     _cancelPendingPlaybackCache();
@@ -466,6 +480,7 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
       unawaited(loadLyrics(song));
       await _audioHandler.play();
+      _scheduleSessionPersist();
       // 切歌后应用音量均衡
       await _applyVolumeNormalization();
       // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
@@ -762,6 +777,100 @@ class PlayerController extends ChangeNotifier {
 
   String _songKey(Song song) => song.hash.isNotEmpty ? song.hash : song.id;
 
+  // ===== 播放会话持久化 =====
+
+  /// 防抖保存播放会话（队列 + 当前歌曲 + 播放模式，不含进度）。
+  void _scheduleSessionPersist() {
+    if (!resumePlaybackEnabled || currentSong == null) return;
+    _playbackSessionDirty = true;
+    _sessionSaveTimer?.cancel();
+    _sessionSaveTimer = Timer(const Duration(milliseconds: 800), () {
+      unawaited(_persistPlaybackSession());
+    });
+  }
+
+  Future<void> _persistPlaybackSession() async {
+    // 脏标记：会话内容未变化时不写盘，避免切后台等场景产生无谓 IO。
+    if (!_playbackSessionDirty) return;
+    final song = currentSong;
+    final cache = cacheService;
+    if (song == null || cache == null || !resumePlaybackEnabled) return;
+    final songs = queue.isEmpty ? <Song>[song] : queue;
+    var index = songs.indexWhere((item) => _songKey(item) == _songKey(song));
+    if (index < 0) index = 0;
+    try {
+      await cache.write(_playbackSessionCacheKey, {
+        'queue': songs.map((item) => item.toCache()).toList(),
+        'currentIndex': index,
+        'playbackMode': playbackMode.name,
+      });
+      _playbackSessionDirty = false;
+    } catch (_) {}
+  }
+
+  /// 恢复上次退出时的播放会话：队列、当前歌曲与播放模式。
+  /// 不自动播放，用户点击播放后从头播放当前歌曲。
+  Future<void> restorePlaybackSession() async {
+    if (_playbackSessionRestored || currentSong != null) return;
+    _playbackSessionRestored = true;
+    try {
+      // 直接读偏好，避免与 _restoreSettings 的异步加载产生先后竞争。
+      final prefs = await SharedPreferences.getInstance();
+      if (!(prefs.getBool(_resumePlaybackSettingKey) ?? true)) return;
+      final cache = cacheService;
+      if (cache == null) return;
+      final cached = await cache.read<Map<String, dynamic>>(
+        _playbackSessionCacheKey,
+        decode: (json) => json,
+        ttl: const Duration(days: 3650),
+      );
+      final payload = cached?.data;
+      if (payload == null) return;
+      final songs = asList(payload['queue'])
+          .whereType<Map<String, dynamic>>()
+          .map(Song.fromCache)
+          .toList();
+      if (songs.isEmpty) return;
+      final index = (asInt(payload['currentIndex']) ?? 0)
+          .clamp(0, songs.length - 1)
+          .toInt();
+      final song = songs[index];
+      queue = songs;
+      currentSong = song;
+      playbackMode = PlaybackMode.values.firstWhere(
+        (mode) => mode.name == payload['playbackMode'],
+        orElse: () => PlaybackMode.playlistLoop,
+      );
+      // 同步通知栏队列与媒体元数据；processingState 仍为 idle，
+      // audio_service 不会因此显示通知或开始播放。
+      await _audioHandler.setSongQueue(
+        queueSongs: queue,
+        queueIndex: index,
+        currentSong: song,
+      );
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> setResumePlaybackEnabled(bool enabled) async {
+    if (resumePlaybackEnabled == enabled) return;
+    resumePlaybackEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_resumePlaybackSettingKey, enabled);
+    if (!enabled) {
+      _sessionSaveTimer?.cancel();
+      _playbackSessionDirty = false;
+      // 清除已保存的会话，避免之后重新开启时恢复到很旧的状态。
+      final cache = cacheService;
+      if (cache != null) {
+        try {
+          await cache.remove(_playbackSessionCacheKey);
+        } catch (_) {}
+      }
+    }
+    notifyListeners();
+  }
+
   Future<void> setAudioQuality(
     AudioQuality quality, {
     bool reloadCurrent = false,
@@ -998,12 +1107,18 @@ class PlayerController extends ChangeNotifier {
   Future<void> togglePlay() async {
     if (audioPlayer.playing) {
       await _audioHandler.pause();
-    } else {
-      if (audioPlayer.processingState == ProcessingState.completed) {
-        await _audioHandler.seek(Duration.zero);
-      }
-      await _audioHandler.play();
+      return;
     }
+    // 接续播放恢复的歌曲尚未加载音源：走完整 playSong 从头播放。
+    if (audioPlayer.processingState == ProcessingState.idle &&
+        currentSong != null) {
+      await playSong(currentSong!);
+      return;
+    }
+    if (audioPlayer.processingState == ProcessingState.completed) {
+      await _audioHandler.seek(Duration.zero);
+    }
+    await _audioHandler.play();
   }
 
   void previewSeek(Duration position) {
@@ -1526,6 +1641,8 @@ class PlayerController extends ChangeNotifier {
       _historyService.flush(),
       _statsService.flush(),
       if (downloadController case final downloads?) downloads.flush(),
+      // 退出/切后台时立即落盘播放会话。
+      _persistPlaybackSession(),
     ]);
   }
 
@@ -1746,6 +1863,8 @@ class PlayerController extends ChangeNotifier {
     autoPlayOnDeviceConnected =
         prefs.getBool(_autoPlayOnDeviceConnectedSettingKey) ??
         autoPlayOnDeviceConnected;
+    resumePlaybackEnabled =
+        prefs.getBool(_resumePlaybackSettingKey) ?? resumePlaybackEnabled;
     playbackSpeed = prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
     desktopLyricsEnabled =
         prefs.getBool(_desktopLyricsEnabledSettingKey) ?? desktopLyricsEnabled;
@@ -1979,6 +2098,7 @@ class PlayerController extends ChangeNotifier {
     _pauseListeningTimeTracker();
     _cancelPendingPlaybackCache();
     _autoResumeTimer?.cancel();
+    _sessionSaveTimer?.cancel();
     _sleepTimer?.cancel();
     _positionSub.cancel();
     _durationSub.cancel();
