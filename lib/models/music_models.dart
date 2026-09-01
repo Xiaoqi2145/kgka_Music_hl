@@ -740,8 +740,7 @@ class Song {
           .where((artist) => artist.name.isNotEmpty)
           .toList(),
       isCloudDrive: json['isCloudDrive'] == true,
-      source:
-          SongSource.values.asNameMap()[sourceName] ?? SongSource.kugou,
+      source: SongSource.values.asNameMap()[sourceName] ?? SongSource.kugou,
     );
   }
 }
@@ -1194,6 +1193,7 @@ class LyricLine {
     this.romanization,
     this.words = const [],
     this.hidden = false,
+    this.titleCard = false,
   });
 
   final Duration time;
@@ -1207,10 +1207,14 @@ class LyricLine {
   /// 由 UI 层隐藏，不参与歌词展示。
   final bool hidden;
 
+  /// 歌名/歌手标题卡需要显示，但仍占用翻译轨的原始行位。
+  final bool titleCard;
+
   LyricLine copyWith({
     String? translation,
     String? romanization,
     bool? hidden,
+    bool? titleCard,
   }) {
     return LyricLine(
       time: time,
@@ -1220,6 +1224,7 @@ class LyricLine {
       romanization: romanization ?? this.romanization,
       words: words,
       hidden: hidden ?? this.hidden,
+      titleCard: titleCard ?? this.titleCard,
     );
   }
 
@@ -1247,6 +1252,7 @@ class LyricLine {
     'romanization': romanization,
     'words': words.map((w) => w.toCache()).toList(),
     if (hidden) 'hidden': true,
+    if (titleCard) 'titleCard': true,
   };
 
   factory LyricLine.fromCache(Map<String, dynamic> json) {
@@ -1261,6 +1267,7 @@ class LyricLine {
           .map((w) => LyricWord.fromCache(asMap(w)))
           .toList(),
       hidden: json['hidden'] == true,
+      titleCard: json['titleCard'] == true,
     );
   }
 }

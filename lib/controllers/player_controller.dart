@@ -203,6 +203,7 @@ class PlayerController extends ChangeNotifier {
   late final StreamSubscription<int?> _androidAudioSessionSub;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSub;
   StreamSubscription<void>? _becomingNoisySub;
+
   /// 打断开始时是否正在播放：恢复播放只针对被系统打断的情况，
   /// 用户手动暂停后再被打断（其他 App 抢焦点）不自动恢复。
   bool _wasPlayingOnInterruptionBegin = false;
@@ -225,8 +226,10 @@ class PlayerController extends ChangeNotifier {
   _PreparedNextSource? _preparedNext;
   bool _preparingNextSource = false;
   int _prepareNextSerial = 0;
+
   /// 预解析失败后的冷却期，避免在 30 秒窗口内每个 position 刻度都重试。
   DateTime _prepareNextCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// 播放器播放列表（ConcatenatingAudioSource）的镜像：
   /// 与 audioPlayer.currentIndex 一一对应，用于无缝过渡与窗口维护。
   List<Song> _playlistSongs = const [];
@@ -301,14 +304,16 @@ class PlayerController extends ChangeNotifier {
   int _queueRevision = 0;
   Future<void>? _queueExpansionFuture;
   final Map<String, LyricCandidate> _manualLyricCandidates = {};
+  int _lyricsLoadGeneration = 0;
 
   LyricCandidate? manualLyricCandidateFor(Song song) =>
       _manualLyricCandidates[song.hash];
 
-  /// hidden 行（署名/水印/标题卡）不进入播放与展示链路：
-  /// 解析层的翻译对齐已完成，展示层直接跳过这些行。
-  static List<LyricLine> _visibleLyrics(List<LyricLine> lines) =>
-      lines.where((line) => !line.hidden).toList(growable: false);
+  /// 署名/水印隐藏，歌名/歌手标题卡保留展示；二者都保留在解析结果中
+  /// 以维持翻译轨的原始行号对齐。
+  static List<LyricLine> _visibleLyrics(List<LyricLine> lines) => lines
+      .where((line) => !line.hidden || line.titleCard)
+      .toList(growable: false);
 
   int get queueRevision => _queueRevision;
 
@@ -323,7 +328,13 @@ class PlayerController extends ChangeNotifier {
     LyricCandidate candidate, {
     List<LyricLine>? preview,
   }) async {
+    // 手动选择优先于任何尚未返回的自动歌词请求。
+    final requestGeneration = ++_lyricsLoadGeneration;
     final selected = preview ?? await _api.lyricsFromCandidate(candidate);
+    if (requestGeneration != _lyricsLoadGeneration ||
+        currentSong?.hash != song.hash) {
+      return false;
+    }
     if (selected.isEmpty) return false;
     _manualLyricCandidates[song.hash] = candidate;
     final prefs = await SharedPreferences.getInstance();
@@ -334,7 +345,8 @@ class PlayerController extends ChangeNotifier {
           entry.key: entry.value.toJson(),
       }),
     );
-    if (currentSong?.hash == song.hash) {
+    if (requestGeneration == _lyricsLoadGeneration &&
+        currentSong?.hash == song.hash) {
       lyrics = _visibleLyrics(selected);
       notifyListeners();
       _syncDesktopLyrics();
@@ -343,6 +355,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> restoreAutomaticLyrics(Song song) async {
+    // 立即使正在进行的自动请求失效，避免它在偏好写入期间回填旧结果。
+    ++_lyricsLoadGeneration;
     _manualLyricCandidates.remove(song.hash);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
@@ -897,11 +911,7 @@ class PlayerController extends ChangeNotifier {
     _playlistUrls = _playlistUrls.sublist(0, current + 1);
     for (var index = current + 1; index <= current + 1; index++) {
       // 每次只可能有一个预载子源；从尾部移除避免下标漂移。
-      unawaited(
-        _audioHandler
-            .removePlaylistEntryAt(index)
-            .catchError((_) {}),
-      );
+      unawaited(_audioHandler.removePlaylistEntryAt(index).catchError((_) {}));
     }
   }
 
@@ -1124,10 +1134,9 @@ class PlayerController extends ChangeNotifier {
       );
       final payload = cached?.data;
       if (payload == null) return;
-      final songs = asList(payload['queue'])
-          .whereType<Map<String, dynamic>>()
-          .map(Song.fromCache)
-          .toList();
+      final songs = asList(
+        payload['queue'],
+      ).whereType<Map<String, dynamic>>().map(Song.fromCache).toList();
       if (songs.isEmpty) return;
       final index = (asInt(payload['currentIndex']) ?? 0)
           .clamp(0, songs.length - 1)
@@ -1323,10 +1332,13 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> loadLyrics(Song song, {bool force = false}) async {
+    final requestGeneration = ++_lyricsLoadGeneration;
+    bool isCurrentRequest() =>
+        requestGeneration == _lyricsLoadGeneration &&
+        currentSong?.hash == song.hash;
     final cache = cacheService;
-    // v7：制作信息行与 KRC language 空占位按原始行号对齐，
-    // 避免继续使用旧解析规则生成的错位缓存。
-    final cacheKey = 'cache_lyric_v7_${song.hash}';
+    // v8：除制作信息外，标题卡也保留展示标记；旧缓存无法恢复该标记。
+    final cacheKey = 'cache_lyric_v8_${song.hash}';
 
     if (song.source == SongSource.local) {
       try {
@@ -1344,7 +1356,7 @@ class PlayerController extends ChangeNotifier {
             content = utf8.decode(bytes, allowMalformed: true);
           }
           final lines = _visibleLyrics(parseLyrics(content));
-          if (currentSong?.hash == song.hash) {
+          if (isCurrentRequest()) {
             lyrics = lines;
             notifyListeners();
             _syncDesktopLyrics();
@@ -1354,7 +1366,7 @@ class PlayerController extends ChangeNotifier {
       } catch (e) {
         debugPrint('Failed to load local lyrics: $e');
       }
-      if (currentSong?.hash == song.hash) {
+      if (isCurrentRequest()) {
         lyrics = const [];
         notifyListeners();
         _syncDesktopLyrics();
@@ -1378,7 +1390,7 @@ class PlayerController extends ChangeNotifier {
             : _visibleLyrics(cached.data);
         if (cached != null &&
             !listEquals(lyrics, cachedVisible) &&
-            currentSong?.hash == song.hash) {
+            isCurrentRequest()) {
           lyrics = cachedVisible;
           notifyListeners();
           _syncDesktopLyrics();
@@ -1392,7 +1404,7 @@ class PlayerController extends ChangeNotifier {
       final fresh = manual != null
           ? await _api.lyricsFromCandidate(manual)
           : await _api.lyrics(song);
-      if (currentSong?.hash != song.hash) return; // 已切歌，丢弃
+      if (!isCurrentRequest()) return; // 已切歌或已有更新请求，丢弃
       final freshVisible = _visibleLyrics(fresh);
       if (!listEquals(lyrics, freshVisible)) {
         lyrics = freshVisible;
@@ -1407,12 +1419,12 @@ class PlayerController extends ChangeNotifier {
         );
       }
     } catch (_) {
-      if (currentSong?.hash == song.hash && lyrics.isEmpty) {
+      if (isCurrentRequest() && lyrics.isEmpty) {
         lyrics = const [];
         notifyListeners();
       }
     }
-    if (currentSong?.hash == song.hash) {
+    if (isCurrentRequest()) {
       _syncDesktopLyrics();
     }
   }
@@ -1670,7 +1682,8 @@ class PlayerController extends ChangeNotifier {
             unawaited(_audioHandler.pause());
           }
         } else {
-          final shouldResume = _wasPlayingOnInterruptionBegin &&
+          final shouldResume =
+              _wasPlayingOnInterruptionBegin &&
               (autoResumeAfterInterruption || !audioInterruptionEnabled);
           _wasPlayingOnInterruptionBegin = false;
           if (!shouldResume || currentSong == null) {

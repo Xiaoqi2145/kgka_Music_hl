@@ -933,8 +933,9 @@ bool _isLyricAttributionText(String text) {
 List<LyricLine> _markHiddenLyricLines(List<LyricLine> lines) {
   return [
     for (var index = 0; index < lines.length; index++)
-      if (_isLyricMetadataText(lines[index].text) ||
-          _looksLikeLeadingTitleCredit(lines, index))
+      if (_looksLikeLeadingTitleCredit(lines, index))
+        lines[index].copyWith(hidden: true, titleCard: true)
+      else if (_isLyricMetadataText(lines[index].text))
         lines[index].copyWith(hidden: true)
       else
         lines[index],

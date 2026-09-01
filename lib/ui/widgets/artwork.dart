@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
-class Artwork extends StatelessWidget {
+import '../../services/artwork_cache_service.dart';
+
+class Artwork extends StatefulWidget {
   const Artwork({
     super.key,
     this.url,
@@ -15,29 +19,63 @@ class Artwork extends StatelessWidget {
   final IconData icon;
 
   @override
+  State<Artwork> createState() => _ArtworkState();
+}
+
+class _ArtworkState extends State<Artwork> {
+  File? _cachedFile;
+  String? _loadedUrl;
+  bool _cacheResolved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load(widget.url);
+  }
+
+  @override
+  void didUpdateWidget(covariant Artwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _cachedFile = null;
+      _loadedUrl = null;
+      _cacheResolved = false;
+      _load(widget.url);
+    }
+  }
+
+  Future<void> _load(String? url) async {
+    if (url == null || url.isEmpty) return;
+    final file = await ArtworkCacheService.instance.load(url);
+    if (!mounted || widget.url != url) return;
+    setState(() {
+      _cachedFile = file;
+      _loadedUrl = url;
+      _cacheResolved = true;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final imageUrl = url;
-    final child = imageUrl == null
-        ? _Fallback(icon: icon)
-        : Image.network(
-            imageUrl,
+    final imageUrl = widget.url;
+    final file = _loadedUrl == imageUrl ? _cachedFile : null;
+    final child = imageUrl == null || imageUrl.isEmpty
+        ? _Fallback(icon: widget.icon)
+        : !_cacheResolved || _loadedUrl != imageUrl
+        ? _ShimmerBox(size: widget.size, borderRadius: widget.borderRadius)
+        : file != null
+        ? Image.file(
+            file,
             fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) => _Fallback(icon: icon),
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) {
-                return child;
-              }
-              return _ShimmerBox(
-                size: size,
-                borderRadius: borderRadius,
-              );
-            },
-          );
+            errorBuilder: (context, error, stackTrace) =>
+                _Fallback(icon: widget.icon),
+          )
+        : _Fallback(icon: widget.icon);
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
-      child: size.isFinite
-          ? SizedBox.square(dimension: size, child: child)
+      borderRadius: BorderRadius.circular(widget.borderRadius),
+      child: widget.size.isFinite
+          ? SizedBox.square(dimension: widget.size, child: child)
           : SizedBox.expand(child: child),
     );
   }

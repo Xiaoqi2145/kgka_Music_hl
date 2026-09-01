@@ -227,6 +227,7 @@ void main() {
       expect(lines.length, 3);
       expect(lines[0].text, 'Ending Note - 門谷純');
       expect(lines[0].hidden, isTrue, reason: '标题卡打 hidden 标记');
+      expect(lines[0].titleCard, isTrue, reason: '标题卡应保留到展示层');
       expect(lines[0].translation, isNull, reason: '标题卡不应挂首句翻译');
       expect(lines[1].text, '終電間際');
       expect(lines[1].hidden, isFalse);
