@@ -134,6 +134,15 @@ class SettingsPage extends StatelessWidget {
                       ),
                       _SettingsDivider(),
                       _SettingsSwitchTile(
+                        icon: Icons.bolt_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '无缝播放',
+                        subtitle: '提前载入下一首歌曲的播放地址，减少切歌等待',
+                        value: player.gaplessPlaybackEnabled,
+                        onChanged: player.setGaplessPlaybackEnabled,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
                         icon: Icons.volume_up_rounded,
                         iconColor: colorScheme.primary,
                         title: '音量均衡',
