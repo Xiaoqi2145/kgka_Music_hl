@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'artwork_cache_service.dart';
+
 /// 缓存读取结果。
 class CacheResult<T> {
   const CacheResult({required this.data, required this.isStale});
@@ -64,7 +66,7 @@ class CacheService {
   Future<CacheResult<T>?> read<T>(
     String key, {
     required T Function(Map<String, dynamic> json) decode,
-    Duration ttl = const Duration(hours: 24),
+    Duration? ttl = const Duration(hours: 24),
   }) async {
     final file = await _cacheFile(key);
     String? raw;
@@ -85,10 +87,12 @@ class CacheService {
       final payload = decoded[_payloadKey];
       if (payload is! Map<String, dynamic>) return null;
       final savedAt = decoded[_savedAtKey];
+      // ttl 为 null 表示持久缓存：只要内容可读就永不过期。
       final isStale =
-          savedAt is! num ||
-          DateTime.now().millisecondsSinceEpoch - savedAt.toInt() >
-              ttl.inMilliseconds;
+          ttl != null &&
+          (savedAt is! num ||
+              DateTime.now().millisecondsSinceEpoch - savedAt.toInt() >
+                  ttl.inMilliseconds);
       return CacheResult<T>(data: decode(payload), isStale: isStale);
     } catch (_) {
       return null;
@@ -165,6 +169,8 @@ class CacheService {
         }
       }
     }
+    // 缩略图与 JSON 数据一起归入“数据缓存”。
+    total += await ArtworkCacheService.instance.getCacheSize();
     return total;
   }
 
@@ -175,6 +181,8 @@ class CacheService {
     await for (final entity in directory.list()) {
       if (entity is File && entity.path.endsWith('.json')) count++;
     }
+    // 缩略图也属于数据缓存条目。
+    count += await ArtworkCacheService.instance.getCacheCount();
     final prefs = await SharedPreferences.getInstance();
     return count +
         prefs.getKeys().where((key) => key.startsWith('cache_')).length;
@@ -191,6 +199,7 @@ class CacheService {
         await prefs.remove(key);
       }
     }
+    await ArtworkCacheService.instance.clearCache();
   }
 
   /// stale-while-revalidate 封装。

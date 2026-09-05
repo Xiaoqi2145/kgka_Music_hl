@@ -5,6 +5,7 @@ import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/skeleton_box.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
@@ -84,15 +85,13 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
         );
         for (final song in searchResults) {
           for (final a in song.artists) {
-            if (a.id.isNotEmpty &&
-                a.name.toLowerCase().contains(targetName)) {
+            if (a.id.isNotEmpty && a.name.toLowerCase().contains(targetName)) {
               artistId = a.id;
               break;
             }
           }
           if (artistId.isNotEmpty) break;
         }
-
       }
 
       if (artistId.isEmpty) {
@@ -201,7 +200,10 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
                 controller: _scrollController,
                 slivers: [
                   SliverToBoxAdapter(
-                    child: _ArtistHeader(detail: _detail, fallback: widget.artist),
+                    child: _ArtistHeader(
+                      detail: _detail,
+                      fallback: widget.artist,
+                    ),
                   ),
                   if (_isInitialLoading)
                     const _ArtistDetailSkeleton()
@@ -265,7 +267,9 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
                           animation: widget.player,
                           builder: (context, _) {
                             final hasSong = widget.player.currentSong != null;
-                            return SizedBox(height: hasSong ? miniPlayerSpace : 0);
+                            return SizedBox(
+                              height: hasSong ? miniPlayerSpace : 0,
+                            );
                           },
                         ),
                       ),
@@ -278,10 +282,7 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
               left: 0,
               right: 0,
               bottom: bottomInset + 16,
-              child: MiniPlayer(
-                player: widget.player,
-                auth: widget.auth,
-              ),
+              child: MiniPlayer(player: widget.player, auth: widget.auth),
             ),
           ],
         ),
@@ -601,7 +602,7 @@ class _ArtistDetailSkeleton extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 30),
       sliver: SliverList.list(
         children: [
-          const _SkeletonBox(width: 110, height: 22, radius: 8),
+          const SkeletonBox(width: 110, height: 22, radius: 8),
           const SizedBox(height: 18),
           for (var index = 0; index < 8; index++) ...[
             const _SkeletonSongRow(),
@@ -620,45 +621,21 @@ class _SkeletonSongRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Row(
       children: [
-        _SkeletonBox(width: 50, height: 50, radius: 9),
+        SkeletonBox(width: 50, height: 50, radius: 9),
         SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _SkeletonBox(width: double.infinity, height: 16, radius: 6),
+              SkeletonBox(width: double.infinity, height: 16, radius: 6),
               SizedBox(height: 8),
-              _SkeletonBox(width: 150, height: 14, radius: 6),
+              SkeletonBox(width: 150, height: 14, radius: 6),
             ],
           ),
         ),
         SizedBox(width: 12),
-        _SkeletonBox(width: 42, height: 14, radius: 6),
+        SkeletonBox(width: 42, height: 14, radius: 6),
       ],
-    );
-  }
-}
-
-class _SkeletonBox extends StatelessWidget {
-  const _SkeletonBox({
-    required this.width,
-    required this.height,
-    required this.radius,
-  });
-
-  final double width;
-  final double height;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: .72),
-        borderRadius: BorderRadius.circular(radius),
-      ),
-      child: SizedBox(width: width, height: height),
     );
   }
 }

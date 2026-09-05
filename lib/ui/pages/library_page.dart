@@ -55,15 +55,12 @@ class _LibraryPageState extends State<LibraryPage>
   }
 
   void _openPlaylist(PlaylistSummary playlist) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlaylistDetailPage(
-          api: widget.api,
-          auth: widget.auth,
-          player: widget.player,
-          playlist: playlist,
-        ),
-      ),
+    openPlaylistDetail(
+      context: context,
+      api: widget.api,
+      auth: widget.auth,
+      player: widget.player,
+      playlist: playlist,
     );
   }
 
@@ -388,11 +385,8 @@ class _QuickActionRow extends StatelessWidget {
               title: '历史',
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => PlaybackHistoryPage(
-                    api: api,
-                    auth: auth,
-                    player: player,
-                  ),
+                  builder: (_) =>
+                      PlaybackHistoryPage(api: api, auth: auth, player: player),
                 ),
               ),
             ),
@@ -681,9 +675,9 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
               children: [
                 Text(
                   '排序方式',
-                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 12),
                 Material(
@@ -703,8 +697,9 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
                           Divider(
                             height: 1,
                             indent: 16,
-                            color: colorScheme.outlineVariant
-                                .withValues(alpha: .3),
+                            color: colorScheme.outlineVariant.withValues(
+                              alpha: .3,
+                            ),
                           ),
                       ],
                     ],
@@ -819,11 +814,9 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
                       Text(
                         '共 ${current.length} 个',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const Spacer(),
                       GestureDetector(
@@ -835,20 +828,18 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
                             Icon(
                               Icons.sort_rounded,
                               size: 16,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                             ),
                             const SizedBox(width: 4),
                             Text(
                               _sortModeLabel,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
+                              style: Theme.of(context).textTheme.bodySmall
                                   ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
                                     fontWeight: FontWeight.w600,
                                   ),
                             ),
@@ -856,9 +847,9 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
                             Icon(
                               Icons.keyboard_arrow_down_rounded,
                               size: 16,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                             ),
                           ],
                         ),
@@ -871,7 +862,9 @@ class _PlaylistTabViewState extends State<_PlaylistTabView> {
                 switchInCurve: Curves.easeOutCubic,
                 switchOutCurve: Curves.easeInCubic,
                 child: sorted.isEmpty
-                    ? _EmptyGroup(key: ValueKey('empty_${widget.controller.index}'))
+                    ? _EmptyGroup(
+                        key: ValueKey('empty_${widget.controller.index}'),
+                      )
                     : _PlaylistGroup(
                         key: ValueKey('group_${widget.controller.index}'),
                         playlists: sorted,
@@ -915,17 +908,13 @@ class _SortOptionTile extends StatelessWidget {
               child: Text(
                 label,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: selected ? colorScheme.primary : null,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    ),
+                  color: selected ? colorScheme.primary : null,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                ),
               ),
             ),
             if (selected)
-              Icon(
-                Icons.check_rounded,
-                size: 20,
-                color: colorScheme.primary,
-              ),
+              Icon(Icons.check_rounded, size: 20, color: colorScheme.primary),
           ],
         ),
       ),
@@ -960,18 +949,16 @@ class _MultiSelectBar extends StatelessWidget {
           Expanded(
             child: Text(
               '已选中 $selectedCount 项',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
           ),
           FilledButton.tonalIcon(
             onPressed: selectedCount > 0 ? onDelete : null,
             icon: const Icon(Icons.delete_outline_rounded, size: 18),
             label: const Text('删除'),
-            style: FilledButton.styleFrom(
-              foregroundColor: colorScheme.error,
-            ),
+            style: FilledButton.styleFrom(foregroundColor: colorScheme.error),
           ),
         ],
       ),
@@ -1243,9 +1230,9 @@ class _CreatePlaylistSheetState extends State<_CreatePlaylistSheet> {
         children: [
           Text(
             '创建歌单',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 16),
           TextField(
@@ -1269,10 +1256,7 @@ class _CreatePlaylistSheetState extends State<_CreatePlaylistSheet> {
                 child: const Text('取消'),
               ),
               const SizedBox(width: 8),
-              FilledButton(
-                onPressed: () => _submit(),
-                child: const Text('创建'),
-              ),
+              FilledButton(onPressed: () => _submit(), child: const Text('创建')),
             ],
           ),
         ],

@@ -53,9 +53,6 @@ class VolumeNormalizationService {
   /// 获取缓存的响度数据。
   LoudnessData? getCachedLoudness(String hash) => _loudnessCache[hash];
 
-  /// 清空缓存。
-  void clearCache() => _loudnessCache.clear();
-
   // ── 增益计算 ──
 
   /// 计算线性增益（与 EchoMusic 算法一致）。

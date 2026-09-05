@@ -265,6 +265,9 @@ class PlayerController extends ChangeNotifier {
   bool isPlaying = false;
   bool isBuffering = false;
   bool isPreparing = false;
+
+  /// 歌词正在异步加载；不应复用音频准备状态阻塞播放器。
+  bool isLoadingLyrics = false;
   bool addListeningTimeEnabled = true;
   AudioQuality audioQuality = AudioQuality.standard;
 
@@ -1333,6 +1336,10 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> loadLyrics(Song song, {bool force = false}) async {
     final requestGeneration = ++_lyricsLoadGeneration;
+    if (currentSong?.hash == song.hash) {
+      isLoadingLyrics = true;
+      notifyListeners();
+    }
     bool isCurrentRequest() =>
         requestGeneration == _lyricsLoadGeneration &&
         currentSong?.hash == song.hash;
@@ -1361,6 +1368,10 @@ class PlayerController extends ChangeNotifier {
             notifyListeners();
             _syncDesktopLyrics();
           }
+          if (isCurrentRequest()) {
+            isLoadingLyrics = false;
+            notifyListeners();
+          }
           return;
         }
       } catch (e) {
@@ -1368,6 +1379,7 @@ class PlayerController extends ChangeNotifier {
       }
       if (isCurrentRequest()) {
         lyrics = const [];
+        isLoadingLyrics = false;
         notifyListeners();
         _syncDesktopLyrics();
       }
@@ -1383,7 +1395,8 @@ class PlayerController extends ChangeNotifier {
               .whereType<Map<String, dynamic>>()
               .map(LyricLine.fromCache)
               .toList(),
-          ttl: const Duration(days: 30),
+          // 歌词按内容版本长期保留；仅手动“更换歌词”时 force 刷新。
+          ttl: null,
         );
         final cachedVisible = cached == null
             ? const <LyricLine>[]
@@ -1395,10 +1408,16 @@ class PlayerController extends ChangeNotifier {
           notifyListeners();
           _syncDesktopLyrics();
         }
+        // 不缓存空结果，避免一次网络失败永久阻塞后续歌词加载。
+        if (cachedVisible.isNotEmpty && isCurrentRequest()) {
+          isLoadingLyrics = false;
+          notifyListeners();
+          return;
+        }
       } catch (_) {}
     }
 
-    // 2. 后台静默刷新
+    // 2. 首次加载或 force=true 时才请求网络
     try {
       final manual = _manualLyricCandidates[song.hash];
       final fresh = manual != null
@@ -1411,7 +1430,7 @@ class PlayerController extends ChangeNotifier {
         notifyListeners();
       }
       // 写缓存（缓存完整解析结果含 hidden 行，空歌词也缓存，避免重复请求）
-      if (cache != null) {
+      if (cache != null && fresh.isNotEmpty) {
         unawaited(
           cache.write(cacheKey, {
             'lines': fresh.map((l) => l.toCache()).toList(),
@@ -1425,11 +1444,15 @@ class PlayerController extends ChangeNotifier {
       }
     }
     if (isCurrentRequest()) {
+      isLoadingLyrics = false;
+      notifyListeners();
       _syncDesktopLyrics();
     }
   }
 
   Future<void> togglePlay() async {
+    // 手动操作优先于自动恢复，清除旧的中断待恢复标记。
+    _wasPlayingOnInterruptionBegin = false;
     if (audioPlayer.playing) {
       await _audioHandler.pause();
       return;

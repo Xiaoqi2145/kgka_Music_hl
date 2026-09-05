@@ -141,44 +141,236 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _showQueue(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      builder: (context) {
-        return AnimatedBuilder(
-          animation: widget.player,
-          builder: (context, _) {
-            return ListView.builder(
-              itemCount: widget.player.queue.length,
-              itemBuilder: (context, index) {
-                final song = widget.player.queue[index];
-                final active = widget.player.currentSong?.hash == song.hash;
-                return ListTile(
-                  selected: active,
-                  leading: Artwork(url: song.coverUrl, size: 44),
-                  title: Text(
-                    song.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    song.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    widget.player.playSong(song, queue: widget.player.queue);
-                  },
-                );
+    Widget queueList(BuildContext sheetContext, {VoidCallback? dismiss}) {
+      return AnimatedBuilder(
+        animation: widget.player,
+        builder: (context, _) => ListView.builder(
+          itemCount: widget.player.queue.length,
+          itemBuilder: (context, index) {
+            final song = widget.player.queue[index];
+            final active = widget.player.currentSong?.hash == song.hash;
+            return ListTile(
+              selected: active,
+              leading: SizedBox(
+                width: 76,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      child: Text(
+                        '${index + 1}',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: active
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ),
+                    Artwork(url: song.coverUrl, size: 44),
+                  ],
+                ),
+              ),
+              title: Text(
+                song.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                song.artist,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () {
+                if (dismiss != null) {
+                  dismiss();
+                } else {
+                  Navigator.of(sheetContext).pop();
+                }
+                widget.player.playSong(song, queue: widget.player.queue);
               },
             );
           },
-        );
-      },
+        ),
+      );
+    }
+
+    final size = MediaQuery.sizeOf(context);
+    final isLandscape = size.width > size.height;
+    if (!isLandscape) {
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        builder: (sheetContext) => queueList(sheetContext),
+      );
+      return;
+    }
+
+    final drawerWidth = (size.width * .38).clamp(320.0, 560.0);
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: entry.remove,
+              child: ColoredBox(color: Colors.black54),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Material(
+              color: Theme.of(overlayContext).colorScheme.surface,
+              // 横屏播放列表贴合屏幕右侧，不额外保留圆角。
+              clipBehavior: Clip.antiAlias,
+              child: SizedBox(
+                width: drawerWidth,
+                height: double.infinity,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 18, 12, 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '播放列表  ${widget.player.queue.length}',
+                              style: Theme.of(overlayContext)
+                                  .textTheme
+                                  .titleLarge
+                                  ?.copyWith(fontWeight: FontWeight.w900),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: '关闭',
+                            onPressed: entry.remove,
+                            icon: const Icon(Icons.close_rounded),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: queueList(overlayContext, dismiss: entry.remove),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
+    Overlay.of(context).insert(entry);
   }
+}
+
+List<SongSheetAction> _playerMoreActions({
+  required BuildContext context,
+  required Song song,
+  required PlayerController player,
+  required AuthController auth,
+  bool isGrid = false,
+  bool includeNext = false,
+}) {
+  SongSheetAction action({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required VoidCallback onTap,
+  }) => SongSheetAction(
+    icon: icon,
+    title: title,
+    subtitle: subtitle,
+    isGrid: isGrid,
+    onTap: onTap,
+  );
+
+  return [
+    action(
+      icon: Icons.speed_rounded,
+      title: isGrid ? '倍速' : '倍速播放',
+      subtitle: player.playbackSpeedLabel,
+      onTap: () => showPlaybackSpeedSheet(context: context, player: player),
+    ),
+    action(
+      icon: Icons.high_quality_rounded,
+      title: isGrid ? '音质' : '音质：${player.audioQuality.label}',
+      subtitle: isGrid ? player.audioQuality.badge : '切换当前播放音质',
+      onTap: () => _showAudioQualityPicker(context, player),
+    ),
+    action(
+      icon: Icons.graphic_eq_rounded,
+      title: '音效',
+      subtitle: isGrid ? null : player.audioEffectsLabel,
+      onTap: () => showAudioEffectsSheet(context: context, player: player),
+    ),
+    if (!isGrid)
+      action(
+        icon: Icons.manage_search_rounded,
+        title: '更换歌词',
+        subtitle: '搜索并选择其他歌词版本',
+        onTap: () => showLyricCandidatePicker(
+          context: context,
+          player: player,
+          song: song,
+        ),
+      ),
+    action(
+      icon: Icons.bedtime_rounded,
+      title: isGrid ? '定时' : '定时播放',
+      subtitle: isGrid
+          ? null
+          : player.isSleepTimerActive
+          ? '剩余 ${_formatSleepRemaining(player.sleepTimerRemaining)}'
+          : player.isSleepFinishCurrentSong
+          ? '播完歌曲后停止'
+          : null,
+      onTap: () => showSleepTimerSheet(context: context, player: player),
+    ),
+    if (player.isDesktopLyricsSupported) ...[
+      action(
+        icon: player.desktopLyricsEnabled
+            ? Icons.lyrics_rounded
+            : Icons.lyrics_outlined,
+        title: '桌面歌词',
+        subtitle: isGrid ? null : (player.desktopLyricsEnabled ? '已开启' : '已关闭'),
+        onTap: () =>
+            player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled),
+      ),
+      if (player.desktopLyricsEnabled)
+        action(
+          icon: Icons.tune_rounded,
+          title: '歌词设置',
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => DesktopLyricsSettingsPage(player: player),
+            ),
+          ),
+        ),
+    ],
+    if (includeNext)
+      action(
+        icon: Icons.queue_music_rounded,
+        title: '下一首',
+        onTap: () => addSongToQueueWithFeedback(
+          context: context,
+          player: player,
+          song: song,
+        ),
+      ),
+    if (song.source == SongSource.kugou)
+      action(
+        icon: Icons.playlist_add_rounded,
+        title: '添加到歌单',
+        onTap: () =>
+            showAddToPlaylistSheet(context: context, auth: auth, song: song),
+      ),
+  ];
 }
 
 class _PlayerBody extends StatefulWidget {
@@ -250,7 +442,7 @@ class _PlayerBodyState extends State<_PlayerBody> {
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            _ArtworkBackground(song: widget.song),
+            _ArtworkBackground(song: widget.song, player: widget.player),
             SafeArea(
               top: !landscape,
               bottom: !landscape,
@@ -473,9 +665,10 @@ String _lyricDisplayModeLabel(LyricDisplayMode mode) {
 }
 
 class _ArtworkBackground extends StatefulWidget {
-  const _ArtworkBackground({required this.song});
+  const _ArtworkBackground({required this.song, required this.player});
 
   final Song song;
+  final PlayerController player;
 
   @override
   State<_ArtworkBackground> createState() => _ArtworkBackgroundState();
@@ -502,6 +695,11 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.player.isPlaying) {
+      if (!_rotationController.isAnimating) _rotationController.repeat();
+    } else if (_rotationController.isAnimating) {
+      _rotationController.stop(canceled: false);
+    }
     final coverUrl = widget.song.coverUrl;
     final size = MediaQuery.sizeOf(context);
     final maxDim = math.max(size.width, size.height);
@@ -731,78 +929,12 @@ class _LandscapeHeader extends StatelessWidget {
     showSongActionSheet(
       context: context,
       song: song,
-      actions: [
-        SongSheetAction(
-          icon: Icons.speed_rounded,
-          title: '倍速播放',
-          subtitle: player.playbackSpeedLabel,
-          onTap: () => showPlaybackSpeedSheet(context: context, player: player),
-        ),
-        SongSheetAction(
-          icon: Icons.high_quality_rounded,
-          title: '音质：${player.audioQuality.label}',
-          subtitle: '切换当前播放音质',
-          onTap: () => _showAudioQualityPicker(context, player),
-        ),
-        SongSheetAction(
-          icon: Icons.graphic_eq_rounded,
-          title: '音效',
-          subtitle: player.audioEffectsLabel,
-          onTap: () => showAudioEffectsSheet(context: context, player: player),
-        ),
-        SongSheetAction(
-          icon: Icons.manage_search_rounded,
-          title: '更换歌词',
-          subtitle: '搜索并选择其他歌词版本',
-          onTap: () => showLyricCandidatePicker(
-            context: context,
-            player: player,
-            song: song,
-          ),
-        ),
-        if (song.source == SongSource.kugou)
-          SongSheetAction(
-            icon: Icons.playlist_add_rounded,
-            title: '添加到歌单',
-            onTap: () => showAddToPlaylistSheet(
-              context: context,
-              auth: auth,
-              song: song,
-            ),
-          ),
-        SongSheetAction(
-          icon: Icons.bedtime_rounded,
-          title: '定时播放',
-          subtitle: player.isSleepTimerActive
-              ? '剩余 ${_formatSleepRemaining(player.sleepTimerRemaining)}'
-              : player.isSleepFinishCurrentSong
-              ? '播完歌曲后停止'
-              : null,
-          onTap: () => showSleepTimerSheet(context: context, player: player),
-        ),
-        if (player.isDesktopLyricsSupported) ...[
-          SongSheetAction(
-            icon: player.desktopLyricsEnabled
-                ? Icons.lyrics_rounded
-                : Icons.lyrics_outlined,
-            title: '桌面歌词',
-            subtitle: player.desktopLyricsEnabled ? '已开启' : '已关闭',
-            onTap: () => player.setDesktopLyricsEnabled(
-              !player.desktopLyricsEnabled,
-            ),
-          ),
-          if (player.desktopLyricsEnabled)
-            SongSheetAction(
-              icon: Icons.tune_rounded,
-              title: '歌词设置',
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => DesktopLyricsSettingsPage(player: player),
-                ),
-              ),
-            ),
-        ],
-      ],
+      actions: _playerMoreActions(
+        context: context,
+        song: song,
+        player: player,
+        auth: auth,
+      ),
     );
   }
 }
@@ -1009,7 +1141,8 @@ class _LandscapeRightPanel extends StatelessWidget {
                 compact: compact || veryTight,
               ),
             ),
-            SizedBox(height: veryTight ? 2 : 6),
+            // 歌词与进度条之间只保留约一行歌词的间隔。
+            SizedBox(height: compact ? 32 : 44),
             _Progress(player: player, bright: true, compact: true),
             SizedBox(height: veryTight ? 0 : 4),
             _Controls(
@@ -1090,7 +1223,7 @@ class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
       return Align(
         alignment: Alignment.centerLeft,
         child: Text(
-          player.isPreparing ? '正在准备音乐...' : '暂无歌词',
+          player.isLoadingLyrics ? '歌词加载中...' : '暂无歌词',
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
             color: Colors.white.withValues(alpha: .82),
             fontWeight: FontWeight.w900,
@@ -1103,10 +1236,17 @@ class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
       lyrics,
       _position,
     ).clamp(0, lyrics.length - 1);
-    final offsets = widget.compact ? const [-1, 0, 1] : const [-2, -1, 0, 1, 2];
-
     return LayoutBuilder(
       builder: (context, constraints) {
+        // 根据实际高度展示能容纳的上下文，而不是固定限制为 5 行。
+        final lineCount = widget.compact
+            ? 3
+            : (constraints.maxHeight / 58).floor().clamp(5, 11);
+        final before = lineCount ~/ 2;
+        final after = lineCount - before - 1;
+        final offsets = [
+          for (var offset = -before; offset <= after; offset++) offset,
+        ];
         return ClipRect(
           child: Align(
             alignment: Alignment.centerLeft,
@@ -1294,80 +1434,14 @@ class _TopBar extends StatelessWidget {
     showSongActionSheet(
       context: context,
       song: song,
-      actions: [
-        // Grid actions
-        SongSheetAction(
-          icon: Icons.speed_rounded,
-          title: '倍速',
-          subtitle: player.playbackSpeedLabel,
-          isGrid: true,
-          onTap: () => showPlaybackSpeedSheet(context: context, player: player),
-        ),
-        SongSheetAction(
-          icon: Icons.high_quality_rounded,
-          title: '音质',
-          subtitle: player.audioQuality.badge,
-          isGrid: true,
-          onTap: () => _showAudioQualityPicker(context, player),
-        ),
-        SongSheetAction(
-          icon: Icons.graphic_eq_rounded,
-          title: '音效',
-          isGrid: true,
-          onTap: () => showAudioEffectsSheet(context: context, player: player),
-        ),
-        SongSheetAction(
-          icon: Icons.bedtime_rounded,
-          title: '定时',
-          isGrid: true,
-          onTap: () => showSleepTimerSheet(context: context, player: player),
-        ),
-
-        if (player.isDesktopLyricsSupported) ...[
-          SongSheetAction(
-            icon: player.desktopLyricsEnabled
-                ? Icons.lyrics_rounded
-                : Icons.lyrics_outlined,
-            title: '桌面歌词',
-            isGrid: true,
-            onTap: () => player.setDesktopLyricsEnabled(
-              !player.desktopLyricsEnabled,
-            ),
-          ),
-          if (player.desktopLyricsEnabled)
-            SongSheetAction(
-              icon: Icons.tune_rounded,
-              title: '歌词设置',
-              isGrid: true,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => DesktopLyricsSettingsPage(player: player),
-                ),
-              ),
-            ),
-        ],
-        SongSheetAction(
-          icon: Icons.queue_music_rounded,
-          title: '下一首',
-          isGrid: true,
-          onTap: () => addSongToQueueWithFeedback(
-            context: context,
-            player: player,
-            song: song,
-          ),
-        ),
-        // List actions
-        if (song.source == SongSource.kugou)
-          SongSheetAction(
-            icon: Icons.playlist_add_rounded,
-            title: '添加到歌单',
-            onTap: () => showAddToPlaylistSheet(
-              context: context,
-              auth: auth,
-              song: song,
-            ),
-          ),
-      ],
+      actions: _playerMoreActions(
+        context: context,
+        song: song,
+        player: player,
+        auth: auth,
+        isGrid: true,
+        includeNext: true,
+      ),
     );
   }
 }
@@ -1782,10 +1856,12 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
   void didUpdateWidget(covariant _LyricPlayerPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.song.hash != widget.song.hash ||
-        oldWidget.player.lyrics != widget.player.lyrics) {
+        oldWidget.player.lyrics != widget.player.lyrics ||
+        oldWidget.player.lyricDisplayMode != widget.player.lyricDisplayMode) {
+      // 使用控制器中的持久化偏好，避免首轮歌词异步载入时回退到仅原文。
       _displayMode = _normalizeLyricDisplayMode(
         widget.player.lyrics,
-        _displayMode,
+        widget.player.lyricDisplayMode,
       );
     }
   }
@@ -1831,9 +1907,10 @@ class _LyricPlayerPageState extends State<_LyricPlayerPage>
     super.build(context);
     final availableModes = _availableLyricDisplayModes(widget.player.lyrics);
     final canToggleLyricDisplayMode = availableModes.length > 1;
+    // 控制器是唯一的显示模式来源，保证切歌后首轮歌词也带翻译。
     final displayMode = _normalizeLyricDisplayMode(
       widget.player.lyrics,
-      _displayMode,
+      widget.player.lyricDisplayMode,
     );
 
     return Padding(
@@ -2083,7 +2160,10 @@ class _LyricCandidatePreviewPageState
           Positioned.fill(
             child: Opacity(
               opacity: .16,
-              child: _ArtworkBackground(song: widget.song),
+              child: _ArtworkBackground(
+                song: widget.song,
+                player: widget.player,
+              ),
             ),
           ),
           Positioned.fill(
@@ -2799,7 +2879,7 @@ class _LyricViewportState extends State<_LyricViewport>
     if (lyrics.isEmpty) {
       return Center(
         child: Text(
-          widget.isPreparing ? '正在准备音乐...' : '暂无歌词',
+          widget.player.isLoadingLyrics ? '歌词加载中...' : '暂无歌词',
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
             color: Colors.white,
             fontWeight: FontWeight.w800,

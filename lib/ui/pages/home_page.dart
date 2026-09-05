@@ -7,6 +7,8 @@ import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/skeleton_box.dart';
+import '../widgets/music_formatters.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
@@ -171,15 +173,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openPlaylist(PlaylistSummary playlist) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlaylistDetailPage(
-          api: widget.api,
-          auth: widget.auth,
-          player: widget.player,
-          playlist: playlist,
-        ),
-      ),
+    openPlaylistDetail(
+      context: context,
+      api: widget.api,
+      auth: widget.auth,
+      player: widget.player,
+      playlist: playlist,
     );
   }
 
@@ -572,16 +571,23 @@ class _FeatureShelf extends StatelessWidget {
                   child: albums.isNotEmpty
                       ? _FeatureCard(
                           title: '新碟上架',
-                          subtitle: '${albums.first.singerName} · ${albums.first.albumName}',
+                          subtitle:
+                              '${albums.first.singerName} · ${albums.first.albumName}',
                           imageUrl: albums.first.coverUrl,
-                          gradient: const [Color(0xFF454A92), Color(0xFF78CAFF)],
+                          gradient: const [
+                            Color(0xFF454A92),
+                            Color(0xFF78CAFF),
+                          ],
                           onTap: onAlbumTap,
                         )
                       : _FeatureCard(
                           title: '新碟上架',
                           subtitle: '暂无新专辑',
                           imageUrl: null,
-                          gradient: const [Color(0xFF454A92), Color(0xFF78CAFF)],
+                          gradient: const [
+                            Color(0xFF454A92),
+                            Color(0xFF78CAFF),
+                          ],
                           onTap: () {},
                         ),
                 ),
@@ -774,7 +780,10 @@ class _SongSectionState extends State<_SongSection> {
                   onPageChanged: (i) => setState(() => _page = i),
                   itemBuilder: (context, pageIndex) {
                     final start = pageIndex * _perPage;
-                    final end = (start + _perPage).clamp(0, widget.songs.length);
+                    final end = (start + _perPage).clamp(
+                      0,
+                      widget.songs.length,
+                    );
                     final pageSongs = widget.songs.sublist(start, end);
 
                     if (isWide) {
@@ -790,10 +799,12 @@ class _SongSectionState extends State<_SongSection> {
                                     queue: widget.songs,
                                     onPlay: widget.onPlay,
                                     isLiked: widget.isLiked(pageSongs[i]),
-                                    onLikeTap: () => widget.onLikeTap(pageSongs[i]),
+                                    onLikeTap: () =>
+                                        widget.onLikeTap(pageSongs[i]),
                                     auth: widget.auth,
                                     player: widget.player,
-                                    onViewArtist: () => widget.onViewArtist(pageSongs[i]),
+                                    onViewArtist: () =>
+                                        widget.onViewArtist(pageSongs[i]),
                                   ),
                               ],
                             ),
@@ -809,10 +820,12 @@ class _SongSectionState extends State<_SongSection> {
                                       queue: widget.songs,
                                       onPlay: widget.onPlay,
                                       isLiked: widget.isLiked(pageSongs[i]),
-                                      onLikeTap: () => widget.onLikeTap(pageSongs[i]),
+                                      onLikeTap: () =>
+                                          widget.onLikeTap(pageSongs[i]),
                                       auth: widget.auth,
                                       player: widget.player,
-                                      onViewArtist: () => widget.onViewArtist(pageSongs[i]),
+                                      onViewArtist: () =>
+                                          widget.onViewArtist(pageSongs[i]),
                                     ),
                                 ],
                               ),
@@ -854,10 +867,9 @@ class _SongSectionState extends State<_SongSection> {
                       decoration: BoxDecoration(
                         color: active
                             ? Theme.of(context).colorScheme.primary
-                            : Theme.of(context)
-                                .colorScheme
-                                .outline
-                                .withValues(alpha: .3),
+                            : Theme.of(
+                                context,
+                              ).colorScheme.outline.withValues(alpha: .3),
                         borderRadius: BorderRadius.circular(99),
                       ),
                     );
@@ -1145,7 +1157,7 @@ class _PlaylistCard extends StatelessWidget {
               ),
             ),
             Text(
-              playlist.subtitle ?? _playCount(playlist.playCount),
+              playlist.subtitle ?? formatPlayCount(playlist.playCount),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1573,11 +1585,11 @@ class _RadioSkeleton extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SkeletonBox(width: 112, height: 24, radius: 8),
+          const SkeletonBox(width: 112, height: 24, radius: 8),
           const SizedBox(height: 14),
-          const _SkeletonBox(width: double.infinity, height: 170, radius: 14),
+          const SkeletonBox(width: double.infinity, height: 170, radius: 14),
           const SizedBox(height: 22),
-          const _SkeletonBox(width: 90, height: 22, radius: 8),
+          const SkeletonBox(width: 90, height: 22, radius: 8),
           const SizedBox(height: 12),
           SizedBox(
             height: 164,
@@ -1586,7 +1598,7 @@ class _RadioSkeleton extends StatelessWidget {
               itemCount: 3,
               separatorBuilder: (_, _) => const SizedBox(width: 13),
               itemBuilder: (context, index) {
-                return _SkeletonBox(
+                return SkeletonBox(
                   width: index == 2 ? 76 : 128,
                   height: 164,
                   radius: 10,
@@ -1682,49 +1694,49 @@ class _HomeSkeleton extends StatelessWidget {
           children: [
             Row(
               children: [
-                const _SkeletonBox(width: 54, height: 26, radius: 8),
+                const SkeletonBox(width: 54, height: 26, radius: 8),
                 const SizedBox(width: 26),
-                const _SkeletonBox(width: 42, height: 26, radius: 8),
+                const SkeletonBox(width: 42, height: 26, radius: 8),
                 const Spacer(),
-                _SkeletonBox.circle(size: 38),
+                SkeletonBox.circle(size: 38),
                 const SizedBox(width: 12),
-                _SkeletonBox.circle(size: 34),
+                SkeletonBox.circle(size: 34),
               ],
             ),
             const SizedBox(height: 28),
-            const _SkeletonBox(width: double.infinity, height: 44, radius: 9),
+            const SkeletonBox(width: double.infinity, height: 44, radius: 9),
             const SizedBox(height: 14),
             LayoutBuilder(
               builder: (context, constraints) {
                 final cardSize = (constraints.maxWidth - 10) / 2;
                 return Row(
                   children: [
-                    _SkeletonBox(width: cardSize, height: cardSize, radius: 12),
+                    SkeletonBox(width: cardSize, height: cardSize, radius: 12),
                     const SizedBox(width: 10),
-                    _SkeletonBox(width: cardSize, height: cardSize, radius: 12),
+                    SkeletonBox(width: cardSize, height: cardSize, radius: 12),
                   ],
                 );
               },
             ),
             const SizedBox(height: 28),
-            const _SkeletonBox(width: 128, height: 24, radius: 8),
+            const SkeletonBox(width: 128, height: 24, radius: 8),
             const SizedBox(height: 18),
             for (var index = 0; index < 6; index++) ...[
               Row(
                 children: [
-                  const _SkeletonBox(width: 58, height: 58, radius: 8),
+                  const SkeletonBox(width: 58, height: 58, radius: 8),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: const [
-                        _SkeletonBox(
+                        SkeletonBox(
                           width: double.infinity,
                           height: 16,
                           radius: 6,
                         ),
                         SizedBox(height: 8),
-                        _SkeletonBox(width: 140, height: 14, radius: 6),
+                        SkeletonBox(width: 140, height: 14, radius: 6),
                       ],
                     ),
                   ),
@@ -1735,35 +1747,6 @@ class _HomeSkeleton extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _SkeletonBox extends StatelessWidget {
-  const _SkeletonBox({
-    required this.width,
-    required this.height,
-    required this.radius,
-  });
-
-  const _SkeletonBox.circle({required double size})
-    : width = size,
-      height = size,
-      radius = size / 2;
-
-  final double width;
-  final double height;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: .72),
-        borderRadius: BorderRadius.circular(radius),
-      ),
-      child: SizedBox(width: width, height: height),
     );
   }
 }
@@ -1826,14 +1809,4 @@ class _RadioData {
 
   final List<FmStation> recommended;
   final List<FmClassGroup> groups;
-}
-
-String _playCount(int? value) {
-  if (value == null) {
-    return '精选歌单';
-  }
-  if (value >= 10000) {
-    return '${(value / 10000).toStringAsFixed(1)} 万次播放';
-  }
-  return '$value 次播放';
 }

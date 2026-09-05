@@ -466,7 +466,6 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<List<PlaylistSummary>> _loadCachedPlaylists() async {
-    // 优先读 CacheService（统一管理），回退旧 key（兼容旧版本）
     final cached = await _cacheService.read<List<PlaylistSummary>>(
       _playlistCacheKeyV2,
       decode: (json) => (json['playlists'] as List? ?? const [])
@@ -477,39 +476,45 @@ class AuthController extends ChangeNotifier {
       ttl: AppConfig.userProfileTtl,
     );
     if (cached != null) {
+      // V2 已存在，旧缓存只清理一次，不再回退读取。
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_playlistCacheKey);
       return cached.data;
     }
-    // 回退旧 key
+
+    // 仅为升级用户执行一次旧缓存迁移，成功后立即删除旧 key。
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_playlistCacheKey);
-    if (raw == null || raw.isEmpty) {
-      return const [];
-    }
+    if (raw == null || raw.isEmpty) return const [];
     try {
       final json = jsonDecode(raw);
-      if (json is! List) {
-        return const [];
-      }
-      return json
+      if (json is! List) return const [];
+      final playlists = json
           .whereType<Map>()
           .map((item) => PlaylistSummary.fromCache(asMap(item)))
           .where((playlist) => playlist.id.isNotEmpty)
           .toList();
+      if (playlists.isNotEmpty) {
+        await _cacheService.write(_playlistCacheKeyV2, {
+          'playlists': playlists.map((playlist) => playlist.toCache()).toList(),
+        });
+      }
+      await prefs.remove(_playlistCacheKey);
+      return playlists;
     } catch (_) {
+      // 损坏的旧缓存不应阻塞登录，且不再反复尝试解析。
+      await prefs.remove(_playlistCacheKey);
       return const [];
     }
   }
 
   Future<void> _saveCachedPlaylists(List<PlaylistSummary> playlists) async {
-    // 双写：CacheService（统一管理）+ 旧 key（兼容）
     await _cacheService.write(_playlistCacheKeyV2, {
       'playlists': playlists.map((p) => p.toCache()).toList(),
     });
+    // 新缓存写入后清理旧 SharedPreferences key，避免长期双轨存储。
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _playlistCacheKey,
-      jsonEncode(playlists.map((playlist) => playlist.toCache()).toList()),
-    );
+    await prefs.remove(_playlistCacheKey);
   }
 
   String get _playlistCacheKey {

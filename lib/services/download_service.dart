@@ -182,7 +182,7 @@ class DownloadService {
         headers[HttpHeaders.rangeHeader] = 'bytes=$startOffset-';
       }
 
-      await _dio.download(
+      var response = await _dio.download(
         task.url,
         partPath,
         onReceiveProgress: (received, total) {
@@ -194,6 +194,39 @@ class DownloadService {
         cancelToken: cancelToken,
         deleteOnError: false,
       );
+
+      // 服务端忽略 Range 时，丢弃旧分片并从头下载，避免文件拼接损坏。
+      if (startOffset > 0 && response.statusCode != 206) {
+        await partFile.delete();
+        startOffset = 0;
+        response = await _dio.download(
+          task.url,
+          partPath,
+          onReceiveProgress: (received, total) {
+            task.onProgress?.call(received, total);
+          },
+          cancelToken: cancelToken,
+          deleteOnError: false,
+        );
+      }
+
+      if (startOffset > 0) {
+        final contentRange = response.headers.value(
+          HttpHeaders.contentRangeHeader,
+        );
+        final rangeStart = contentRange == null
+            ? null
+            : int.tryParse(
+                RegExp(r'^bytes (\d+)-').firstMatch(contentRange)?.group(1) ??
+                    '',
+              );
+        if (response.statusCode != 206 || rangeStart != startOffset) {
+          throw StateError('服务器返回了不匹配的断点范围');
+        }
+      }
+      if (!partFile.existsSync() || await partFile.length() == 0) {
+        throw StateError('下载结果为空');
+      }
 
       // 下载完成，重命名 .part 为最终文件
       if (partFile.existsSync()) {

@@ -10,6 +10,8 @@ import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/skeleton_box.dart';
+import '../widgets/music_formatters.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
@@ -19,6 +21,76 @@ import 'artist_detail_page.dart';
 
 /// 缓存中完整歌单歌曲列表的 key 后缀。
 const _fullSongsCacheSuffix = '_full';
+
+/// 打开歌单详情：竖屏使用整页，横屏从右侧以悬浮面板展开。
+void openPlaylistDetail({
+  required BuildContext context,
+  required MusicApi api,
+  required AuthController auth,
+  required PlayerController player,
+  required PlaylistSummary playlist,
+}) {
+  final size = MediaQuery.sizeOf(context);
+  if (size.width <= size.height) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlaylistDetailPage(
+          api: api,
+          auth: auth,
+          player: player,
+          playlist: playlist,
+        ),
+      ),
+    );
+    return;
+  }
+
+  showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: '关闭歌单详情',
+    barrierColor: Colors.black54,
+    transitionDuration: const Duration(milliseconds: 260),
+    pageBuilder: (dialogContext, _, _) {
+      final width = (MediaQuery.sizeOf(dialogContext).width * .62)
+          .clamp(420.0, 820.0)
+          .toDouble();
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Material(
+          color: Theme.of(dialogContext).colorScheme.surface,
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(22),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(
+            width: width,
+            height: double.infinity,
+            child: PlaylistDetailPage(
+              api: api,
+              auth: auth,
+              player: player,
+              playlist: playlist,
+            ),
+          ),
+        ),
+      );
+    },
+    transitionBuilder: (context, animation, secondaryAnimation, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+      );
+      return SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(1, 0),
+          end: Offset.zero,
+        ).animate(curved),
+        child: child,
+      );
+    },
+  );
+}
 
 class PlaylistDetailPage extends StatefulWidget {
   const PlaylistDetailPage({
@@ -719,15 +791,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     try {
       final info = await api.playlistInfo(playlistId);
       if (!context.mounted) return;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => PlaylistDetailPage(
-            api: api,
-            auth: auth,
-            player: player,
-            playlist: info,
-          ),
-        ),
+      openPlaylistDetail(
+        context: context,
+        api: api,
+        auth: auth,
+        player: player,
+        playlist: info,
       );
     } catch (e) {
       if (context.mounted) Toast.error('导入失败：$e');
@@ -948,9 +1017,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         child: _LoadMoreFooter(
                           hasMore: _hasMore,
                           isLoading: _isLoadingMore || _isLoadingAllSongs,
-                          loadingLabel: _isLoadingAllSongs
-                              ? '正在加载全部歌曲…'
-                              : null,
+                          loadingLabel: _isLoadingAllSongs ? '正在加载全部歌曲…' : null,
                           errorMessage: _loadMoreError,
                           onRetry: _loadMore,
                         ),
@@ -1126,9 +1193,9 @@ class _PlaylistDetailSkeleton extends StatelessWidget {
         children: [
           Row(
             children: [
-              const _SkeletonBox(width: 108, height: 18, radius: 7),
+              const SkeletonBox(width: 108, height: 18, radius: 7),
               const Spacer(),
-              _SkeletonBox(width: 104, height: 40, radius: 20),
+              SkeletonBox(width: 104, height: 40, radius: 20),
             ],
           ),
           const SizedBox(height: 20),
@@ -1149,47 +1216,23 @@ class _PlaylistSkeletonSongRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Row(
       children: [
-        _SkeletonBox(width: 50, height: 50, radius: 9),
+        SkeletonBox(width: 50, height: 50, radius: 9),
         SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _SkeletonBox(width: double.infinity, height: 16, radius: 6),
+              SkeletonBox(width: double.infinity, height: 16, radius: 6),
               SizedBox(height: 8),
-              _SkeletonBox(width: 142, height: 14, radius: 6),
+              SkeletonBox(width: 142, height: 14, radius: 6),
             ],
           ),
         ),
         SizedBox(width: 12),
-        _SkeletonBox(width: 38, height: 14, radius: 6),
+        SkeletonBox(width: 38, height: 14, radius: 6),
         SizedBox(width: 18),
-        _SkeletonBox(width: 24, height: 24, radius: 12),
+        SkeletonBox(width: 24, height: 24, radius: 12),
       ],
-    );
-  }
-}
-
-class _SkeletonBox extends StatelessWidget {
-  const _SkeletonBox({
-    required this.width,
-    required this.height,
-    required this.radius,
-  });
-
-  final double width;
-  final double height;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: .72),
-        borderRadius: BorderRadius.circular(radius),
-      ),
-      child: SizedBox(width: width, height: height),
     );
   }
 }
@@ -1681,17 +1724,7 @@ String _detailMeta(PlaylistSummary info) {
     parts.add('${info.songCount} 首歌');
   }
   if (info.playCount != null) {
-    parts.add(_playCount(info.playCount));
+    parts.add(formatPlayCount(info.playCount));
   }
   return parts.isEmpty ? '来自 KA Music' : parts.join(' · ');
-}
-
-String _playCount(int? value) {
-  if (value == null) {
-    return '精选歌单';
-  }
-  if (value >= 10000) {
-    return '${(value / 10000).toStringAsFixed(1)} 万次播放';
-  }
-  return '$value 次播放';
 }

@@ -28,6 +28,7 @@ class _LoginPageState extends State<LoginPage> {
   final _mobilePattern = RegExp(r'^\d{11}$');
 
   Timer? _codeTimer;
+  bool _sendingCode = false;
   String? _localError;
   int _codeSeconds = 0;
 
@@ -37,6 +38,8 @@ class _LoginPageState extends State<LoginPage> {
   bool _qrLoading = false;
   bool _qrExpired = false;
   Timer? _qrPollTimer;
+  bool _qrPollInFlight = false;
+  int _qrPollFailures = 0;
 
   @override
   void dispose() {
@@ -50,7 +53,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _sendCode() async {
-    if (_codeSeconds > 0) return;
+    if (_codeSeconds > 0 || _sendingCode) return;
 
     final mobile = _mobileController.text.replaceAll(RegExp(r'\D'), '');
     if (!_mobilePattern.hasMatch(mobile)) {
@@ -59,13 +62,19 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    setState(() => _localError = null);
-    await widget.auth.sendCode(mobile);
-    if (!mounted) return;
-
-    if (widget.auth.errorMessage == null) {
-      _startCodeCountdown();
-      _codeFocus.requestFocus();
+    setState(() {
+      _localError = null;
+      _sendingCode = true;
+    });
+    try {
+      await widget.auth.sendCode(mobile);
+      if (!mounted) return;
+      if (widget.auth.errorMessage == null) {
+        _startCodeCountdown();
+        _codeFocus.requestFocus();
+      }
+    } finally {
+      if (mounted) setState(() => _sendingCode = false);
     }
   }
 
@@ -182,7 +191,9 @@ class _LoginPageState extends State<LoginPage> {
                 onPressed: () => Navigator.of(dialogContext).pop(''),
                 child: Text(
                   '恢复默认',
-                  style: TextStyle(color: Theme.of(dialogContext).colorScheme.error),
+                  style: TextStyle(
+                    color: Theme.of(dialogContext).colorScheme.error,
+                  ),
                 ),
               ),
             FilledButton(
@@ -235,38 +246,64 @@ class _LoginPageState extends State<LoginPage> {
 
   void _startQrPolling(String key) {
     _qrPollTimer?.cancel();
-    _qrPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      try {
-        final result = await widget.api.checkQrStatus(key);
-        if (!mounted) return;
-        if (result.isSuccess) {
-          _qrPollTimer?.cancel();
-          final session = LoginSession(
-            userId: result.userId ?? '',
-            token: result.token ?? '',
-            nickname: result.nickname,
-            avatarUrl: result.avatar,
-          );
-          await widget.auth.loginWithSession(session);
-          return;
-        }
-        if (result.isExpired) {
-          _qrPollTimer?.cancel();
-          setState(() {
-            _qrStatusText = '二维码已过期，点击刷新';
-            _qrExpired = true;
-          });
-          return;
-        }
-        setState(() {
-          _qrStatusText = result.isWaitingForConfirm
-              ? '扫码成功，请在手机上确认'
-              : '请使用酷狗音乐App扫码';
-        });
-      } catch (_) {
-        if (!mounted) return;
+    _qrPollFailures = 0;
+    _scheduleQrPoll(key, const Duration(seconds: 2));
+  }
+
+  void _scheduleQrPoll(String key, Duration delay) {
+    _qrPollTimer?.cancel();
+    _qrPollTimer = Timer(delay, () => _pollQrStatus(key));
+  }
+
+  Future<void> _pollQrStatus(String key) async {
+    if (!mounted || _qrPollInFlight || _qrExpired) return;
+    _qrPollInFlight = true;
+    try {
+      final result = await widget.api.checkQrStatus(key);
+      if (!mounted) return;
+      _qrPollFailures = 0;
+      if (result.isSuccess) {
+        _qrPollTimer?.cancel();
+        final session = LoginSession(
+          userId: result.userId ?? '',
+          token: result.token ?? '',
+          nickname: result.nickname,
+          avatarUrl: result.avatar,
+        );
+        await widget.auth.loginWithSession(session);
+        return;
       }
-    });
+      if (result.isExpired) {
+        _qrPollTimer?.cancel();
+        setState(() {
+          _qrStatusText = '二维码已过期，点击刷新';
+          _qrExpired = true;
+        });
+        return;
+      }
+      setState(() {
+        _qrStatusText = result.isWaitingForConfirm
+            ? '扫码成功，请在手机上确认'
+            : '请使用酷狗音乐App扫码';
+      });
+      _scheduleQrPoll(key, const Duration(seconds: 2));
+    } catch (_) {
+      if (!mounted) return;
+      _qrPollFailures++;
+      if (_qrPollFailures >= 5) {
+        _qrPollTimer?.cancel();
+        setState(() {
+          _qrStatusText = '网络异常，二维码轮询已暂停，请点击刷新';
+          _qrExpired = true;
+        });
+      } else {
+        final seconds = math.min(15, 2 << (_qrPollFailures - 1));
+        setState(() => _qrStatusText = '网络异常，${seconds}秒后重试');
+        _scheduleQrPoll(key, Duration(seconds: seconds));
+      }
+    } finally {
+      _qrPollInFlight = false;
+    }
   }
 
   @override
@@ -1003,9 +1040,7 @@ class _QrLoginForm extends StatelessWidget {
             if (isLoading)
               Padding(
                 padding: const EdgeInsets.all(60),
-                child: CircularProgressIndicator(
-                  color: colorScheme.primary,
-                ),
+                child: CircularProgressIndicator(color: colorScheme.primary),
               )
             else if (qrCode != null && qrCode!.imageUrl.isNotEmpty)
               ClipRRect(
@@ -1094,18 +1129,14 @@ class _QrImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget fallback() => Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: fallbackColor,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Icon(
-            Icons.qr_code_2_rounded,
-            size: 80,
-            color: iconColor,
-          ),
-        );
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: fallbackColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Icon(Icons.qr_code_2_rounded, size: 80, color: iconColor),
+    );
 
     final uri = Uri.tryParse(imageUrl);
     if (uri == null) return fallback();

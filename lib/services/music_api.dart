@@ -343,15 +343,6 @@ class MusicApi {
         .toList();
   }
 
-  Future<List<Song>> albumSongs(
-    String id, {
-    int page = 1,
-    int pageSize = 30,
-  }) async {
-    final songPage = await albumSongPage(id, page: page, pageSize: pageSize);
-    return songPage.songs;
-  }
-
   Future<SongPage> albumSongPage(
     String id, {
     int page = 1,
@@ -469,17 +460,6 @@ class MusicApi {
         .where((song) => song.hash.isNotEmpty)
         .toList();
     return SongPage(songs: songs, rawItemCount: items.length);
-  }
-
-  Future<PlaylistDetail> playlistDetail(String id) async {
-    final results = await Future.wait([
-      playlistInfo(id),
-      playlistSongs(id, pageSize: 50),
-    ]);
-    return PlaylistDetail(
-      info: results[0] as PlaylistSummary,
-      songs: results[1] as List<Song>,
-    );
   }
 
   Future<PlayUrl> songUrl(

@@ -41,8 +41,12 @@ class MiniPlayer extends StatelessWidget {
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: isDark
-                      ? colorScheme.surfaceContainerHighest.withValues(alpha: .72)
-                      : colorScheme.surfaceContainerHighest.withValues(alpha: .64),
+                      ? colorScheme.surfaceContainerHighest.withValues(
+                          alpha: .72,
+                        )
+                      : colorScheme.surfaceContainerHighest.withValues(
+                          alpha: .64,
+                        ),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
                     color: colorScheme.outlineVariant.withValues(alpha: .38),
@@ -185,6 +189,10 @@ class MiniPlayer extends StatelessWidget {
   }
 
   void _showQueue(BuildContext context) {
+    if (MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height) {
+      _showQueueRight(context);
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -204,17 +212,14 @@ class MiniPlayer extends StatelessWidget {
                     children: [
                       Text(
                         '播放队列',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleLarge
+                        style: Theme.of(sheetContext).textTheme.titleLarge
                             ?.copyWith(fontWeight: FontWeight.w900),
                       ),
                       const SizedBox(width: 8),
                       Text(
                         '${player.queue.length} 首',
-                        style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                            ),
+                        style: Theme.of(sheetContext).textTheme.bodyMedium
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
                       ),
                       const Spacer(),
                       TextButton(
@@ -239,9 +244,7 @@ class MiniPlayer extends StatelessWidget {
                           child: Center(
                             child: Text(
                               '播放队列为空',
-                              style: Theme.of(sheetContext)
-                                  .textTheme
-                                  .bodyMedium
+                              style: Theme.of(sheetContext).textTheme.bodyMedium
                                   ?.copyWith(
                                     color: colorScheme.onSurfaceVariant,
                                   ),
@@ -255,8 +258,7 @@ class MiniPlayer extends StatelessWidget {
                         separatorBuilder: (_, _) => const SizedBox(height: 2),
                         itemBuilder: (context, index) {
                           final song = player.queue[index];
-                          final active =
-                              player.currentSong?.hash == song.hash;
+                          final active = player.currentSong?.hash == song.hash;
                           return _QueueTile(
                             song: song,
                             index: index + 1,
@@ -278,6 +280,102 @@ class MiniPlayer extends StatelessWidget {
               ],
             ),
           ),
+        );
+      },
+    );
+  }
+
+  void _showQueueRight(BuildContext context) {
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '关闭播放队列',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 240),
+      pageBuilder: (dialogContext, _, _) {
+        final width = (MediaQuery.sizeOf(dialogContext).width * .38)
+            .clamp(320.0, 560.0)
+            .toDouble();
+        final colorScheme = Theme.of(dialogContext).colorScheme;
+        return Align(
+          alignment: Alignment.centerRight,
+          child: Material(
+            color: colorScheme.surface,
+            child: SizedBox(
+              width: width,
+              height: double.infinity,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 12, 12, 8),
+                      child: Row(
+                        children: [
+                          Text(
+                            '播放队列',
+                            style: Theme.of(dialogContext).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${player.queue.length} 首',
+                            style: TextStyle(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const Spacer(),
+                          TextButton(
+                            onPressed: player.queue.length > 1
+                                ? () => _clearQueue(dialogContext)
+                                : null,
+                            child: Text(
+                              '清空',
+                              style: TextStyle(color: colorScheme.error),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: AnimatedBuilder(
+                        animation: player,
+                        builder: (context, _) => ListView.builder(
+                          itemCount: player.queue.length,
+                          itemBuilder: (context, index) {
+                            final song = player.queue[index];
+                            final active =
+                                player.currentSong?.hash == song.hash;
+                            return _QueueTile(
+                              song: song,
+                              index: index + 1,
+                              active: active,
+                              isPlaying: active && player.isPlaying,
+                              onTap: () {
+                                Navigator.of(dialogContext).pop();
+                                player.playSong(song, queue: player.queue);
+                              },
+                              onDelete: player.queue.length > 1
+                                  ? () => _removeFromQueue(dialogContext, index)
+                                  : null,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return SlideTransition(
+          position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+              .animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              ),
+          child: child,
         );
       },
     );
@@ -358,11 +456,11 @@ class _QueueTile extends StatelessWidget {
                 '$index',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: active
-                          ? colorScheme.primary
-                          : colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  color: active
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
             const SizedBox(width: 10),
@@ -377,9 +475,9 @@ class _QueueTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: active ? colorScheme.primary : null,
-                          fontWeight: FontWeight.w700,
-                        ),
+                      color: active ? colorScheme.primary : null,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -387,10 +485,10 @@ class _QueueTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: active
-                              ? colorScheme.primary.withValues(alpha: .72)
-                              : colorScheme.onSurfaceVariant,
-                        ),
+                      color: active
+                          ? colorScheme.primary.withValues(alpha: .72)
+                          : colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),

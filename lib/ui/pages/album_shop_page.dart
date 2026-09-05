@@ -78,15 +78,12 @@ class _AlbumShopPageState extends State<AlbumShopPage> {
       subtitle: album.singerName,
       coverUrl: album.coverUrl,
     );
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlaylistDetailPage(
-          api: widget.api,
-          auth: widget.auth,
-          player: widget.player,
-          playlist: playlist,
-        ),
-      ),
+    openPlaylistDetail(
+      context: context,
+      api: widget.api,
+      auth: widget.auth,
+      player: widget.player,
+      playlist: playlist,
     );
   }
 
@@ -117,16 +114,13 @@ class _AlbumShopPageState extends State<AlbumShopPage> {
                     crossAxisSpacing: 14,
                     childAspectRatio: 0.72,
                   ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final album = _albums[index];
-                      return _AlbumCard(
-                        album: album,
-                        onTap: () => _openAlbum(album),
-                      );
-                    },
-                    childCount: _albums.length,
-                  ),
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final album = _albums[index];
+                    return _AlbumCard(
+                      album: album,
+                      onTap: () => _openAlbum(album),
+                    );
+                  }, childCount: _albums.length),
                 ),
               ),
               if (_isLoadingMore)
@@ -197,9 +191,9 @@ class _AlbumCard extends StatelessWidget {
             album.albumName,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 2),
           Text(
