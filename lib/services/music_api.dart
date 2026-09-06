@@ -719,7 +719,10 @@ class MusicApi {
         .toList();
   }
 
-  Future<List<LyricLine>> lyrics(Song song) async {
+  Future<List<LyricLine>> lyrics(
+    Song song, {
+    bool Function()? isCancelled,
+  }) async {
     _debugLyricLog(
       'request song="${song.title}" artist="${song.artist}" hash="${song.hash}" albumAudioId="${song.albumAudioId}"',
     );
@@ -733,8 +736,12 @@ class MusicApi {
     }
 
     var best = const <LyricLine>[];
-    for (final candidate in candidates) {
+    // 限制候选数量，避免异常响应放大歌词网络请求；切歌时尽快停止后续候选。
+    const maxCandidates = 8;
+    for (final candidate in candidates.take(maxCandidates)) {
+      if (isCancelled?.call() ?? false) return best;
       final lines = await lyricsFromCandidate(candidate);
+      if (isCancelled?.call() ?? false) return best;
       if (lines.length > best.length) {
         best = lines;
       }

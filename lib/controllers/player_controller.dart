@@ -122,7 +122,7 @@ class PlayerController extends ChangeNotifier {
       if (isPlaying && !_isSeeking) {
         unawaited(_prepareNextSourceIfNeeded());
       }
-      notifyListeners();
+      // 位置高频更新通过 positionListenable 发送，避免触发全局 ChangeNotifier。
     });
     _durationSub = audioPlayer.durationStream.listen((value) {
       duration = value ?? Duration.zero;
@@ -308,6 +308,12 @@ class PlayerController extends ChangeNotifier {
   Future<void>? _queueExpansionFuture;
   final Map<String, LyricCandidate> _manualLyricCandidates = {};
   int _lyricsLoadGeneration = 0;
+  int _playRequestGeneration = 0;
+
+  /// 高频位置更新只通知进度/歌词组件，不触发整个播放器树重建。
+  final ValueNotifier<Duration> positionListenable = ValueNotifier<Duration>(
+    Duration.zero,
+  );
 
   LyricCandidate? manualLyricCandidateFor(Song song) =>
       _manualLyricCandidates[song.hash];
@@ -481,6 +487,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> playSong(Song song, {List<Song>? queue}) async {
+    final requestGeneration = ++_playRequestGeneration;
+    bool isCurrentRequest() => requestGeneration == _playRequestGeneration;
+
     // 点击当前正在播放的歌曲：保持播放进度，仅同步队列上下文并继续播放。
     // 恢复会话后音源尚未加载（idle），走完整加载路径以消费接续进度。
     final current = currentSong;
@@ -499,13 +508,22 @@ class PlayerController extends ChangeNotifier {
           queueIndex: currentIndex,
           currentSong: current,
         );
+        if (!isCurrentRequest()) return;
         notifyListeners();
       }
       if (audioPlayer.processingState == ProcessingState.completed) {
         _completedSongHash = null;
         await _audioHandler.seek(Duration.zero);
       }
-      await _audioHandler.play();
+      if (!isCurrentRequest()) return;
+      unawaited(
+        _audioHandler.play().catchError((Object error, StackTrace stackTrace) {
+          if (!isCurrentRequest()) return;
+          errorMessage = error.toString();
+          isPreparing = false;
+          notifyListeners();
+        }),
+      );
       _scheduleSessionPersist();
       return;
     }
@@ -539,6 +557,7 @@ class PlayerController extends ChangeNotifier {
         try {
           _restoreLocalLoudness(song, audioQuality, local.loudness);
           await _loadAudioSource(song, local.path);
+          if (!isCurrentRequest()) return;
         } catch (error) {
           if (song.source == SongSource.local) rethrow;
           debugPrint(
@@ -549,28 +568,41 @@ class PlayerController extends ChangeNotifier {
             song,
             prepared: _consumePreparedNext(song),
           );
+          if (!isCurrentRequest()) return;
           networkUrl = loaded.url;
           cacheQuality = loaded.quality;
           cacheLoudness = loaded.loudness;
         }
       } else if (song.source == SongSource.local) {
         await _loadAudioSource(song, song.id);
+        if (!isCurrentRequest()) return;
       } else {
         final loaded = await _loadNetworkSourceWithFallback(
           song,
           prepared: _consumePreparedNext(song),
         );
+        if (!isCurrentRequest()) return;
         networkUrl = loaded.url;
         cacheQuality = loaded.quality;
         cacheLoudness = loaded.loudness;
       }
       // 主路径播放后，未消费的预解析已随 _loadAudioSource 作废。
+      if (!isCurrentRequest()) return;
       isPreparing = false;
       notifyListeners();
-      await _audioHandler.play();
+      unawaited(
+        _audioHandler.play().catchError((Object error, StackTrace stackTrace) {
+          if (!isCurrentRequest()) return;
+          errorMessage = error.toString();
+          isPreparing = false;
+          notifyListeners();
+        }),
+      );
+      if (!isCurrentRequest()) return;
       _scheduleSessionPersist();
-      // 切歌后应用音量均衡
-      await _applyVolumeNormalization();
+      // 切歌后立即独立应用音量均衡；不得占用播放/拖拽主流程。
+      unawaited(_applyVolumeNormalization());
+      if (!isCurrentRequest()) return;
       // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
       unawaited(_historyService.record(song));
       unawaited(_statsService.recordPlay(song));
@@ -584,27 +616,33 @@ class PlayerController extends ChangeNotifier {
         );
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       errorMessage = error.toString();
       isPreparing = false;
       notifyListeners();
     } finally {
-      if (isPreparing) {
+      if (isCurrentRequest() && isPreparing) {
         isPreparing = false;
         notifyListeners();
       }
     }
   }
 
-  Future<void> _loadAudioSource(Song song, String url) {
-    // 新的播放列表：当前曲为唯一子源；预载子源由 30 秒窗口触发追加。
+  Future<void> _loadAudioSource(Song song, String url) async {
+    // 在开始加载时冻结歌单和目标下标，避免异步期间 currentSong 改变导致偏移。
+    final queueSnapshot = List<Song>.of(queue);
+    final foundIndex = queueSnapshot.indexWhere(
+      (item) => _songKey(item) == _songKey(song),
+    );
+    final queueIndex = foundIndex < 0 ? 0 : foundIndex;
     _playlistSongs = [song];
     _playlistUrls = [url];
     _preparedNext = null;
-    return _audioHandler.loadSong(
+    await _audioHandler.loadSong(
       song: song,
       url: url,
-      queueSongs: queue,
-      queueIndex: currentIndex,
+      queueSongs: queueSnapshot,
+      queueIndex: queueIndex,
     );
   }
 
@@ -1422,7 +1460,7 @@ class PlayerController extends ChangeNotifier {
       final manual = _manualLyricCandidates[song.hash];
       final fresh = manual != null
           ? await _api.lyricsFromCandidate(manual)
-          : await _api.lyrics(song);
+          : await _api.lyrics(song, isCancelled: () => !isCurrentRequest());
       if (!isCurrentRequest()) return; // 已切歌或已有更新请求，丢弃
       final freshVisible = _visibleLyrics(fresh);
       if (!listEquals(lyrics, freshVisible)) {
@@ -1472,8 +1510,8 @@ class PlayerController extends ChangeNotifier {
   void previewSeek(Duration position) {
     _isScrubbing = true;
     _isSeeking = true;
+    // 拖拽预览只更新进度/歌词监听器，避免每个 pointer move 重建整个播放器。
     _setPositionBase(position, playing: false);
-    notifyListeners();
   }
 
   Future<void> seek(Duration position) async {
@@ -1485,21 +1523,27 @@ class PlayerController extends ChangeNotifier {
     _setPositionBase(target, playing: isPlaying);
     notifyListeners();
 
-    try {
-      await _audioHandler.seek(target);
-      if (serial != _seekSerial) {
-        return;
-      }
-      _setPositionBase(target, playing: isPlaying);
-      _lastDesktopLyricIndex = -1;
-      _maybeSyncDesktopLyricFromPosition();
-      notifyListeners();
-    } finally {
-      if (serial == _seekSerial) {
-        _isSeeking = false;
-        _isScrubbing = false;
-      }
-    }
+    // 提交 seek 后不等待平台完成：位置、进度条和歌词立即以目标时间继续，
+    // 原生播放器的异步确认只负责在完成后解除 position stream 的抑制。
+    unawaited(
+      _audioHandler
+          .seek(target)
+          .whenComplete(() {
+            if (serial != _seekSerial) return;
+            _setPositionBase(target, playing: isPlaying);
+            _lastDesktopLyricIndex = -1;
+            _maybeSyncDesktopLyricFromPosition();
+            _isSeeking = false;
+            _isScrubbing = false;
+            // 只在一次 seek 最终完成时发送语义状态更新。
+            notifyListeners();
+          })
+          .catchError((Object error, StackTrace stackTrace) {
+            if (serial != _seekSerial) return;
+            _isSeeking = false;
+            _isScrubbing = false;
+          }),
+    );
   }
 
   Future<void> next() async {
@@ -2501,6 +2545,7 @@ class PlayerController extends ChangeNotifier {
     );
     _audioHandler.detachTransportControls();
     _desktopLyrics.setVisibilityChangedHandler(null);
+    positionListenable.dispose();
     unawaited(_audioHandler.close());
     unawaited(_desktopLyrics.hide());
     super.dispose();
@@ -2508,6 +2553,9 @@ class PlayerController extends ChangeNotifier {
 
   void _setPositionBase(Duration value, {required bool playing}) {
     position = _clampPosition(value);
+    if (positionListenable.value != position) {
+      positionListenable.value = position;
+    }
     _positionClock
       ..stop()
       ..reset();

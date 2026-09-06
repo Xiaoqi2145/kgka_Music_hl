@@ -18,7 +18,7 @@ class MiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: player,
+      animation: Listenable.merge([player, player.positionListenable]),
       builder: (context, _) {
         final song = player.currentSong;
         if (song == null) {

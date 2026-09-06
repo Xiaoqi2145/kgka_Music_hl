@@ -384,10 +384,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   List<Song> _queueForImmediatePlayback([Song? selected]) {
     final songs = _filteredSongs;
     if (songs.isEmpty) return const [];
-    if (selected == null) return songs;
-    final index = songs.indexWhere((song) => song.hash == selected.hash);
-    if (index <= 0) return songs;
-    return [...songs.skip(index), ...songs.take(index)];
+    // 保持歌单原始顺序；点击项通过 queueIndex 定位，不能把点击歌曲旋转到列表首位。
+    return songs;
   }
 
   void _startBackgroundQueueLoad(int expectedRevision) {
