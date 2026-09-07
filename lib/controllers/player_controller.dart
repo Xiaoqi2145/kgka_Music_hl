@@ -16,6 +16,7 @@ import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
 import '../services/playback_history_service.dart';
+import '../services/playback_loudness.dart';
 import '../services/playback_stats_service.dart';
 import '../services/volume_normalization_service.dart';
 import 'download_controller.dart';
@@ -143,6 +144,11 @@ class PlayerController extends ChangeNotifier {
           value.processingState == ProcessingState.buffering;
       if (!_isSeeking) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
+      }
+      if (!isPreparing &&
+          isPlaying &&
+          value.processingState == ProcessingState.ready) {
+        _playbackLoudness.startPlayback();
       }
       _syncListeningTimeTracker();
       if (isPlaying) {
@@ -330,6 +336,11 @@ class PlayerController extends ChangeNotifier {
   int seekRevision = 0;
   int? _androidAudioSessionId;
   int _volumeNormApplySerial = 0;
+  final _loudnessLookup = LoudnessLookup();
+  final _hydratingLoudness = <String, Future<void>>{};
+  final _playbackLoudness = PlaybackLoudness();
+  AudioQuality? _normalizationQuality;
+  bool _disposed = false;
   int _queueRevision = 0;
   Future<void>? _queueExpansionFuture;
   final Map<String, LyricCandidate> _manualLyricCandidates = {};
@@ -542,6 +553,13 @@ class PlayerController extends ChangeNotifier {
       if (audioPlayer.processingState == ProcessingState.completed) {
         _completedSongHash = null;
         await _audioHandler.seek(Duration.zero);
+        if (!isCurrentRequest()) return;
+        _selectNormalizationSource(
+          song,
+          _normalizationQuality ?? audioQuality,
+          force: true,
+        );
+        unawaited(_applyVolumeNormalization());
       }
       if (!isCurrentRequest()) return;
       unawaited(
@@ -561,6 +579,7 @@ class PlayerController extends ChangeNotifier {
     isPreparing = true;
     errorMessage = null;
     currentSong = song;
+    _selectNormalizationSource(song, audioQuality, force: true);
     if (queue != null && queue.isNotEmpty) {
       this.queue = queue;
       _queueRevision++;
@@ -587,6 +606,7 @@ class PlayerController extends ChangeNotifier {
           await _loadAudioSource(song, local.path);
           if (!isCurrentRequest()) return;
         } catch (error) {
+          if (!isCurrentRequest()) return;
           if (song.source == SongSource.local) rethrow;
           debugPrint(
             '[KA Music][playback] local source failed for ${song.hash}: $error',
@@ -674,13 +694,39 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
+  String _loudnessKey(Song song, AudioQuality quality) =>
+      '${song.source.name}:${_songKey(song)}:${quality.apiValue}';
+
+  void _selectNormalizationSource(
+    Song song,
+    AudioQuality quality, {
+    bool force = false,
+  }) {
+    final key = _loudnessKey(song, quality);
+    if (!force && _playbackLoudness.key == key) return;
+    ++_volumeNormApplySerial;
+    _volNormService.invalidatePending();
+    _normalizationQuality = quality;
+    _playbackLoudness.begin(key, _loudnessLookup.get(key));
+  }
+
+  void _rememberLoudness(Song song, AudioQuality quality, LoudnessData? data) {
+    final key = _loudnessKey(song, quality);
+    _loudnessLookup.put(key, data);
+    _playbackLoudness.accept(key, _playbackLoudness.generation, data);
+  }
+
   void _restoreLocalLoudness(
     Song song,
     AudioQuality quality,
     LoudnessData? loudness,
   ) {
-    if (loudness?.canNormalize == true) {
-      _volNormService.cacheLoudness(song.hash, loudness);
+    final key = _loudnessKey(song, quality);
+    final available = loudness?.canNormalize == true
+        ? loudness
+        : _loudnessLookup.get(key);
+    if (available != null) {
+      _rememberLoudness(song, quality, available);
       return;
     }
     if (volumeNormalizationEnabled) {
@@ -688,26 +734,44 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  Future<void> _hydrateLocalLoudness(Song song, AudioQuality quality) async {
+  Future<void> _hydrateLocalLoudness(Song song, AudioQuality quality) {
+    final key =
+        '${_loudnessKey(song, quality)}:${_playbackLoudness.generation}';
+    return _hydratingLoudness.putIfAbsent(
+      key,
+      () => _hydrateLocalLoudnessOnce(song, quality).whenComplete(() {
+        _hydratingLoudness.remove(key);
+      }),
+    );
+  }
+
+  Future<void> _hydrateLocalLoudnessOnce(
+    Song song,
+    AudioQuality quality,
+  ) async {
     if (song.source == SongSource.local || song.source == SongSource.netease) {
       return;
     }
+    final key = _loudnessKey(song, quality);
+    final generation = _playbackLoudness.generation;
     try {
-      final playUrl = song.isCloudDrive
-          ? await _api.cloudSongUrl(song)
-          : await _api.songUrl(song, quality: quality);
-      final loudness = playUrl.loudness;
-      if (loudness == null || !loudness.canNormalize) return;
-
-      _volNormService.cacheLoudness(song.hash, loudness);
-      await downloadController?.updateLocalLoudness(song, quality, loudness);
-      if (currentSong?.hash == song.hash && audioQuality == quality) {
-        await _applyVolumeNormalization();
+      final loudness = await _loudnessLookup.resolve(key, () async {
+        final playUrl = song.isCloudDrive
+            ? await _api.cloudSongUrl(song)
+            : await _api.songUrl(song, quality: quality);
+        return playUrl.loudness;
+      });
+      if (loudness == null || _disposed) return;
+      if (_playbackLoudness.accept(key, generation, loudness)) {
+        unawaited(_applyVolumeNormalization());
+      } else {
+        debugPrint('[KA Music][volume-norm] metadata cached for later: $key');
       }
+      // Persist independently: slow storage must never delay gain application.
+      await downloadController?.updateLocalLoudness(song, quality, loudness);
     } catch (error) {
       debugPrint(
-        '[KA Music][volume-norm] failed to restore cached loudness for '
-        '${song.hash}: $error',
+        '[KA Music][volume-norm] loudness lookup/persist failed: $error',
       );
     }
   }
@@ -718,19 +782,27 @@ class PlayerController extends ChangeNotifier {
     Song song, {
     _PreparedNextSource? prepared,
   }) async {
+    final generation = _playRequestGeneration;
+    void checkCurrent() {
+      if (generation != _playRequestGeneration) {
+        throw StateError('Superseded playback source');
+      }
+    }
+
     // 预解析的源作为首选尝试；加载失败让位后回退完整解析（含音质降级）。
     if (prepared != null) {
       try {
+        checkCurrent();
+        _selectNormalizationSource(song, prepared.quality);
+        _rememberLoudness(song, prepared.quality, prepared.loudness);
         await _loadAudioSource(song, prepared.url);
-        if (prepared.loudness != null) {
-          _volNormService.cacheLoudness(song.hash, prepared.loudness);
-        }
         return (
           url: prepared.url,
           quality: prepared.quality,
           loudness: prepared.loudness,
         );
       } catch (_) {
+        checkCurrent();
         await audioPlayer.stop();
       }
     }
@@ -739,8 +811,9 @@ class PlayerController extends ChangeNotifier {
       if (playUrl.url.isEmpty) {
         throw Exception('云盘歌曲暂时没有可播放地址');
       }
+      checkCurrent();
+      _rememberLoudness(song, audioQuality, playUrl.loudness);
       await _loadAudioSource(song, playUrl.url);
-      _volNormService.cacheLoudness(song.hash, playUrl.loudness);
       return (
         url: playUrl.url,
         quality: audioQuality,
@@ -771,8 +844,10 @@ class PlayerController extends ChangeNotifier {
         if (playUrl.url.isEmpty) {
           throw Exception('${quality.badge} 暂时没有可播放地址');
         }
+        checkCurrent();
+        _selectNormalizationSource(song, quality);
+        _rememberLoudness(song, quality, playUrl.loudness);
         await _loadAudioSource(song, playUrl.url);
-        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
         if (quality != audioQuality) {
           debugPrint(
             '[KA Music][smart-quality] ${audioQuality.badge} source failed; '
@@ -781,6 +856,7 @@ class PlayerController extends ChangeNotifier {
         }
         return (url: playUrl.url, quality: quality, loudness: playUrl.loudness);
       } catch (error, stackTrace) {
+        checkCurrent();
         lastError = error;
         lastStackTrace = stackTrace;
         debugPrint(
@@ -1002,6 +1078,12 @@ class PlayerController extends ChangeNotifier {
     }
     errorMessage = null;
     currentSong = song;
+    final prepared = _preparedNext;
+    final quality = prepared?.songKey == _songKey(song)
+        ? prepared!.quality
+        : audioQuality;
+    _selectNormalizationSource(song, quality, force: true);
+    _playbackLoudness.startPlayback();
     lyrics = const [];
     _lastDesktopLyricIndex = -1;
     _setPositionBase(Duration.zero, playing: isPlaying);
@@ -1018,7 +1100,12 @@ class PlayerController extends ChangeNotifier {
     if (index < _playlistUrls.length) {
       final url = _playlistUrls[index];
       if (url.startsWith('http://') || url.startsWith('https://')) {
-        _schedulePlaybackCache(song, audioQuality, url);
+        _schedulePlaybackCache(
+          song,
+          quality,
+          url,
+          loudness: _playbackLoudness.data,
+        );
       }
     }
     _preparedNext = null;
@@ -1084,7 +1171,11 @@ class PlayerController extends ChangeNotifier {
       if (next.source == SongSource.local) {
         return;
       }
-      if (downloadController?.localSourceFor(next, audioQuality) != null) {
+      final quality = audioQuality;
+      final local = downloadController?.localSourceFor(next, quality);
+      if (local != null) {
+        // Cached audio still needs metadata prefetch for older cache indexes.
+        _restoreLocalLoudness(next, quality, local.loudness);
         return;
       }
 
@@ -1098,7 +1189,7 @@ class PlayerController extends ChangeNotifier {
       } else if (next.source == SongSource.netease) {
         url = 'https://music.163.com/song/media/outer/url?id=${next.id}.mp3';
       } else {
-        final playUrl = await _api.songUrl(next, quality: audioQuality);
+        final playUrl = await _api.songUrl(next, quality: quality);
         if (playUrl.url.isEmpty) return;
         url = playUrl.url;
         loudness = playUrl.loudness;
@@ -1106,6 +1197,7 @@ class PlayerController extends ChangeNotifier {
       if (serial != _prepareNextSerial || !gaplessPlaybackEnabled) {
         return;
       }
+      _loudnessLookup.put(_loudnessKey(next, quality), loudness);
       // 播列化：追加为预载子源，ExoPlayer 在当前曲末尾自动预载缓冲，
       // 过渡由播放器原生完成（样本级无缝）。
       try {
@@ -1130,7 +1222,7 @@ class PlayerController extends ChangeNotifier {
         song: next,
         songKey: nextKey,
         url: url,
-        quality: audioQuality,
+        quality: quality,
         loudness: loudness,
       );
     } catch (_) {
@@ -1695,7 +1787,11 @@ class PlayerController extends ChangeNotifier {
     }
 
     final resumePlayback = isPlaying;
-    final generation = _playRequestGeneration;
+    final generation = ++_playRequestGeneration;
+    final quality = audioQuality;
+    bool isCurrent() => !_disposed && generation == _playRequestGeneration;
+    _audioHandler.invalidatePendingPlay();
+    _selectNormalizationSource(song, quality, force: true);
     final targetPosition = smoothPosition;
     isPreparing = true;
     errorMessage = null;
@@ -1705,11 +1801,11 @@ class PlayerController extends ChangeNotifier {
       String url;
       String? networkUrl;
       LoudnessData? loudness;
-      final local = downloadController?.localSourceFor(song, audioQuality);
+      final local = downloadController?.localSourceFor(song, quality);
       if (local != null) {
         url = local.path;
         loudness = local.loudness;
-        _restoreLocalLoudness(song, audioQuality, loudness);
+        _restoreLocalLoudness(song, quality, loudness);
       } else if (song.source == SongSource.local) {
         url = song.id;
       } else {
@@ -1722,7 +1818,7 @@ class PlayerController extends ChangeNotifier {
             hash: song.hash,
           );
         } else {
-          playUrl = await _api.songUrl(song, quality: audioQuality);
+          playUrl = await _api.songUrl(song, quality: quality);
         }
         if (playUrl.url.isEmpty) {
           throw Exception('当前音质暂时没有可播放地址');
@@ -1730,37 +1826,41 @@ class PlayerController extends ChangeNotifier {
         url = playUrl.url;
         networkUrl = playUrl.url;
         loudness = playUrl.loudness;
-        _volNormService.cacheLoudness(song.hash, playUrl.loudness);
+        if (!isCurrent()) return;
+        _rememberLoudness(song, quality, playUrl.loudness);
       }
-      await _audioHandler.loadSong(
-        song: song,
-        url: url,
-        queueSongs: queue,
-        queueIndex: currentIndex,
-      );
+      if (!isCurrent()) return;
+      await _loadAudioSource(song, url);
+      if (!isCurrent()) return;
       if (targetPosition > Duration.zero) {
         await _audioHandler.seek(_clampPosition(targetPosition));
       }
-      if (resumePlayback && generation == _playRequestGeneration) {
-        await _audioHandler.play();
+      if (!isCurrent()) return;
+      isPreparing = false;
+      if (resumePlayback) {
+        unawaited(
+          _audioHandler.play().catchError((Object error, StackTrace stack) {
+            if (!isCurrent()) return;
+            errorMessage = error.toString();
+            notifyListeners();
+          }),
+        );
       }
+      // play() completes on pause/end, not on startup. Never await it here.
+      unawaited(_applyVolumeNormalization());
       // 切音质后后台缓存
       if (networkUrl != null) {
         _cancelPendingPlaybackCache();
-        _schedulePlaybackCache(
-          song,
-          audioQuality,
-          networkUrl,
-          loudness: loudness,
-        );
+        _schedulePlaybackCache(song, quality, networkUrl, loudness: loudness);
       }
-      // 音质切换后重新应用音量均衡
-      await _applyVolumeNormalization();
     } catch (error) {
+      if (!isCurrent()) return;
       errorMessage = error.toString();
     } finally {
-      isPreparing = false;
-      notifyListeners();
+      if (isCurrent()) {
+        isPreparing = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -2215,11 +2315,21 @@ class PlayerController extends ChangeNotifier {
   Future<void> _applyVolumeNormalization({
     bool retryIfSessionPending = true,
   }) async {
+    if (_disposed || isPreparing) return;
     final serial = ++_volumeNormApplySerial;
+    final generation = _playbackLoudness.generation;
     final song = currentSong;
     if (song == null) return;
-
-    final loudness = _volNormService.getCachedLoudness(song.hash);
+    bool isCurrent() =>
+        !_disposed &&
+        serial == _volumeNormApplySerial &&
+        generation == _playbackLoudness.generation;
+    if (isPlaying && audioPlayer.processingState == ProcessingState.ready) {
+      _playbackLoudness.startPlayback();
+    }
+    // Only admitted metadata, never the cache directly: late responses must
+    // not sneak in via session callbacks after the startup window closes.
+    final loudness = _playbackLoudness.applicableData;
     final sessionId =
         _androidAudioSessionId ?? audioPlayer.androidAudioSessionId;
     final gainDb = loudness == null
@@ -2229,8 +2339,18 @@ class PlayerController extends ChangeNotifier {
     final gainLinear = await _volNormService.applyForTrack(
       audioSessionId: sessionId,
       loudness: loudness,
+      isCurrent: () =>
+          isCurrent() &&
+          (loudness == null ||
+              identical(_playbackLoudness.applicableData, loudness)),
     );
-    if (serial != _volumeNormApplySerial || currentSong?.hash != song.hash) {
+    if (!isCurrent()) {
+      return;
+    }
+    if (loudness != null && _playbackLoudness.applicableData == null) {
+      // The native queue may have outlived the admission window. Reconcile to
+      // bypass, including clearing any enhancer left by the previous source.
+      unawaited(_applyVolumeNormalization(retryIfSessionPending: false));
       return;
     }
 
@@ -2239,7 +2359,14 @@ class PlayerController extends ChangeNotifier {
         _volNormService.enabled && loudness != null && gainLinear < 1.0
         ? gainLinear
         : 1.0;
-    await _applyPlaybackVolume();
+    try {
+      await _applyPlaybackVolume();
+      if (isCurrent() && loudness != null && gainLinear != 1.0) {
+        _playbackLoudness.markApplied(generation);
+      }
+    } catch (error) {
+      debugPrint('[KA Music][volume-norm] volume apply failed: $error');
+    }
 
     if (retryIfSessionPending &&
         _volNormService.enabled &&
@@ -2249,7 +2376,7 @@ class PlayerController extends ChangeNotifier {
         (sessionId == null || sessionId <= 0)) {
       unawaited(
         Future<void>.delayed(const Duration(milliseconds: 250)).then((_) async {
-          if (currentSong?.hash == song.hash) {
+          if (isCurrent()) {
             await _applyVolumeNormalization(retryIfSessionPending: false);
           }
         }),
@@ -2257,25 +2384,31 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 切换音量均衡开关。
+  void _reopenNormalizationWindow() {
+    ++_volumeNormApplySerial;
+    _volNormService.invalidatePending();
+    final key = _playbackLoudness.key;
+    _playbackLoudness.reopen(key == null ? null : _loudnessLookup.get(key));
+    final song = currentSong;
+    if (_volNormService.enabled && song != null) {
+      final quality = _normalizationQuality ?? audioQuality;
+      final local = downloadController?.localSourceFor(song, quality);
+      if (local != null) {
+        _restoreLocalLoudness(song, quality, local.loudness);
+      }
+    }
+    unawaited(_applyVolumeNormalization());
+  }
+
+  /// 切换音量均衡开关；立即调度应用，不等待设置持久化。
   Future<void> setVolumeNormalizationEnabled(bool enabled) async {
     if (volumeNormalizationEnabled == enabled) return;
     volumeNormalizationEnabled = enabled;
     _volNormService.enabled = enabled;
+    _reopenNormalizationWindow();
+    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_volumeNormEnabledSettingKey, enabled);
-    notifyListeners();
-
-    if (enabled) {
-      final song = currentSong;
-      if (song != null) {
-        final local = downloadController?.localSourceFor(song, audioQuality);
-        if (local != null) {
-          _restoreLocalLoudness(song, audioQuality, local.loudness);
-        }
-      }
-    }
-    await _applyVolumeNormalization();
   }
 
   /// 设置参考响度（-16 ~ -6 LUFS）。
@@ -2284,14 +2417,10 @@ class PlayerController extends ChangeNotifier {
     if ((volumeNormalizationRefLufs - clamped).abs() < 0.1) return;
     volumeNormalizationRefLufs = clamped;
     _volNormService.referenceLufs = clamped;
+    _reopenNormalizationWindow();
+    notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_volumeNormRefLufsSettingKey, clamped);
-    notifyListeners();
-
-    // 如果正在播放且均衡已启用，重新应用
-    if (_volNormService.enabled && currentSong != null) {
-      await _applyVolumeNormalization();
-    }
   }
 
   Future<void> _restoreSettings() async {
@@ -2557,6 +2686,9 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    ++_volumeNormApplySerial;
+    _volNormService.invalidatePending();
     unawaited(flushPersistence());
     _pauseListeningTimeTracker();
     _cancelPendingPlaybackCache();

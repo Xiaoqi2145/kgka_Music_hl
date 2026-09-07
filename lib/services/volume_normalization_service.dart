@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -30,6 +31,12 @@ class VolumeNormalizationService {
 
   /// 当前生效的线性增益（1.0 = 无增益变化）。
   double currentGain = 1.0;
+  Future<void> _tail = Future.value();
+  int _revision = 0;
+  bool _disposed = false;
+
+  /// Invalidate queued work immediately when the source or settings change.
+  void invalidatePending() => ++_revision;
 
   /// LUFS 缓存（keyed by 歌曲 hash）。
   final Map<String, LoudnessData> _loudnessCache = {};
@@ -103,10 +110,30 @@ class VolumeNormalizationService {
     required int? audioSessionId,
     required LoudnessData? loudness,
     double userVolume = 1.0,
+    bool Function()? isCurrent,
+  }) {
+    final revision = ++_revision;
+    bool valid() =>
+        !_disposed && revision == _revision && (isCurrent?.call() ?? true);
+    final result = _tail.then((_) async {
+      if (!valid()) return 1.0;
+      final gain = await _applyForTrack(
+        audioSessionId: audioSessionId,
+        loudness: loudness,
+      );
+      if (valid()) currentGain = gain;
+      return gain;
+    });
+    _tail = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
+
+  Future<double> _applyForTrack({
+    required int? audioSessionId,
+    required LoudnessData? loudness,
   }) async {
     if (!enabled) {
       await _disableNativeEnhancer();
-      currentGain = 1.0;
       return 1.0;
     }
 
@@ -114,7 +141,6 @@ class VolumeNormalizationService {
     if (gainLinear == null) {
       // LUFS 数据不可用，静默旁路
       await _disableNativeEnhancer();
-      currentGain = 1.0;
       return 1.0;
     }
 
@@ -122,7 +148,10 @@ class VolumeNormalizationService {
 
     if (gainDb > 0.5) {
       // ── 提升路径：LoudnessEnhancer ──
-      if (audioSessionId != null && audioSessionId > 0) {
+      if (!kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.android &&
+          audioSessionId != null &&
+          audioSessionId > 0) {
         final millibels = (gainDb * 100).round().clamp(0, 3000);
         try {
           await _channel.invokeMethod('enableLoudnessEnhancer', {
@@ -131,19 +160,20 @@ class VolumeNormalizationService {
           });
         } catch (e) {
           debugPrint('[VolumeNorm] Failed to enable LoudnessEnhancer: $e');
+          await _disableNativeEnhancer();
+          return 1.0;
         }
       } else {
         await _disableNativeEnhancer();
+        return 1.0;
       }
-      currentGain = gainLinear;
     } else if (gainDb < -0.5) {
       // ── 衰减路径：通过音量级联 ──
       await _disableNativeEnhancer();
-      currentGain = gainLinear;
     } else {
       // ── 旁路 ──
       await _disableNativeEnhancer();
-      currentGain = 1.0;
+      return 1.0;
     }
 
     debugPrint(
@@ -162,6 +192,7 @@ class VolumeNormalizationService {
 
   /// 禁用 Native LoudnessEnhancer。
   Future<void> _disableNativeEnhancer() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await _channel.invokeMethod('disableLoudnessEnhancer');
     } catch (_) {
@@ -171,6 +202,9 @@ class VolumeNormalizationService {
 
   /// 关闭时清理。
   Future<void> dispose() async {
+    _disposed = true;
+    invalidatePending();
+    await _tail;
     await _disableNativeEnhancer();
     _loudnessCache.clear();
   }
