@@ -3026,6 +3026,7 @@ class _LyricText extends StatelessWidget {
         baseColor: Colors.white.withValues(alpha: .34),
         activeColor: Colors.white,
         textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
         textAlign: textAlign,
         maxLines: 1,
         maxWidth: double.infinity,
@@ -3046,6 +3047,7 @@ class _LyricText extends StatelessWidget {
           baseColor: Colors.white.withValues(alpha: .34),
           activeColor: Colors.white,
           textDirection: Directionality.of(context),
+          textScaler: MediaQuery.textScalerOf(context),
           textAlign: textAlign,
           maxLines: singleLine ? 1 : null,
           maxWidth: constraints.maxWidth,
@@ -3078,6 +3080,7 @@ class _LyricText extends StatelessWidget {
             baseColor: Colors.white.withValues(alpha: .34),
             activeColor: Colors.white,
             textDirection: Directionality.of(context),
+            textScaler: MediaQuery.textScalerOf(context),
             textAlign: textAlign,
             maxLines: null,
             maxWidth: constraints.maxWidth,
@@ -3108,6 +3111,7 @@ class _KaraokeLinePainter extends CustomPainter {
     required this.baseColor,
     required this.activeColor,
     required this.textDirection,
+    required this.textScaler,
     required this.textAlign,
     required this.maxLines,
     required this.maxWidth,
@@ -3119,6 +3123,17 @@ class _KaraokeLinePainter extends CustomPainter {
         style: style.copyWith(color: baseColor),
       ),
       textDirection: textDirection,
+      textScaler: textScaler,
+      textAlign: textAlign,
+      maxLines: maxLines,
+    )..layout(maxWidth: maxLines == 1 ? double.infinity : maxWidth);
+    _highlightPainter = TextPainter(
+      text: TextSpan(
+        text: line.text,
+        style: style.copyWith(color: activeColor),
+      ),
+      textDirection: textDirection,
+      textScaler: textScaler,
       textAlign: textAlign,
       maxLines: maxLines,
     )..layout(maxWidth: maxLines == 1 ? double.infinity : maxWidth);
@@ -3131,10 +3146,12 @@ class _KaraokeLinePainter extends CustomPainter {
   final Color baseColor;
   final Color activeColor;
   final TextDirection textDirection;
+  final TextScaler textScaler;
   final TextAlign textAlign;
   final int? maxLines;
   final double maxWidth;
   late final TextPainter _textPainter;
+  late final TextPainter _highlightPainter;
 
   double get width => _textPainter.width;
 
@@ -3175,16 +3192,6 @@ class _KaraokeLinePainter extends CustomPainter {
       return;
     }
 
-    final highlightPainter = TextPainter(
-      text: TextSpan(
-        text: line.text,
-        style: style.copyWith(color: activeColor),
-      ),
-      textDirection: textDirection,
-      textAlign: textAlign,
-      maxLines: maxLines,
-    )..layout(maxWidth: maxLines == 1 ? double.infinity : maxWidth);
-
     for (final box in boxes) {
       final rect = box.toRect();
       final width = rect.width * progress.clamp(0, 1);
@@ -3194,7 +3201,7 @@ class _KaraokeLinePainter extends CustomPainter {
 
       canvas.save();
       canvas.clipRect(Rect.fromLTWH(rect.left, rect.top, width, rect.height));
-      highlightPainter.paint(canvas, Offset.zero);
+      _highlightPainter.paint(canvas, Offset.zero);
       canvas.restore();
     }
   }
@@ -3204,6 +3211,12 @@ class _KaraokeLinePainter extends CustomPainter {
     return oldDelegate.position != position ||
         oldDelegate.line != line ||
         oldDelegate.style != style ||
+        oldDelegate.baseColor != baseColor ||
+        oldDelegate.activeColor != activeColor ||
+        oldDelegate.textDirection != textDirection ||
+        oldDelegate.textScaler != textScaler ||
+        oldDelegate.textAlign != textAlign ||
+        oldDelegate.maxLines != maxLines ||
         oldDelegate.maxWidth != maxWidth;
   }
 }
