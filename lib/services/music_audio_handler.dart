@@ -1,7 +1,10 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../models/music_models.dart';
+import 'audio_focus_gate.dart';
 
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
@@ -16,8 +19,24 @@ class MusicAudioHandler extends BaseAudioHandler
   // 关闭 just_audio 内置打断处理：其暂停/恢复/降音音量策略与
   // PlayerController 的打断设置（阻止打断/自动恢复）相互冲突，
   // 改由控制器在 interruptionEventStream 中统一实现完整策略。
-  // 焦点申请不受影响（handleAudioSessionActivation 默认开启，play 时照常请求）。
-  final AudioPlayer audioPlayer = AudioPlayer(handleInterruptions: false);
+  // 激活也由服务统一管理，不能依赖 just_audio.play 的 playing 短路入口。
+  final AudioPlayer audioPlayer = AudioPlayer(
+    handleInterruptions: false,
+    handleAudioSessionActivation: false,
+  );
+  final AudioFocusGate _focus = AudioFocusGate(
+    resetBeforeAcquire:
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
+    setActive: (active) async =>
+        (await AudioSession.instance).setActive(active),
+  );
+  int _transportGeneration = 0;
+  void Function(bool playing)? onPlaybackIntent;
+
+  void invalidatePendingPlay() {
+    ++_transportGeneration;
+    _focus.invalidate();
+  }
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
@@ -34,6 +53,7 @@ class MusicAudioHandler extends BaseAudioHandler
   void detachTransportControls() {
     _onNext = null;
     _onPrevious = null;
+    onPlaybackIntent = null;
   }
 
   AudioSource _audioSourceFor(String url) {
@@ -49,6 +69,8 @@ class MusicAudioHandler extends BaseAudioHandler
     required List<Song> queueSongs,
     required int queueIndex,
   }) async {
+    // setAudioSources 在 playing=true 时会自行出声；加载前暂停，等焦点批准后再播。
+    await pauseForInterruption();
     final currentItem = _mediaItemFor(song);
     final window = _windowedQueue(queueSongs, queueIndex);
     _queueIndex = window.index;
@@ -112,13 +134,50 @@ class MusicAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> play() async {
+  Future<void> play() => _play(userIntent: true);
+
+  Future<void> reclaimAudioFocus() => _play(userIntent: false);
+
+  Future<void> _play({required bool userIntent}) async {
+    if (userIntent) onPlaybackIntent?.call(true);
+    final generation = ++_transportGeneration;
+    try {
+      // 先放弃旧请求，确保临时失焦后也真正向系统申请，而非 native return true。
+      final granted = await _focus.acquire();
+      if (generation != _transportGeneration) return;
+      if (!granted) {
+        await audioPlayer.pause();
+        return;
+      }
+    } catch (error) {
+      debugPrint('[KA Music][audio focus] activation failed: $error');
+      if (generation == _transportGeneration) await audioPlayer.pause();
+      return;
+    }
     await audioPlayer.play();
   }
 
   @override
   Future<void> pause() async {
+    onPlaybackIntent?.call(false);
+    invalidatePendingPlay();
+    final generation = _transportGeneration;
     await audioPlayer.pause();
+    if (generation == _transportGeneration) await _releaseFocus();
+  }
+
+  /// 临时中断保留焦点请求，以便接收 GAIN；不清除控制器的待恢复标记。
+  Future<void> pauseForInterruption() async {
+    invalidatePendingPlay();
+    await audioPlayer.pause();
+  }
+
+  Future<void> _releaseFocus() async {
+    try {
+      await _focus.release();
+    } catch (error) {
+      debugPrint('[KA Music][audio focus] deactivation failed: $error');
+    }
   }
 
   @override
@@ -138,11 +197,17 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> stop() async {
+    onPlaybackIntent?.call(false);
+    invalidatePendingPlay();
+    final generation = _transportGeneration;
     await audioPlayer.stop();
+    if (generation == _transportGeneration) await _releaseFocus();
   }
 
   Future<void> close() async {
+    invalidatePendingPlay();
     await audioPlayer.dispose();
+    await _releaseFocus();
   }
 
   ({List<Song> songs, int index}) _windowedQueue(

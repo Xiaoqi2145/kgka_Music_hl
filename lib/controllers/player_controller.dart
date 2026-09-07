@@ -111,6 +111,14 @@ class PlayerController extends ChangeNotifier {
   PlayerController(this._api, this._audioHandler) {
     unawaited(_restoreSettings());
     _audioHandler.attachTransportControls(onNext: next, onPrevious: previous);
+    _audioHandler.onPlaybackIntent = (playing) {
+      _cancelAutomaticResume();
+      if (!playing) {
+        // 暂停也撤销尚在解析/加载中的播放，防止加载完成后反手拉起。
+        ++_playRequestGeneration;
+        isPreparing = false;
+      }
+    };
     _desktopLyrics.setVisibilityChangedHandler(_handleDesktopLyricsVisibility);
     _positionSub = audioPlayer.positionStream.listen((value) {
       if (!_isSeeking) {
@@ -207,6 +215,24 @@ class PlayerController extends ChangeNotifier {
   /// 打断开始时是否正在播放：恢复播放只针对被系统打断的情况，
   /// 用户手动暂停后再被打断（其他 App 抢焦点）不自动恢复。
   bool _wasPlayingOnInterruptionBegin = false;
+  bool _isDucked = false;
+  double _normalizationVolume = 1.0;
+
+  void _cancelAutomaticResume() {
+    _autoResumeTimer?.cancel();
+    _autoResumeTimer = null;
+    _wasPlayingOnInterruptionBegin = false;
+    _setDucked(false);
+  }
+
+  void _setDucked(bool ducked) {
+    if (_isDucked == ducked) return;
+    _isDucked = ducked;
+    unawaited(_applyPlaybackVolume());
+  }
+
+  Future<void> _applyPlaybackVolume() =>
+      audioPlayer.setVolume(_normalizationVolume * (_isDucked ? 0.5 : 1.0));
   StreamSubscription<AudioDevicesChangedEvent>? _devicesChangedSub;
   final Stopwatch _positionClock = Stopwatch();
 
@@ -487,6 +513,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> playSong(Song song, {List<Song>? queue}) async {
+    _cancelAutomaticResume();
+    _audioHandler.invalidatePendingPlay();
     final requestGeneration = ++_playRequestGeneration;
     bool isCurrentRequest() => requestGeneration == _playRequestGeneration;
 
@@ -1489,12 +1517,13 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> togglePlay() async {
-    // 手动操作优先于自动恢复，清除旧的中断待恢复标记。
-    _wasPlayingOnInterruptionBegin = false;
+    // 手动操作优先于自动恢复。
+    _cancelAutomaticResume();
     if (audioPlayer.playing) {
       await _audioHandler.pause();
       return;
     }
+    final generation = _playRequestGeneration;
     // 接续播放恢复的歌曲尚未加载音源：走完整 playSong 从头播放。
     if (audioPlayer.processingState == ProcessingState.idle &&
         currentSong != null) {
@@ -1504,6 +1533,7 @@ class PlayerController extends ChangeNotifier {
     if (audioPlayer.processingState == ProcessingState.completed) {
       await _audioHandler.seek(Duration.zero);
     }
+    if (generation != _playRequestGeneration) return;
     await _audioHandler.play();
   }
 
@@ -1547,21 +1577,24 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> next() async {
+    _cancelAutomaticResume();
+    _audioHandler.invalidatePendingPlay();
+    final generation = ++_playRequestGeneration;
     // 预载的下一曲已就绪：直接跳转，瞬时切换（无需重新解析加载）。
     final playlistIndex = audioPlayer.currentIndex ?? -1;
     if (playlistIndex >= 0 && playlistIndex + 1 < _playlistSongs.length) {
       await audioPlayer.seek(Duration.zero, index: playlistIndex + 1);
-      if (!isPlaying) {
-        unawaited(_audioHandler.play());
-      }
+      if (generation != _playRequestGeneration) return;
+      unawaited(_audioHandler.play());
       return;
     }
     final nextSong = await _nextSong();
-    if (nextSong == null) return;
+    if (generation != _playRequestGeneration || nextSong == null) return;
     // 队列只有当前一首歌时，"下一曲"语义为从头重播而不是保持进度。
     final current = currentSong;
     if (current != null && _songKey(nextSong) == _songKey(current)) {
       await seek(Duration.zero);
+      if (generation != _playRequestGeneration) return;
       await _audioHandler.play();
       return;
     }
@@ -1569,6 +1602,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> previous() async {
+    _cancelAutomaticResume();
+    _audioHandler.invalidatePendingPlay();
+    ++_playRequestGeneration;
     final index = currentIndex;
     if (index > 0) {
       await playSong(queue[index - 1], queue: queue);
@@ -1578,8 +1614,12 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _handleCompleted() async {
-    if (_isHandlingCompletion || currentSong == null) return;
+    if (_isHandlingCompletion || currentSong == null || !audioPlayer.playing) {
+      return;
+    }
     if (_completedSongHash == currentSong!.hash) return;
+    _cancelAutomaticResume();
+    final generation = _playRequestGeneration;
     _isHandlingCompletion = true;
     _completionFallbackTimer?.cancel();
     _completedSongHash = currentSong!.hash;
@@ -1597,6 +1637,7 @@ class PlayerController extends ChangeNotifier {
       if (playbackMode == PlaybackMode.singleLoop) {
         _completedSongHash = null;
         await _audioHandler.seek(Duration.zero);
+        if (generation != _playRequestGeneration) return;
         await _audioHandler.play();
         return;
       }
@@ -1605,6 +1646,7 @@ class PlayerController extends ChangeNotifier {
       // 预选在歌曲开始时已定，随机性等价）。
       final preparedSong = _preparedNext?.song;
       final nextSong = preparedSong ?? await _nextSong();
+      if (generation != _playRequestGeneration) return;
       if (nextSong == null) {
         await _audioHandler.seek(Duration.zero);
         return;
@@ -1653,6 +1695,7 @@ class PlayerController extends ChangeNotifier {
     }
 
     final resumePlayback = isPlaying;
+    final generation = _playRequestGeneration;
     final targetPosition = smoothPosition;
     isPreparing = true;
     errorMessage = null;
@@ -1698,7 +1741,7 @@ class PlayerController extends ChangeNotifier {
       if (targetPosition > Duration.zero) {
         await _audioHandler.seek(_clampPosition(targetPosition));
       }
-      if (resumePlayback) {
+      if (resumePlayback && generation == _playRequestGeneration) {
         await _audioHandler.play();
       }
       // 切音质后后台缓存
@@ -1727,7 +1770,7 @@ class PlayerController extends ChangeNotifier {
       await session.configure(_audioSessionConfiguration);
       // just_audio 内置打断处理已关闭（handleInterruptions: false），
       // 暂停/恢复策略由本监听统一实现：
-      // - begin(duck)：系统仅压低音量，忽略；
+      // - begin/end(duck)：收到回调时由应用降音/恢复；系统自动 duck 无需回调；
       // - begin(pause/unknown)：记录打断时是否在播放并暂停；
       //   阻止打断模式则不暂停，立即重新请求焦点抢回，
       //   请求被拒（来电等系统级打断）时让位暂停；
@@ -1736,17 +1779,26 @@ class PlayerController extends ChangeNotifier {
       // - 拔耳机（becomingNoisy）：固定暂停，不自动恢复，避免扬声器外放。
       _interruptionSub = session.interruptionEventStream.listen((event) {
         if (event.type == AudioInterruptionType.duck) {
+          _setDucked(event.begin);
           return;
         }
+        _setDucked(false);
         if (event.begin) {
-          _wasPlayingOnInterruptionBegin = isPlaying;
+          _autoResumeTimer?.cancel();
+          _wasPlayingOnInterruptionBegin =
+              _wasPlayingOnInterruptionBegin ||
+              audioPlayer.playing ||
+              isPreparing;
+          ++_playRequestGeneration;
+          isPreparing = false;
+          _audioHandler.invalidatePendingPlay();
           if (!_wasPlayingOnInterruptionBegin || currentSong == null) {
             return;
           }
           if (!audioInterruptionEnabled) {
             unawaited(_reclaimAudioFocus());
           } else {
-            unawaited(_audioHandler.pause());
+            unawaited(_audioHandler.pauseForInterruption());
           }
         } else {
           final shouldResume =
@@ -1762,11 +1814,8 @@ class PlayerController extends ChangeNotifier {
         }
       });
       _becomingNoisySub = session.becomingNoisyEventStream.listen((_) {
-        _autoResumeTimer?.cancel();
-        _wasPlayingOnInterruptionBegin = false;
-        if (isPlaying) {
-          unawaited(_audioHandler.pause());
-        }
+        // 即使正在加载或等候焦点，也必须撤销播放意图。
+        unawaited(_audioHandler.pause());
       });
       _devicesChangedSub = session.devicesChangedEventStream.listen((event) {
         if (!autoPlayOnDeviceConnected || currentSong == null) {
@@ -1791,11 +1840,8 @@ class PlayerController extends ChangeNotifier {
   /// 被拒（来电等系统级打断）时让位暂停，结束后由 end 事件恢复。
   Future<void> _reclaimAudioFocus() async {
     try {
-      final session = await AudioSession.instance;
-      final granted = await session.setActive(true);
-      if (!granted && isPlaying) {
-        await _audioHandler.pause();
-      }
+      // 与通知栏/手动播放共用串行焦点入口，避免旧 native 请求假成功。
+      await _audioHandler.reclaimAudioFocus();
     } catch (_) {
       // AudioSession not available on this platform
     }
@@ -1823,8 +1869,8 @@ class PlayerController extends ChangeNotifier {
 
   /// 根据打断设置生成 AudioSessionConfiguration。
   ///
-  /// 两种模式都不声明 willPauseWhenDucked（导航播报等降音打断不暂停，
-  /// 由系统压低音量、结束后自动还原，app 侧不介入音量）。
+  /// 导航播报不暂停：支持自动 duck 的 Android 由系统处理，
+  /// 其他情况下在 duck 回调中按音量均衡后的基础音量降音/恢复。
   /// 暂停/恢复策略全部由 [_setupAudioSessionListeners] 实现。
   AudioSessionConfiguration get _audioSessionConfiguration {
     if (audioInterruptionEnabled) {
@@ -1873,6 +1919,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> setAutoPlayOnDeviceConnected(bool enabled) async {
     if (autoPlayOnDeviceConnected == enabled) return;
     autoPlayOnDeviceConnected = enabled;
+    if (!enabled) _autoResumeTimer?.cancel();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_autoPlayOnDeviceConnectedSettingKey, enabled);
     notifyListeners();
@@ -2151,6 +2198,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _executeSleepTimer() {
+    _cancelAutomaticResume();
     _sleepTimer?.cancel();
     _sleepTimer = null;
     _sleepTimerEnd = null;
@@ -2187,11 +2235,11 @@ class PlayerController extends ChangeNotifier {
     }
 
     // 衰减路径（gain < 1.0）通过 just_audio 音量处理；提升路径交给原生增强器。
-    await audioPlayer.setVolume(
-      _volNormService.enabled && loudness != null && gainLinear < 1.0
-          ? gainLinear
-          : 1.0,
-    );
+    _normalizationVolume =
+        _volNormService.enabled && loudness != null && gainLinear < 1.0
+        ? gainLinear
+        : 1.0;
+    await _applyPlaybackVolume();
 
     if (retryIfSessionPending &&
         _volNormService.enabled &&
