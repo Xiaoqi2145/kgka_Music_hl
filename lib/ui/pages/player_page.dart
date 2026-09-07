@@ -1177,6 +1177,7 @@ class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
   void initState() {
     super.initState();
     _position = widget.player.smoothPosition;
+    widget.player.positionListenable.addListener(_handlePositionChanged);
     _ticker = Ticker(_onTick);
     _syncTicker();
   }
@@ -1184,14 +1185,24 @@ class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
   @override
   void didUpdateWidget(covariant _LandscapeLyricPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.player.isScrubbing) {
-      _position = widget.player.smoothPosition;
+    if (oldWidget.player != widget.player) {
+      oldWidget.player.positionListenable.removeListener(
+        _handlePositionChanged,
+      );
+      widget.player.positionListenable.addListener(_handlePositionChanged);
     }
+    _position = widget.player.smoothPosition;
     _syncTicker();
+  }
+
+  void _handlePositionChanged() {
+    if (!mounted || !widget.player.isScrubbing) return;
+    setState(() => _position = widget.player.positionListenable.value);
   }
 
   @override
   void dispose() {
+    widget.player.positionListenable.removeListener(_handlePositionChanged);
     _ticker.dispose();
     super.dispose();
   }
@@ -1576,6 +1587,7 @@ class _PosterLyricPreviewState extends State<_PosterLyricPreview> {
   void initState() {
     super.initState();
     _position = widget.player.smoothPosition;
+    widget.player.positionListenable.addListener(_handlePositionChanged);
     _ticker = Ticker(_onTick);
     _syncTicker();
   }
@@ -1583,14 +1595,24 @@ class _PosterLyricPreviewState extends State<_PosterLyricPreview> {
   @override
   void didUpdateWidget(covariant _PosterLyricPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.player.isScrubbing) {
-      _position = widget.player.smoothPosition;
+    if (oldWidget.player != widget.player) {
+      oldWidget.player.positionListenable.removeListener(
+        _handlePositionChanged,
+      );
+      widget.player.positionListenable.addListener(_handlePositionChanged);
     }
+    _position = widget.player.smoothPosition;
     _syncTicker();
+  }
+
+  void _handlePositionChanged() {
+    if (!mounted || !widget.player.isScrubbing) return;
+    setState(() => _position = widget.player.positionListenable.value);
   }
 
   @override
   void dispose() {
+    widget.player.positionListenable.removeListener(_handlePositionChanged);
     _ticker.dispose();
     super.dispose();
   }
@@ -2416,6 +2438,7 @@ class _LyricViewportState extends State<_LyricViewport>
     _syncLineKeys();
     _framePosition = widget.player.smoothPosition;
     _framePositionNotifier = ValueNotifier(_framePosition);
+    widget.player.positionListenable.addListener(_handlePositionChanged);
     _frameActiveIndex = _activeIndexFor(_framePosition);
     _motionFromIndex = _frameActiveIndex;
     _motionToIndex = _frameActiveIndex;
@@ -2436,6 +2459,12 @@ class _LyricViewportState extends State<_LyricViewport>
   @override
   void didUpdateWidget(covariant _LyricViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.player != widget.player) {
+      oldWidget.player.positionListenable.removeListener(
+        _handlePositionChanged,
+      );
+      widget.player.positionListenable.addListener(_handlePositionChanged);
+    }
     final songChanged = oldWidget.songHash != widget.songHash;
     final lyricsChanged = oldWidget.lyrics != widget.lyrics;
     _syncLineKeys(force: songChanged || lyricsChanged);
@@ -2483,6 +2512,7 @@ class _LyricViewportState extends State<_LyricViewport>
 
   @override
   void dispose() {
+    widget.player.positionListenable.removeListener(_handlePositionChanged);
     _resumeAutoScrollTimer?.cancel();
     _lineMotionController
       ..removeListener(_handleLineMotionTick)
@@ -2491,6 +2521,23 @@ class _LyricViewportState extends State<_LyricViewport>
     _framePositionNotifier.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handlePositionChanged() {
+    if (!mounted || !widget.player.isScrubbing) return;
+    final position = widget.player.positionListenable.value;
+    final activeIndex = _activeIndexFor(position);
+    final activeChanged = activeIndex != _frameActiveIndex;
+    _setFrameState(
+      position: position,
+      activeIndex: activeIndex,
+      animateMotion: false,
+    );
+    if (activeChanged) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _syncToActive(immediate: true, resetManualScroll: true),
+      );
+    }
   }
 
   void _handleLineMotionTick() {
