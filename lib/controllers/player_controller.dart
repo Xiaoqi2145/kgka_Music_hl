@@ -345,6 +345,16 @@ class PlayerController extends ChangeNotifier {
   Future<void>? _queueExpansionFuture;
   final Map<String, LyricCandidate> _manualLyricCandidates = {};
   int _lyricsLoadGeneration = 0;
+  final _lyricMemory = <String, List<LyricLine>>{};
+  final _lyricRequests = <String, Future<List<LyricLine>>>{};
+  String? _metadataPrefetchKey;
+  Song? _metadataPrevious;
+  Song? _metadataCurrent;
+  Song? _metadataNext;
+  final _metadataQualities = <String, AudioQuality>{};
+  Set<String> _retainedLyricKeys = {};
+  Song? _shuffleNext;
+  String? _shuffleContext;
   int _playRequestGeneration = 0;
 
   /// 高频位置更新只通知进度/歌词组件，不触发整个播放器树重建。
@@ -694,6 +704,26 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
+  String _metadataSongKey(Song song) => '${song.source.name}:${_songKey(song)}';
+
+  void _retainMetadataWindow() {
+    final songs = <Song>[?_metadataPrevious, ?_metadataCurrent, ?_metadataNext];
+    final identities = songs.map(_metadataSongKey).toSet();
+    _metadataQualities.removeWhere((key, _) => !identities.contains(key));
+    _retainedLyricKeys = songs.map(_lyricKey).toSet();
+    _lyricMemory.removeWhere((key, _) => !_retainedLyricKeys.contains(key));
+    _loudnessLookup.retainKeys(
+      songs
+          .map(
+            (song) => _loudnessKey(
+              song,
+              _metadataQualities[_metadataSongKey(song)] ?? audioQuality,
+            ),
+          )
+          .toSet(),
+    );
+  }
+
   String _loudnessKey(Song song, AudioQuality quality) =>
       '${song.source.name}:${_songKey(song)}:${quality.apiValue}';
 
@@ -702,6 +732,14 @@ class PlayerController extends ChangeNotifier {
     AudioQuality quality, {
     bool force = false,
   }) {
+    if (_metadataCurrent == null ||
+        _metadataSongKey(_metadataCurrent!) != _metadataSongKey(song)) {
+      _metadataPrevious = _metadataCurrent;
+      _metadataCurrent = song;
+      _metadataNext = null;
+    }
+    _metadataQualities[_metadataSongKey(song)] = quality;
+    _retainMetadataWindow();
     final key = _loudnessKey(song, quality);
     if (!force && _playbackLoudness.key == key) return;
     ++_volumeNormApplySerial;
@@ -1040,6 +1078,11 @@ class PlayerController extends ChangeNotifier {
 
   void _clearPreparedNext() {
     _prepareNextSerial++;
+    _metadataPrefetchKey = null;
+    _metadataNext = null;
+    _retainMetadataWindow();
+    _shuffleNext = null;
+    _shuffleContext = null;
     _preparingNextSource = false;
     _preparedNext = null;
     _dropPlaylistTail();
@@ -1134,7 +1177,7 @@ class PlayerController extends ChangeNotifier {
   /// 自动切歌时直接使用，省去一次网络往返。解析失败静默忽略，
   /// 切歌走正常解析路径（含音质降级），不影响正常播放。
   Future<void> _prepareNextSourceIfNeeded() async {
-    if (!gaplessPlaybackEnabled ||
+    if (_disposed ||
         _preparedNext != null ||
         _preparingNextSource ||
         _hasPreloadedNextChild() ||
@@ -1167,6 +1210,27 @@ class PlayerController extends ChangeNotifier {
       if (nextKey == _songKey(currentSong!)) {
         return;
       }
+      _metadataNext = next;
+      _metadataQualities[_metadataSongKey(next)] = audioQuality;
+      _retainMetadataWindow();
+      final metadataKey =
+          '${_playbackLoudness.generation}:$_queueRevision:${_lyricKey(next)}:${audioQuality.name}:$volumeNormalizationEnabled';
+      if (_metadataPrefetchKey != metadataKey) {
+        _metadataPrefetchKey = metadataKey;
+        unawaited(
+          _fetchLyrics(next).then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stack) {
+              debugPrint('[KA Music][prefetch] lyrics failed: $error');
+            },
+          ),
+        );
+        if (!gaplessPlaybackEnabled && volumeNormalizationEnabled) {
+          final local = downloadController?.localSourceFor(next, audioQuality);
+          _restoreLocalLoudness(next, audioQuality, local?.loudness);
+        }
+      }
+      if (!gaplessPlaybackEnabled) return;
       // 本地文件/播放缓存命中的歌加载本身已近乎无缝，无需预解析网络地址。
       if (next.source == SongSource.local) {
         return;
@@ -1305,6 +1369,7 @@ class PlayerController extends ChangeNotifier {
       final song = songs[index];
       queue = songs;
       currentSong = song;
+      _selectNormalizationSource(song, audioQuality, force: true);
       playbackMode = PlaybackMode.values.firstWhere(
         (mode) => mode.name == payload['playbackMode'],
         orElse: () => PlaybackMode.playlistLoop,
@@ -1492,119 +1557,103 @@ class PlayerController extends ChangeNotifier {
     await applyEqualizerPreset(equalizerPresets.first);
   }
 
-  Future<void> loadLyrics(Song song, {bool force = false}) async {
-    final requestGeneration = ++_lyricsLoadGeneration;
-    if (currentSong?.hash == song.hash) {
-      isLoadingLyrics = true;
-      notifyListeners();
-    }
-    bool isCurrentRequest() =>
-        requestGeneration == _lyricsLoadGeneration &&
-        currentSong?.hash == song.hash;
-    final cache = cacheService;
-    // v8：除制作信息外，标题卡也保留展示标记；旧缓存无法恢复该标记。
-    final cacheKey = 'cache_lyric_v8_${song.hash}';
+  String _lyricKey(Song song) =>
+      '${song.source.name}:${_songKey(song)}:${jsonEncode(_manualLyricCandidates[song.hash]?.toJson())}';
 
+  Future<List<LyricLine>> _fetchLyrics(Song song, {bool force = false}) {
+    _retainMetadataWindow();
+    final key = _lyricKey(song);
+    if (!force) {
+      final cached = _lyricMemory[key];
+      if (cached != null) return Future.value(cached);
+      final pending = _lyricRequests[key];
+      if (pending != null) return pending;
+    }
+    late final Future<List<LyricLine>> request;
+    request = _readLyrics(song, force: force)
+        .then((lines) {
+          if (!_disposed && identical(_lyricRequests[key], request)) {
+            if (_retainedLyricKeys.contains(key)) {
+              _lyricMemory[key] = List<LyricLine>.unmodifiable(lines);
+            }
+          }
+          return lines;
+        })
+        .whenComplete(() {
+          if (identical(_lyricRequests[key], request)) {
+            _lyricRequests.remove(key);
+          }
+        });
+    _lyricRequests[key] = request;
+    return request;
+  }
+
+  Future<List<LyricLine>> _readLyrics(Song song, {required bool force}) async {
     if (song.source == SongSource.local) {
-      try {
-        final songFile = File(song.id);
-        final dotIndex = songFile.path.lastIndexOf('.');
-        final lrcPath =
-            '${dotIndex != -1 ? songFile.path.substring(0, dotIndex) : songFile.path}.lrc';
-        final file = File(lrcPath);
-        if (await file.exists()) {
-          final bytes = await file.readAsBytes();
-          String content;
-          try {
-            content = utf8.decode(bytes);
-          } catch (_) {
-            content = utf8.decode(bytes, allowMalformed: true);
-          }
-          final lines = _visibleLyrics(parseLyrics(content));
-          if (isCurrentRequest()) {
-            lyrics = lines;
-            notifyListeners();
-            _syncDesktopLyrics();
-          }
-          if (isCurrentRequest()) {
-            isLoadingLyrics = false;
-            notifyListeners();
-          }
-          return;
-        }
-      } catch (e) {
-        debugPrint('Failed to load local lyrics: $e');
-      }
-      if (isCurrentRequest()) {
-        lyrics = const [];
-        isLoadingLyrics = false;
-        notifyListeners();
-        _syncDesktopLyrics();
-      }
-      return;
+      final dot = song.id.lastIndexOf('.');
+      final path = dot < 0 ? song.id : song.id.substring(0, dot);
+      final file = File('$path.lrc');
+      if (!await file.exists()) return const [];
+      return parseLyrics(
+        utf8.decode(await file.readAsBytes(), allowMalformed: true),
+      );
     }
-
-    // 1. 先读缓存，命中则立即显示（无感）
-    if (cache != null && !force) {
+    final cache = cacheService;
+    final key = 'cache_lyric_v9_${Uri.encodeComponent(_lyricKey(song))}';
+    if (!force && cache != null) {
       try {
         final cached = await cache.read<List<LyricLine>>(
-          cacheKey,
+          key,
           decode: (json) => (json['lines'] as List? ?? const [])
               .whereType<Map<String, dynamic>>()
               .map(LyricLine.fromCache)
               .toList(),
-          // 歌词按内容版本长期保留；仅手动“更换歌词”时 force 刷新。
           ttl: null,
         );
-        final cachedVisible = cached == null
-            ? const <LyricLine>[]
-            : _visibleLyrics(cached.data);
-        if (cached != null &&
-            !listEquals(lyrics, cachedVisible) &&
-            isCurrentRequest()) {
-          lyrics = cachedVisible;
-          notifyListeners();
-          _syncDesktopLyrics();
-        }
-        // 不缓存空结果，避免一次网络失败永久阻塞后续歌词加载。
-        if (cachedVisible.isNotEmpty && isCurrentRequest()) {
-          isLoadingLyrics = false;
-          notifyListeners();
-          return;
-        }
+        if (cached != null && cached.data.isNotEmpty) return cached.data;
       } catch (_) {}
     }
-
-    // 2. 首次加载或 force=true 时才请求网络
-    try {
-      final manual = _manualLyricCandidates[song.hash];
-      final fresh = manual != null
-          ? await _api.lyricsFromCandidate(manual)
-          : await _api.lyrics(song, isCancelled: () => !isCurrentRequest());
-      if (!isCurrentRequest()) return; // 已切歌或已有更新请求，丢弃
-      final freshVisible = _visibleLyrics(fresh);
-      if (!listEquals(lyrics, freshVisible)) {
-        lyrics = freshVisible;
-        notifyListeners();
-      }
-      // 写缓存（缓存完整解析结果含 hidden 行，空歌词也缓存，避免重复请求）
-      if (cache != null && fresh.isNotEmpty) {
-        unawaited(
-          cache.write(cacheKey, {
-            'lines': fresh.map((l) => l.toCache()).toList(),
-          }),
-        );
-      }
-    } catch (_) {
-      if (isCurrentRequest() && lyrics.isEmpty) {
-        lyrics = const [];
-        notifyListeners();
-      }
+    final manual = _manualLyricCandidates[song.hash];
+    final lines = manual != null
+        ? await _api.lyricsFromCandidate(manual)
+        : await _api.lyrics(song, isCancelled: () => _disposed);
+    if (!_disposed && cache != null && lines.isNotEmpty) {
+      unawaited(
+        cache
+            .write(key, {'lines': lines.map((l) => l.toCache()).toList()})
+            .catchError((Object error, StackTrace stack) {
+              debugPrint(
+                '[KA Music][prefetch] lyric cache write failed: $error',
+              );
+            }),
+      );
     }
-    if (isCurrentRequest()) {
-      isLoadingLyrics = false;
-      notifyListeners();
-      _syncDesktopLyrics();
+    return lines;
+  }
+
+  Future<void> loadLyrics(Song song, {bool force = false}) async {
+    final generation = ++_lyricsLoadGeneration;
+    final key = _lyricKey(song);
+    bool current() =>
+        !_disposed &&
+        generation == _lyricsLoadGeneration &&
+        currentSong != null &&
+        _lyricKey(currentSong!) == key;
+    if (!current()) return;
+    isLoadingLyrics = true;
+    notifyListeners();
+    try {
+      final lines = await _fetchLyrics(song, force: force);
+      if (!current()) return;
+      lyrics = _visibleLyrics(lines);
+    } catch (error) {
+      debugPrint('[KA Music][lyrics] load failed: $error');
+    } finally {
+      if (current()) {
+        isLoadingLyrics = false;
+        notifyListeners();
+        _syncDesktopLyrics();
+      }
     }
   }
 
@@ -2668,13 +2717,22 @@ class PlayerController extends ChangeNotifier {
     if (playbackMode == PlaybackMode.shuffle) {
       if (queue.length == 1) return queue.first;
 
+      final context =
+          '${currentSong?.source.name}:${currentSong == null ? '' : _songKey(currentSong!)}:$_queueRevision';
+      if (_shuffleContext == context &&
+          _shuffleNext != null &&
+          queue.contains(_shuffleNext)) {
+        return _shuffleNext;
+      }
       var nextIndex = _random.nextInt(queue.length);
       if (index >= 0) {
         while (nextIndex == index) {
           nextIndex = _random.nextInt(queue.length);
         }
       }
-      return queue[nextIndex];
+      _shuffleContext = context;
+      _shuffleNext = queue[nextIndex];
+      return _shuffleNext;
     }
 
     if (index >= 0 && index < queue.length - 1) {

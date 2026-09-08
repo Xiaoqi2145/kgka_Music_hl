@@ -5,6 +5,31 @@ import 'package:kgka_music_hl/models/loudness_data.dart';
 import 'package:kgka_music_hl/services/playback_loudness.dart';
 
 void main() {
+  test(
+    'window eviction rejects late results but returns data for persistence',
+    () async {
+      final lookup = LoudnessLookup();
+      const data = LoudnessData(lufs: -9);
+      lookup.retainKeys({'A', 'B', 'C'});
+      for (final key in ['A', 'B', 'C']) {
+        lookup.put(key, data);
+      }
+      final response = Completer<LoudnessData?>();
+      final pending = lookup.resolve('late', () => response.future);
+      lookup.retainKeys({'B', 'C', 'D'});
+      response.complete(data);
+      expect(await pending, data);
+      expect(lookup.get('late'), isNull);
+      expect(lookup.get('A'), isNull);
+      expect(lookup.get('B'), data);
+      expect(lookup.get('C'), data);
+      lookup.put('D', data);
+      lookup.put('A', data);
+      expect(lookup.get('D'), data);
+      expect(lookup.get('A'), isNull);
+    },
+  );
+
   const data = LoudnessData(lufs: -9);
 
   test('loading time does not consume the three second playback window', () {

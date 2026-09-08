@@ -10,11 +10,21 @@ class LoudnessLookup {
   final _cache = <String, LoudnessData>{};
   final _pending = <String, Future<LoudnessData?>>{};
   final _retryAfter = <String, DateTime>{};
+  Set<String>? _retainedKeys;
+
+  /// Evict results outside the playback window, including late completions.
+  void retainKeys(Set<String> keys) {
+    _retainedKeys = Set.of(keys);
+    _cache.removeWhere((key, _) => !keys.contains(key));
+    _retryAfter.removeWhere((key, _) => !keys.contains(key));
+  }
+
+  bool _canRetain(String key) => _retainedKeys?.contains(key) ?? true;
 
   LoudnessData? get(String key) => _cache[key];
 
   void put(String key, LoudnessData? data) {
-    if (data?.canNormalize != true) return;
+    if (!_canRetain(key) || data?.canNormalize != true) return;
     _cache[key] = data!;
     _retryAfter.remove(key);
   }
@@ -35,13 +45,15 @@ class LoudnessLookup {
         .then(
           (data) {
             put(key, data);
-            if (get(key) == null) {
+            if (_canRetain(key) && get(key) == null) {
               _retryAfter[key] = _now().add(const Duration(minutes: 1));
             }
-            return get(key);
+            return data?.canNormalize == true ? data : null;
           },
           onError: (Object error, StackTrace stack) {
-            _retryAfter[key] = _now().add(const Duration(minutes: 1));
+            if (_canRetain(key)) {
+              _retryAfter[key] = _now().add(const Duration(minutes: 1));
+            }
             Error.throwWithStackTrace(error, stack);
           },
         )
