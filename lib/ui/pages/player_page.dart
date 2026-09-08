@@ -17,6 +17,7 @@ import '../adaptive_layout.dart';
 import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/artwork.dart';
+import '../widgets/cached_artwork_image.dart';
 import '../widgets/playback_speed_sheet.dart';
 import '../widgets/sleep_timer_sheet.dart';
 import '../widgets/song_action_sheets.dart';
@@ -718,8 +719,10 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
               imageFilter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
               child: RotationTransition(
                 turns: _rotationController,
-                child: Image.network(
-                  coverUrl,
+                child: Image(
+                  // 与同屏 Artwork 共用磁盘缓存：命中即复用，未命中则共享
+                  // 同一次在途下载，离线时也能渲染而不是退化成渐变占位。
+                  image: CachedArtworkImage(coverUrl),
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) =>
                       const _FallbackBackground(),

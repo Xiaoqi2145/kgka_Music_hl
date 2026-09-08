@@ -97,8 +97,9 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 
 - **下载管理** — 支持并发下载、断点续传、进度追踪
 - **播放缓存** — 自动缓存播放过的歌曲，LRU 策略上限 300MB
+- **缩略图缓存** — 封面图落盘缓存，离线也能显示；LRU 策略上限可调（64MB ~ 4GB，默认 512MB）
 - **数据缓存** — SWR（Stale-While-Revalidate）策略，分级 TTL
-- **缓存可视化** — 数据缓存 / 下载 / 播放缓存大小查看与清理
+- **缓存可视化** — 数据缓存 / 下载 / 播放缓存 / 缩略图缓存大小查看与清理
 
 ### 🎨 个性化
 
@@ -228,6 +229,7 @@ lib/
 ├── services/
 │   ├── music_api.dart        # API 接口封装
 │   ├── cache_service.dart    # 数据缓存（SWR）
+│   ├── artwork_cache_service.dart # 缩略图磁盘缓存（LRU）
 │   ├── download_service.dart # 文件下载服务
 │   ├── music_audio_handler.dart # 后台音频服务
 │   └── ...                   # 其他服务
@@ -243,6 +245,7 @@ lib/
     └── widgets/              # 可复用组件
         ├── mini_player.dart  # 迷你播放栏
         ├── artwork.dart      # 封面组件
+        ├── cached_artwork_image.dart # 缩略图缓存 ImageProvider
         └── ...               # 其他组件
 ```
 
