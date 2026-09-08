@@ -9,6 +9,7 @@ import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
+import '../../services/artwork_cache_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/audio_effects_sheet.dart';
@@ -840,9 +841,11 @@ class _CacheManagementSheet extends StatefulWidget {
 
 class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   int? _dataCacheSize;
+  int? _artworkCacheSize;
   int? _downloadSize;
   int? _playCacheSize;
   int? _playCacheLimitBytes;
+  int? _artworkCacheLimitBytes;
   bool _clearing = false;
 
   @override
@@ -852,12 +855,16 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   }
 
   Future<void> _loadSizes() async {
-    int? dataCache, download, playCache;
+    int? dataCache, download, playCache, artworkCache;
     if (widget.cache != null) {
       try {
         dataCache = await widget.cache!.getCacheSize();
       } catch (_) {}
     }
+    try {
+      artworkCache = await ArtworkCacheService.instance.getCacheSize();
+      _artworkCacheLimitBytes = ArtworkCacheService.instance.maxCacheBytes;
+    } catch (_) {}
     if (widget.downloads != null) {
       _playCacheLimitBytes = widget.downloads!.playCacheMaxBytes;
       try {
@@ -870,6 +877,7 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
     if (mounted) {
       setState(() {
         _dataCacheSize = dataCache;
+        _artworkCacheSize = artworkCache;
         _downloadSize = download;
         _playCacheSize = playCache;
         _playCacheLimitBytes = widget.downloads?.playCacheMaxBytes;
@@ -941,6 +949,45 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
             ),
             const SizedBox(height: 10),
             _CacheItem(
+              icon: Icons.image_rounded,
+              title: '缩略图缓存',
+              size: _formatSize(_artworkCacheSize),
+              onClear: _artworkCacheSize != null && _artworkCacheSize! > 0
+                  ? () async {
+                      setState(() => _clearing = true);
+                      try {
+                        await ArtworkCacheService.instance.clearCache();
+                        await _loadSizes();
+                        if (mounted) {
+                          Toast.success('缩略图缓存已清理');
+                        }
+                      } catch (_) {
+                        if (mounted) {
+                          Toast.error('清理失败');
+                        }
+                      }
+                      if (mounted) {
+                        setState(() => _clearing = false);
+                      }
+                    }
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            _CacheLimitInput(
+              title: '缩略图缓存上限',
+              valueBytes:
+                  _artworkCacheLimitBytes ??
+                  ArtworkCacheService.instance.maxCacheBytes,
+              minBytes: AppConfig.minArtworkCacheMaxBytes,
+              maxBytes: AppConfig.maxArtworkCacheMaxBytes,
+              onSubmitted: (bytes) async {
+                setState(() => _artworkCacheLimitBytes = bytes);
+                await ArtworkCacheService.instance.setMaxCacheBytes(bytes);
+                await _loadSizes();
+              },
+            ),
+            const SizedBox(height: 10),
+            _CacheItem(
               icon: Icons.download_rounded,
               title: '下载文件',
               size: _formatSize(_downloadSize),
@@ -976,9 +1023,12 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
             ),
             if (widget.downloads != null) ...[
               const SizedBox(height: 10),
-              _PlayCacheLimitInput(
+              _CacheLimitInput(
+                title: '播放缓存上限',
                 valueBytes:
                     _playCacheLimitBytes ?? widget.downloads!.playCacheMaxBytes,
+                minBytes: AppConfig.minPlayCacheMaxBytes,
+                maxBytes: AppConfig.maxPlayCacheMaxBytes,
                 onSubmitted: (bytes) async {
                   setState(() => _playCacheLimitBytes = bytes);
                   await widget.downloads!.setPlayCacheMaxBytes(bytes);
@@ -995,33 +1045,38 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
   }
 }
 
-class _PlayCacheLimitInput extends StatefulWidget {
-  const _PlayCacheLimitInput({
+/// 缓存上限输入框（播放缓存 / 缩略图缓存共用）。
+class _CacheLimitInput extends StatefulWidget {
+  const _CacheLimitInput({
+    required this.title,
     required this.valueBytes,
+    required this.minBytes,
+    required this.maxBytes,
     required this.onSubmitted,
   });
 
   static const _bytesPerMb = 1024 * 1024;
 
+  final String title;
   final int valueBytes;
+  final int minBytes;
+  final int maxBytes;
   final Future<void> Function(int bytes) onSubmitted;
 
   @override
-  State<_PlayCacheLimitInput> createState() => _PlayCacheLimitInputState();
+  State<_CacheLimitInput> createState() => _CacheLimitInputState();
 }
 
-class _PlayCacheLimitInputState extends State<_PlayCacheLimitInput> {
+class _CacheLimitInputState extends State<_CacheLimitInput> {
   late final TextEditingController _controller;
   bool _saving = false;
 
-  int get _minMb =>
-      AppConfig.minPlayCacheMaxBytes ~/ _PlayCacheLimitInput._bytesPerMb;
+  int get _minMb => widget.minBytes ~/ _CacheLimitInput._bytesPerMb;
 
-  int get _maxMb =>
-      AppConfig.maxPlayCacheMaxBytes ~/ _PlayCacheLimitInput._bytesPerMb;
+  int get _maxMb => widget.maxBytes ~/ _CacheLimitInput._bytesPerMb;
 
   int _valueMbFromBytes(int bytes) {
-    return (bytes / _PlayCacheLimitInput._bytesPerMb).round().clamp(
+    return (bytes / _CacheLimitInput._bytesPerMb).round().clamp(
       _minMb,
       _maxMb,
     );
@@ -1036,7 +1091,7 @@ class _PlayCacheLimitInputState extends State<_PlayCacheLimitInput> {
   }
 
   @override
-  void didUpdateWidget(covariant _PlayCacheLimitInput oldWidget) {
+  void didUpdateWidget(covariant _CacheLimitInput oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.valueBytes != oldWidget.valueBytes && !_saving) {
       _controller.text = _valueMbFromBytes(widget.valueBytes).toString();
@@ -1057,7 +1112,7 @@ class _PlayCacheLimitInputState extends State<_PlayCacheLimitInput> {
     _controller.text = clamped.toString();
     setState(() => _saving = true);
     try {
-      await widget.onSubmitted(clamped * _PlayCacheLimitInput._bytesPerMb);
+      await widget.onSubmitted(clamped * _CacheLimitInput._bytesPerMb);
     } finally {
       if (mounted) {
         setState(() => _saving = false);
@@ -1081,7 +1136,7 @@ class _PlayCacheLimitInputState extends State<_PlayCacheLimitInput> {
           const SizedBox(width: 14),
           Expanded(
             child: Text(
-              '播放缓存上限',
+              widget.title,
               style: Theme.of(
                 context,
               ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),

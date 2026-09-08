@@ -6,8 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'artwork_cache_service.dart';
-
 /// 缓存读取结果。
 class CacheResult<T> {
   const CacheResult({required this.data, required this.isStale});
@@ -169,8 +167,6 @@ class CacheService {
         }
       }
     }
-    // 缩略图与 JSON 数据一起归入“数据缓存”。
-    total += await ArtworkCacheService.instance.getCacheSize();
     return total;
   }
 
@@ -181,8 +177,6 @@ class CacheService {
     await for (final entity in directory.list()) {
       if (entity is File && entity.path.endsWith('.json')) count++;
     }
-    // 缩略图也属于数据缓存条目。
-    count += await ArtworkCacheService.instance.getCacheCount();
     final prefs = await SharedPreferences.getInstance();
     return count +
         prefs.getKeys().where((key) => key.startsWith('cache_')).length;
@@ -199,7 +193,6 @@ class CacheService {
         await prefs.remove(key);
       }
     }
-    await ArtworkCacheService.instance.clearCache();
   }
 
   /// stale-while-revalidate 封装。

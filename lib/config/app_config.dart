@@ -37,6 +37,11 @@ class AppConfig {
   static const minPlayCacheMaxBytes = 100 * 1024 * 1024; // 100MB
   static const maxPlayCacheMaxBytes = 10 * 1024 * 1024 * 1024; // 10GB
 
+  /// 缩略图缓存大小上限（超过则按 LRU 清理）
+  static const defaultArtworkCacheMaxBytes = 512 * 1024 * 1024; // 512MB
+  static const minArtworkCacheMaxBytes = 64 * 1024 * 1024; // 64MB
+  static const maxArtworkCacheMaxBytes = 4 * 1024 * 1024 * 1024; // 4GB
+
   /// 下载并发数
   static const maxConcurrentDownloads = 3;
 
