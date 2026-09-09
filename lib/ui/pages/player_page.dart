@@ -49,11 +49,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     widget.player.addListener(_syncKeepScreenOn);
-    SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    // Tablets on Android 16+ must remain orientation-unlocked. Phones keep
+    // the player's existing portrait/landscape playback behavior.
+    if (!AdaptiveLayout.isTabletByPlatform()) {
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
   }
 
   @override
@@ -64,7 +68,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
     final isTablet = AdaptiveLayout.isTabletByPlatform();
-    if (isTablet || ThemeController.instance.landscapeEnabled) {
+    if (isTablet) {
+      SystemChrome.setPreferredOrientations(const []);
+    } else if (ThemeController.instance.landscapeEnabled) {
       SystemChrome.setPreferredOrientations(const [
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
@@ -444,9 +450,9 @@ class _PlayerBodyState extends State<_PlayerBody> {
         body: Stack(
           children: [
             _ArtworkBackground(song: widget.song, player: widget.player),
+            // Edge-to-edge is mandatory on API 36. Keep player controls
+            // inside the current system-bar/cutout insets in both orientations.
             SafeArea(
-              top: !landscape,
-              bottom: !landscape,
               child: Column(
                 children: [
                   if (!landscape)
@@ -523,9 +529,9 @@ class _PlayerBodyState extends State<_PlayerBody> {
       if (!mounted) {
         return;
       }
-      SystemChrome.setEnabledSystemUIMode(
-        landscape ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-      );
+      // Android 15/16 ignores immersive modes for large screens. Keeping
+      // one edge-to-edge policy avoids transient inset changes on rotation.
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     });
   }
 

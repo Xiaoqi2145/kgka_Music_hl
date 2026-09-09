@@ -49,18 +49,31 @@ class AdaptiveContentPadding extends StatelessWidget {
     super.key,
     required this.child,
     this.maxWidth,
+    this.constrain = true,
   });
 
   final Widget child;
   final double? maxWidth;
 
+  /// Whether to apply the tablet max-width constraint.
+  ///
+  /// Side panels and other already-constrained surfaces must render against
+  /// their full route width. Applying another centered max-width there leaves
+  /// an artificial gutter that looks like a white border on tablets.
+  final bool constrain;
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    if (size.width < 600) {
+    if (!constrain || size.shortestSide < 600) {
       return child;
     }
-    return Center(
+
+    // Keep page content top-aligned. Centering the whole page vertically makes
+    // short/error states jump when the available height changes with system
+    // bars or rotation.
+    return Align(
+      alignment: Alignment.topCenter,
       child: ConstrainedBox(
         constraints: BoxConstraints(
           maxWidth: maxWidth ?? AdaptiveLayout.contentMaxWidth,

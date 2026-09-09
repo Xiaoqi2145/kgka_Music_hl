@@ -52,9 +52,14 @@ void openPlaylistDetail({
     barrierColor: Colors.black54,
     transitionDuration: const Duration(milliseconds: 260),
     pageBuilder: (dialogContext, _, _) {
-      final width = (MediaQuery.sizeOf(dialogContext).width * .62)
-          .clamp(420.0, 820.0)
+      final size = MediaQuery.sizeOf(dialogContext);
+      final viewPadding = MediaQuery.viewPaddingOf(dialogContext);
+      final availableWidth = (size.width - viewPadding.left - viewPadding.right)
+          .clamp(0.0, size.width)
           .toDouble();
+      final minWidth = availableWidth < 420 ? availableWidth : 420.0;
+      final maxWidth = availableWidth < 820 ? availableWidth : 820.0;
+      final width = (availableWidth * .62).clamp(minWidth, maxWidth).toDouble();
       return Align(
         alignment: Alignment.centerRight,
         child: Material(
@@ -71,6 +76,7 @@ void openPlaylistDetail({
               auth: auth,
               player: player,
               playlist: playlist,
+              sidePanel: true,
             ),
           ),
         ),
@@ -99,12 +105,17 @@ class PlaylistDetailPage extends StatefulWidget {
     required this.auth,
     required this.player,
     required this.playlist,
+    this.sidePanel = false,
   });
 
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
   final PlaylistSummary playlist;
+
+  /// Side-panel routes already have a bounded width. Do not apply the
+  /// page-level tablet max-width a second time inside that panel.
+  final bool sidePanel;
 
   @override
   State<PlaylistDetailPage> createState() => _PlaylistDetailPageState();
@@ -843,11 +854,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
 
     return Scaffold(
       extendBody: true,
       body: AdaptiveContentPadding(
+        constrain: !widget.sidePanel,
         child: Stack(
           children: [
             CustomScrollView(

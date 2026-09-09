@@ -25,6 +25,9 @@ import 'ui/widgets/toast.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Use one window policy for every route. Android 15/16 enforces edge-to-edge
+  // for target SDK 35+, so route-specific immersive modes only create jumps.
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   await AppConfig.loadCustomBaseUrl();
 
   final client = ApiClient();
@@ -79,6 +82,8 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   late final PlayerController _player;
   late final ThemeController _theme;
   late final LocalMusicController _localMusic;
+  bool _orientationPolicyReady = false;
+  bool _orientationSyncScheduled = false;
 
   @override
   void initState() {
@@ -101,6 +106,26 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _downloads.initialize();
     // 加载缩略图缓存上限并扫描一次缓存目录，超额时按 LRU 淘汰。
     unawaited(ArtworkCacheService.instance.initialize());
+    _orientationPolicyReady = true;
+    _scheduleOrientationSync();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // Rotation, split-screen and system-bar reveal can all change the safe
+    // viewport. Re-evaluate the tablet policy after the new metrics settle.
+    _scheduleOrientationSync();
+  }
+
+  void _scheduleOrientationSync() {
+    if (!_orientationPolicyReady || _orientationSyncScheduled) return;
+    _orientationSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _orientationSyncScheduled = false;
+      if (!mounted) return;
+      _theme.applyOrientations(AdaptiveLayout.isTabletByPlatform());
+    });
   }
 
   @override
@@ -132,7 +157,6 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    _theme.applyOrientations(AdaptiveLayout.isTablet(context));
     return AnimatedBuilder(
       animation: _theme,
       builder: (context, _) {
@@ -322,12 +346,15 @@ class _SystemUiOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
     final overlayStyle = SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
       statusBarBrightness: isDark ? Brightness.light : Brightness.dark,
-      systemNavigationBarColor: colorScheme.surface,
+      // Keep the Android navigation area transparent in edge-to-edge mode.
+      // Painting it with the light surface color creates a vertical white strip
+      // on landscape tablets where the gesture/navigation bar is on the side.
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
       systemNavigationBarIconBrightness: isDark
           ? Brightness.light
           : Brightness.dark,

@@ -112,7 +112,11 @@ class ThemeController extends ChangeNotifier {
     _lastAppliedIsTablet = isTablet;
     _lastAppliedLandscapeEnabled = _landscapeEnabled;
 
-    if (isTablet || _landscapeEnabled) {
+    if (isTablet) {
+      // Large Android screens (API 36+) must not be orientation-locked.
+      // Clearing the preference also keeps rotation from racing layout/insets.
+      SystemChrome.setPreferredOrientations(const []);
+    } else if (_landscapeEnabled) {
       SystemChrome.setPreferredOrientations(const [
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
@@ -165,8 +169,8 @@ class ThemeController extends ChangeNotifier {
 
     // 复制到应用文档目录，避免临时文件被系统清理
     final docsDir = await getApplicationDocumentsDirectory();
-    final ext = xFile.path.contains('.') 
-        ? xFile.path.substring(xFile.path.lastIndexOf('.')) 
+    final ext = xFile.path.contains('.')
+        ? xFile.path.substring(xFile.path.lastIndexOf('.'))
         : '.jpg';
     final permanentPath = '${docsDir.path}/bg_custom$ext';
     await sourceFile.copy(permanentPath);

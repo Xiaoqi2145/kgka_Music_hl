@@ -1021,7 +1021,7 @@ class _PlaylistGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final size = MediaQuery.sizeOf(context);
-    final isWide = size.width >= 720;
+    final isWide = size.shortestSide >= 600;
 
     if (isWide) {
       return GridView.builder(

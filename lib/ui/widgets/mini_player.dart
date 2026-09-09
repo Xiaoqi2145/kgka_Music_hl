@@ -293,8 +293,16 @@ class MiniPlayer extends StatelessWidget {
       barrierColor: Colors.black54,
       transitionDuration: const Duration(milliseconds: 240),
       pageBuilder: (dialogContext, _, _) {
-        final width = (MediaQuery.sizeOf(dialogContext).width * .38)
-            .clamp(320.0, 560.0)
+        final size = MediaQuery.sizeOf(dialogContext);
+        final viewPadding = MediaQuery.viewPaddingOf(dialogContext);
+        final availableWidth =
+            (size.width - viewPadding.left - viewPadding.right)
+                .clamp(0.0, size.width)
+                .toDouble();
+        final minWidth = availableWidth < 320 ? availableWidth : 320.0;
+        final maxWidth = availableWidth < 560 ? availableWidth : 560.0;
+        final width = (availableWidth * .38)
+            .clamp(minWidth, maxWidth)
             .toDouble();
         final colorScheme = Theme.of(dialogContext).colorScheme;
         return Align(

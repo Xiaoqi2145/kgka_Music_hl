@@ -69,12 +69,11 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
     final colorScheme = Theme.of(context).colorScheme;
-    final size = MediaQuery.sizeOf(context);
-    final useNavRail = size.width >= 720;
+    final useNavRail = AdaptiveLayout.isTablet(context);
 
-    Widget mainContent = Stack(
+    final mainContent = Stack(
       children: [
         Positioned.fill(
           child: IndexedStack(index: _index, children: _pages),
@@ -89,48 +88,63 @@ class _AppShellState extends State<AppShell> {
       ],
     );
 
-    if (useNavRail) {
-      mainContent = Row(
-        children: [
-          NavigationRail(
-            selectedIndex: _index,
-            onDestinationSelected: (value) => setState(() => _index = value),
-            backgroundColor: colorScheme.surfaceContainerLow,
-            labelType: NavigationRailLabelType.all,
-            selectedIconTheme: IconThemeData(color: colorScheme.primary),
-            unselectedIconTheme: IconThemeData(
-              color: colorScheme.onSurfaceVariant,
+    // The rail is shell chrome and must stay flush with the window edge. Only
+    // the page pane is width-constrained; constraining the whole Row centers
+    // the rail and exposes a light scaffold-colored gutter on wide tablets.
+    final bodyContent = useNavRail
+        ? SafeArea(
+            left: true,
+            right: true,
+            top: false,
+            bottom: false,
+            child: Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: _index,
+                  onDestinationSelected: (value) =>
+                      setState(() => _index = value),
+                  backgroundColor: colorScheme.surfaceContainerLow,
+                  labelType: NavigationRailLabelType.all,
+                  selectedIconTheme: IconThemeData(color: colorScheme.primary),
+                  unselectedIconTheme: IconThemeData(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  selectedLabelTextStyle: TextStyle(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
+                  unselectedLabelTextStyle: TextStyle(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  destinations: const [
+                    NavigationRailDestination(
+                      icon: Icon(Icons.home_outlined),
+                      selectedIcon: Icon(Icons.home_rounded),
+                      label: Text('首页'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(Icons.person_outline_rounded),
+                      selectedIcon: Icon(Icons.person_rounded),
+                      label: Text('我的'),
+                    ),
+                  ],
+                ),
+                const VerticalDivider(width: 1, thickness: 1),
+                Expanded(
+                  child: AdaptiveContentPadding(
+                    maxWidth: 1150,
+                    child: mainContent,
+                  ),
+                ),
+              ],
             ),
-            selectedLabelTextStyle: TextStyle(
-              color: colorScheme.primary,
-              fontWeight: FontWeight.w800,
-            ),
-            unselectedLabelTextStyle: TextStyle(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-            destinations: const [
-              NavigationRailDestination(
-                icon: Icon(Icons.home_outlined),
-                selectedIcon: Icon(Icons.home_rounded),
-                label: Text('首页'),
-              ),
-              NavigationRailDestination(
-                icon: Icon(Icons.person_outline_rounded),
-                selectedIcon: Icon(Icons.person_rounded),
-                label: Text('我的'),
-              ),
-            ],
-          ),
-          const VerticalDivider(width: 1, thickness: 1),
-          Expanded(child: mainContent),
-        ],
-      );
-    }
+          )
+        : AdaptiveContentPadding(maxWidth: 1150, child: mainContent);
 
     final scaffold = Scaffold(
-      extendBody: true,
-      body: AdaptiveContentPadding(maxWidth: 1150, child: mainContent),
+      extendBody: !useNavRail,
+      body: bodyContent,
       bottomNavigationBar: useNavRail
           ? null
           : ClipRect(

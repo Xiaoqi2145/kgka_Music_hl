@@ -748,7 +748,7 @@ class _SongSectionState extends State<_SongSection> {
     }
 
     final size = MediaQuery.sizeOf(context);
-    final isWide = size.width >= 720;
+    final isWide = size.shortestSide >= 600;
     final rowCount = isWide ? (_perPage / 2).ceil() : _perPage;
 
     return AnimatedBuilder(
