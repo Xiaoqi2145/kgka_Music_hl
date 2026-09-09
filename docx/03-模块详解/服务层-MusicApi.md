@@ -11,8 +11,6 @@
 
 ## 1. 一句话结论（TL;DR）
 
-MusicApi 是**唯一把 HTTP 响应翻译成领域模型**的地方：45 个公开方法（另有 1 个 getter）覆盖 39 个 KuGou 端点（`api.json` 共 149 个端点）与 2 个网易云端点，全部方法都是「薄封装 + 兼容解析」，**自身不做任何缓存**。
-跨平台搜索只影响搜索列表：网易云结果用 `hash = ne_<id>` 标记来源，播放地址由 `PlayerController` 直接拼 `music.163.com` 外链，**不经过 `songUrl`**，也不参与音量均衡。
 所有写操作走 `ApiClient.post`（不可重试），所有读取走 `ApiClient.get`（可重试 2 次）；`api.json` **未声明任何 securitySchemes**，因此「是否需登录」只能按端点语义与调用时机推断，标注为待核实。
 
 ---
@@ -121,7 +119,6 @@ MusicApi 是**唯一把 HTTP 响应翻译成领域模型**的地方：45 个公�
 | `Future<List<SearchHotCategory>> searchHotKeywords()` | `/search/hot` | GET | 无 | `List<SearchHotCategory>`（读 `list`） | 待核实 | 无缓存；UI 仅在进入搜索页时拉一次（`lib/ui/pages/search_page.dart:71-85`） |
 | `Future<List<String>> searchSuggest(String keywords)` | `/search/suggest` | GET | `keywords` | `List<String>`（读 `music[].keyword`） | 待核实 | 无缓存；UI 300ms 防抖（`search_page.dart:104-106`） |
 | `Future<List<Song>> searchSongs(String keywords, {int page = 1, int pageSize = 30})` | `/search` | GET | `keywords`、`page`、`pagesize`、`type=song` | `List<Song>` | 待核实 | 无缓存；兼容「裸数组」或 `songs` / `song` / `lists` |
-| `Future<List<Song>> searchNetEaseSongs(String keywords, {int limit = 30, int offset = 0})` | 网易云 `/search` + `/song/detail` | GET（`getRaw`） | 第一步 `keywords`、`limit`、`offset`、`type=1`；第二步 `ids`（逗号连接） | `List<Song>`（`SongSource.netease`） | 否 | 无缓存；两步调用，第一步无结果直接返回 `[]` |
 
 ### 3.6 曲目、播放地址与歌词
 
@@ -194,16 +191,10 @@ MusicApi 是**唯一把 HTTP 响应翻译成领域模型**的地方：45 个公�
 
 ### 3.10 跨平台搜索差异与音源切换
 
-| 维度 | 酷狗（默认） | 网易云 |
 |---|---|---|
-| 入口方法 | `searchSongs` | `searchNetEaseSongs` |
-| 请求路径 | `AppConfig.effectiveBaseUrl/search` | `https://wyy.music.api.hoilai.cn/search` + `/song/detail` |
 | 客户端 | `ApiClient.get`（带鉴权头） | `ApiClient.getRaw`（**不带任何鉴权头**） |
 | 请求次数 | 1 次 | 2 次（先取 id 列表，再批量取详情） |
 | 分页参数 | `page` / `pagesize` | `limit` / `offset` |
-| `Song.hash` | 后端返回的酷狗 hash | `'ne_<id>'`（`lib/models/music_models.dart:2000`） |
-| `Song.source` | `SongSource.kugou` | `SongSource.netease` |
-| 播放地址 | `MusicApi.songUrl`（`/song/url`） | 不走 API：`https://music.163.com/song/media/outer/url?id=<id>.mp3`（`lib/controllers/player_controller.dart:861-866`、`1253-1254`、`1864-1868`） |
 | 响度/音量均衡 | 有 `volume` 数据 | 无（`_hydrateLocalLoudnessOnce` 直接 return，`player_controller.dart:790-792`） |
 | 收藏/歌单写入 | 支持 | 不支持（UI 隐藏操作，`lib/ui/pages/search_page.dart:833`） |
 | 歌手页 | 支持 | 不支持（`search_page.dart:171-174` 提示「其他平台歌曲暂不支持查看歌手」） |
@@ -213,11 +204,8 @@ MusicApi 是**唯一把 HTTP 响应翻译成领域模型**的地方：45 个公�
 
 | 项 | 事实 | 锚点 |
 |---|---|---|
-| 平台枚举 | `enum _SearchPlatform { kugou, netease }` | `35` |
 | 默认平台 | `_platform = _SearchPlatform.kugou` | `48` |
 | 切换行为 | 若已搜索过则用当前关键词自动重搜 | `156-164` |
-| 搜索分发 | `_platform == netease ? searchNetEaseSongs : searchSongs` | `127-129` |
-| 结果标记 | 非酷狗源显示「网易云」/「外部」徽标 | `996-999` |
 | 热词/建议 | 始终走酷狗端点，与平台选择无关 | `73`、`111` |
 | 搜索历史 | `SearchHistoryService` 本地存储，两平台共用 | `89`、`132` |
 
@@ -247,8 +235,6 @@ MusicApi **不含任何缓存**；SWR 与 TTL 由调用方通过 `CacheService` 
 | MA-06 | `lyrics` 最坏发起 1 + 8 × 2 = 17 次请求 | `music_api.dart:740-748`、`797-801` | 首屏歌词延迟；切歌依赖 `isCancelled` 才能提前退出 |
 | MA-07 | `searchLyricCandidates` 对整个响应递归收集，无深度/规模上限 | `music_api.dart:773-789` | 异常响应可能放大内存与解析耗时 |
 | MA-08 | `songUrl` 无条件 `debugPrint`（未受 `kDebugMode` 保护） | `music_api.dart:479` | Release 日志污染 |
-| MA-09 | 网易云不参与音量均衡、收藏、歌手页、歌词 | `player_controller.dart:790-792`、`search_page.dart:833`、`171-174` | 跨源歌曲功能不对等，UI 需持续判定 `song.source` |
-| MA-10 | 网易云播放地址硬编码在 `PlayerController`，绕过 `MusicApi` | `player_controller.dart:863` | 音源扩展逻辑分散在两处 |
 | MA-11 | `userPlaylists` 的展示排序（前 2 条 + 其余反转）是硬编码 hack | `music_api.dart:869-876` | 后端顺序变化时表现不可预期 |
 | MA-12 | 仅覆盖 39/149 个 KuGou 端点 | `api.json` vs `music_api.dart` | 未接入端点需在 `../04-数据与接口/API-端点清单.md` 中标注 |
 | MA-13 | `playlistInfo` 传参名为 `ids` 但只传单个 id | `music_api.dart:404` | 与 OpenAPI 语义（复数）不一致，易误用 |
@@ -275,6 +261,5 @@ MusicApi **不含任何缓存**；SWR 与 TTL 由调用方通过 `CacheService` 
 |---|---|---|
 | T-MA-1 | 用真实账号实测「待核实」的登录要求，回填表格 | MA-01 |
 | T-MA-2 | 把领取类接口从 GET 改为 POST，或给 `get` 增加 `allowRetry` 开关 | MA-03 |
-| T-MA-3 | 把网易云播放地址解析收敛进 `MusicApi`（新增 `netEaseSongUrl`） | MA-10 |
 | T-MA-4 | 为 `playlistSongs(fetchAll)` 增加页数上限与进度回调 | MA-04 |
 | T-MA-5 | 为 `MusicApi` 补单测（当前 `test/` 下无 `MusicApi` 用例） | `test/` 目录 |

@@ -68,8 +68,6 @@
 | 55 | `MobileLoginAccountDto` | object | 5 | `userId`, `nickname`, `pic`, `appId`, `username` |
 | 56 | `MobileLoginAccountSelectionResponse` | object | 5 | `status`, `errorCode`, `requiresUserSelection`, `message`, `accounts` |
 | 57 | `MobileLoginRequest` | object | 3 | `mobile`, `code`, `userId` |
-| 58 | `MusicCommentItem` | object | 17 | `id`, `content`, `addtime`, `reply_num`, `user_id`, `user_name`, `user_pic`, `user_sex`, `like`, `images`, `location`, `hash`, `score`, `vipinfo`, `udetail`, `machine_tail`, `tail` |
-| 59 | `MusicCommentResponse` | object | 15 | `msg`, `message`, `childrenid`, `count`, `combine_count`, `current_page`, `maxPage`, `list`, `hot_word_list`, `classify_list`, `tag`, `config`, `song_score`, `status`, `error_code` |
 | 60 | `OneDayVipModel` | object | 4 | `ad_vip_num`, `ad_vip_end_time`, `status`, `error_code` |
 | 61 | `PersonalFmResponse` | object | 4 | `song_list`, `mode`, `status`, `error_code` |
 | 62 | `PersonalFmSong` | object | 12 | `songname`, `author_name`, `hash`, `time_length`, `album_id`, `songid`, `mixsongid`, `privilege`, `singerinfo`, `trans_param`, `status`, `error_code` |

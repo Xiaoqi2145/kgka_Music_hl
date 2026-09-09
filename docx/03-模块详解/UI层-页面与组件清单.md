@@ -43,7 +43,6 @@ UI 层共 **35 个 Dart 文件 / 19306 行**，占 `lib/` 的约 65.4%；其中 
 | `library_page.dart` | 1189 | `LibraryPage` | Stateful | 我的：账号行、快捷卡（我喜欢/云盘/已下载/本地/历史）、歌单三 Tab（创建/收藏/专辑）+ 多选删除 |
 | `settings_page.dart` | 1182 | `SettingsPage` | **Stateless** | 设置总入口：账号/播放/本地/网络/缓存/个性化/应用七组，含缓存管理 BottomSheet |
 | `login_page.dart` | 1177 | `LoginPage` | Stateful | 登录：手机号验证码 + 扫码两个 Tab、多账号选择、API 地址设置 |
-| `search_page.dart` | 1039 | `SearchPage` | Stateful | 搜索：热搜、联想、结果、历史，酷狗/网易云双平台切换 |
 | `cloud_drive_page.dart` | 737 | `CloudDrivePage` | Stateful | 云盘音乐：容量条、分页列表、操作 |
 | `artist_detail_page.dart` | 697 | `ArtistDetailPage` | Stateful | 歌手详情：头图、简介、歌曲分页加载 |
 | `personalization_settings_page.dart` | 587 | `PersonalizationSettingsPage` | Stateful | 个性化：8 预设色、背景图选择/透明度/预览/移除 |
@@ -87,7 +86,6 @@ UI 层共 **35 个 Dart 文件 / 19306 行**，占 `lib/` 的约 65.4%；其中 
 
 | 枚举 | 值 | 所在文件 | 锚点 |
 |---|---|---|---|
-| `_SearchPlatform` | `kugou`、`netease` | `search_page.dart` | :35 |
 | `_SongSortMode` | `defaultOrder`、`byTitle`、`byArtist`、`byAlbum` | `playlist_detail_page.dart` | :1673 |
 | `_PlaylistSortMode` | `defaultOrder`、`byName`、`bySongCount`、`byCreatedTime` | `library_page.dart` | :595 |
 | `ToastType`（公开） | `info`、`success`、`error` | `widgets/toast.dart` | :6 |
@@ -243,7 +241,6 @@ BottomSheet 私有件：_ActionOption (:1041)、_ActionOptionTile (:1056)、_Sor
 6. **歌曲行组件重复四份**：`_HomeSongRow`（`home_page.dart:887`）、`_SongRow`（`playlist_detail_page.dart:1438`）、`_CloudSongRow`（`cloud_drive_page.dart:417`）、`_ArtistSongRow`（`artist_detail_page.dart:453`）。四者都内联了 `NowPlayingBadge`、`Artwork`、操作面板调用，改一处需改四处。
 7. **骨架屏同样重复**：`_HomeSkeleton`、`_PlaylistDetailSkeleton`、`_ArtistDetailSkeleton`、`_CloudSkeleton`、`_RadioSkeleton`、`_HotSearchSkeleton`、`_SkeletonBlock` 七个实现，仅 `SkeletonBox` 是公共件。
 8. **私有类型出现在公开 API 上**：`ThemeController.presetColors` 的元素类型 `_PresetColor` 是库私有（见 `控制器层-ThemeController.md` §2.3），外部只能靠类型推断遍历。
-9. **`_SearchPlatform` 的网易云分支只参与搜索**，不参与播放地址获取（`search_page.dart:997` 对 `SongSource.netease` 有特殊处理）。
 10. **`LocalSongsPage` 与 `SettingsPage` 各自实现了一份目录选择逻辑**（`local_songs_page.dart:47-112` vs `settings_page.dart:472-549`）。
 11. **`AudioEffectsPage` 名义上是「sheet」，实际是整页路由**（`audio_effects_sheet.dart:10-13` 用 `Navigator.push`），文件命名与行为不一致。
 12. **`music_formatters.dart` 只有 5 行**，是全项目最小的 Dart 文件；`formatPlayCount` 对 `null` 返回「精选歌单」而非空串，调用方需知道这一语义。

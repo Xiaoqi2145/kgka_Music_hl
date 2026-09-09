@@ -30,14 +30,6 @@ class ApiClient {
     );
   }
 
-  /// 直接请求外部 URI（不经过 AppConfig.apiUri），返回原始 JSON。
-  /// 用于跨平台 API 调用（如网易云 API）。
-  Future<dynamic> getRaw(Uri uri) {
-    return _sendWithRetry(
-      () => _client.get(uri, headers: {'Accept': 'application/json'}),
-    );
-  }
-
   Future<dynamic> post(
     String path, {
     Map<String, Object?> query = const {},

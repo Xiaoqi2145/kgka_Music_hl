@@ -72,7 +72,6 @@ ApiClient 是全项目**唯一的 HTTP 出口**，只有 3 个公开请求方法
 | 请求体 | 无 | 无 | `body == null ? null : jsonEncode(body)` |
 | `allowRetry` 默认 | 恒 true（不可配置） | 恒 true（不可配置） | **false** |
 | 返回 | `unwrapData` 后的动态 JSON | 同左 | 同左 |
-| 现有调用方 | 全部 KuGou 端点 | 仅网易云两步搜索 | 全部写操作 + 登录类 |
 | 鉴权 | 带 `X-Kg-Session-Id` / `t1` | **不带任何鉴权头** | 带 |
 
 > 注意：`query` 中值为 `null` 或空串的键会被丢弃（`lib/config/app_config.dart:106-110`），因此 `fmSongs` 传 `offset: -1` 时不会被丢弃（`-1` 的字符串非空）。
@@ -226,7 +225,6 @@ sequenceDiagram
 | AC-03 | 领取类写操作使用 GET，超时后会被重试 | `lib/services/music_api.dart:287`（`/youth/day/vip`） | 可能重复调用领取接口；后端是否幂等**待核实**（`api.json` 描述为「领取当天 VIP，不可多领」） |
 | AC-04 | `_sendWithRetry` 末尾的 `throw ApiException('请求失败，已重试 2 次')` 不可达 | `api_client.dart:117` | 死代码，误导排障（每次循环末次迭代都必然 return 或 throw） |
 | AC-05 | `FormatException` 重试分支实际不可达：`jsonDecode` 的 `FormatException` 已被 `_processResponse` 吞掉 | `api_client.dart:113-115` vs `149-154` | 文档/代码意图不一致 |
-| AC-06 | `getRaw` 不带 `_headers`，无 `X-Kg-Session-Id` / `t1` | `api_client.dart:37` | 网易云请求恒为匿名（当前符合预期，但无法复用登录态） |
 | AC-07 | `Retry-After` 只解析整数秒，HTTP-date 形式被忽略 | `api_client.dart:125-128` | 服务端若返回日期格式，退避会退回指数策略 |
 | AC-08 | 无请求取消机制（无 `CancelToken` / abort） | 全文件 | 切歌/离页时旧请求继续占用带宽，只能靠上层标志位忽略结果（如 `MusicApi.lyrics` 的 `isCancelled`） |
 | AC-09 | 15s 超时只覆盖「发请求到读完响应体」，不覆盖 `jsonDecode` 与 `unwrapData` | `api_client.dart:93-95`、`149-154` | 超大响应体的解码耗时不受 deadline 约束 |
@@ -242,7 +240,6 @@ sequenceDiagram
 | 不缓存任何响应 | 缓存由调用方通过 `CacheService` 显式做，见 `../03-模块详解/服务层-缓存体系.md` |
 | 不自动刷新 token | 刷新时机由 `AuthController` 决定 |
 | 不做请求签名/加密 | 全部依赖后端 `X-Kg-Session-Id` / `t1` |
-| 不做多后端路由 | 网易云由 `MusicApi.searchNetEaseSongs` 用 `getRaw` 直连 |
 | 不做请求日志 | 只有 `MusicApi` 的调试打印 |
 | 不做重试计数上报 | 无埋点 |
 

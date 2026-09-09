@@ -12,7 +12,6 @@
 ## 一句话结论（TL;DR）
 
 App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`；`ApiClient` 自动剥离响应体顶层 `data` 节点（`api_client.dart:160-168`），**业务成功与否只认 `status == 1`**（`music_api.dart:578-580`），而当前**只有登录链路**真正检查了这个判定。
-`MusicApi` 共封装 **39 个端点**（`api.json` 声明 149 个），另有 2 个网易云端点走 `getRaw` 直连外部域名，**不在 `api.json` 契约内**。
 新增接口必须走本文 §10 的 8 步流程，且不得手改 `API-端点清单.md` / `API-Schema索引.md`（自动生成）。
 
 ---
@@ -31,7 +30,6 @@ App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`
 | 编译期覆盖变量 | `KA_MUSIC_API_BASE_URL`（`String.fromEnvironment`） | `app_config.dart:14-17` |
 | 运行时覆盖键 | `settings.custom_api_base_url`（SharedPreferences） | `app_config.dart:12`、`:65-95` |
 | 已废弃域名（自动清除） | `https://music.api.hoilai.com` | `app_config.dart:11`、`:71`、`:88` |
-| 网易云搜索域名 | `https://wyy.music.api.hoilai.cn`（硬编码，非配置项） | `music_api.dart:679` |
 | MusicApi 封装的端点 | 39 | `music_api.dart`（见 §8） |
 
 > **注意**：`api.json` 的 `servers` 是本地调试地址，与 App 默认 base URL 不同。文档里的服务器地址**不能**当作 App 实际请求地址。
@@ -144,7 +142,6 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | 登录成功返回 | `LoginSession.sessionId` 取 `_client.sessionId` | `music_api.dart:80-88`、`:91-100` |
 | `MusicApi.clientSessionId` | 只读暴露 `_client.sessionId` | `music_api.dart:18` |
 
-网易云直连（`ApiClient.getRaw`，`api_client.dart:35-39`）**只带 `Accept`**，不带 `Content-Type`、不带任何鉴权头，也**不经过 `AppConfig.apiUri`**。
 
 ---
 
@@ -206,7 +203,6 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | `playlistSongs(fetchAll: true)` `:408` | `/playlist/track/all` | `page` / `pagesize` | 每页 **200** | 循环直到 `rawItemCount < 200` 或空页或 `shouldCancel()` 返回 true（`:427-440`） |
 | `cloudDrive` `:491` | `/user/cloud` | `page` / `pagesize` | 1 / 30 | |
 | `searchSongs` `:634` | `/search` | `keywords` / `page` / `pagesize` / `type` | 1 / 30 / `song` | |
-| `searchNetEaseSongs` `:674` | `https://wyy.music.api.hoilai.cn/search` | `keywords` / `limit` / `offset` / `type` | 30 / 0 / `1` | 外部 API，**不在 `api.json`** |
 | `searchSuggest` `:622` | `/search/suggest` | `keywords` | — | 返回字符串列表，无分页 |
 | `searchHotKeywords` `:614` | `/search/hot` | — | — | 无分页 |
 
@@ -258,7 +254,6 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | `searchHotKeywords` | `:614` | GET | `/search/hot` | `List<SearchHotCategory>` | |
 | `searchSuggest` | `:622` | GET | `/search/suggest` | `List<String>` | 取 `music[].keyword` |
 | `searchSongs` | `:634` | GET | `/search` | `List<Song>` | `type=song`；响应可能是数组 |
-| `searchNetEaseSongs` | `:674` | GET | `wyy.music.api.hoilai.cn/search` + `/song/detail` | `List<Song>` | **外部 API**，两步调用 |
 | `lyrics` | `:722` | GET | `/search/lyric` + `/lyric` | `List<LyricLine>` | 最多试 8 个候选，取行数最多者 |
 | `searchLyricCandidates` | `:752` | GET | `/search/lyric` | `List<LyricCandidate>` | 递归收集 + `id:accessKey` 去重 |
 | `lyricsFromCandidate` | `:797` | GET | `/lyric` | `List<LyricLine>` | 先 `krc`，为空再 `lrc` |
@@ -274,7 +269,6 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | `api.json` 声明端点 | 149 | 见 `API-端点清单.md` |
 | `MusicApi` 已封装 | 39 | 见 §8 |
 | 未封装 | 110 | 见 `API-端点清单.md`（如 `/album`、`/album/detail`、`/artist/albums`、`/artist/videos`、`/artist/lists`、`/comment/album`、`/comment/floor`、`/singer/list` 等） |
-| 外部端点（不在 `api.json`） | 2 | `https://wyy.music.api.hoilai.cn/search`、`/song/detail`（`music_api.dart:682-711`） |
 
 权威来源：`API-端点清单.md`（按 19 个 tag 分组，含 method/path/summary/query 参数与 required 标记）与 `API-Schema索引.md`（111 个 schema 的属性清单）。两份文档由脚本从 `api.json` 自动生成，**禁止手工编辑**，端点变化时重新生成即可。
 
@@ -304,7 +298,6 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 3. **空值参数被静默丢弃**（`app_config.dart:107-109`）。`songUrl` 的 `album_id` / `album_audio_id` 为 null 时不会出现在请求里（`music_api.dart:470-476`），可能影响后端选源；不要误以为「传了 null」等价于「显式传空」。
 4. **`unwrapData` 会剥离 `data`**（`api_client.dart:160-168`）。若某端点返回 `{"data": null, ...}`，会拿到整个 Map 而非 null，字段读取会全部落空——排查时先打印原始响应。
 5. **非 JSON 响应被当成字符串返回**（`api_client.dart:149-154`）。网关返回 HTML 错误页时 `asMap` 得到 `{}`，表现为静默空数据。
-6. **网易云链路独立且硬编码**：`https://wyy.music.api.hoilai.cn` 写在方法体里（`music_api.dart:679`），既不受 `settings.custom_api_base_url` 影响，也不带任何鉴权头（`api_client.dart:35-39`）。
 7. **两个参数未在契约中声明**：`searchLyricCandidates` 发送 `keyword` 与 `duration`（`music_api.dart:757-758`），而 `api.json` 的 `/search/lyric` 只声明 `hash` / `album_audio_id` / `keywords` / `man`（`api.json:2183-2215`）。属历史兼容写法，改动前需抓包确认。
 8. **加曲 body 与 schema 不一致**：`_songAddPayload` 发 `{name, hash, albumId, mixSongId}`（`music_api.dart:569-576`），而 `AddSongItem` 声明的是 `{hash, fileid, name}`（`api.json:6143-6164`）；`albumId` / `mixSongId` 未声明，`fileid` 未发送。
 9. **`Content-Type: application/json` 对 GET 也发送**（`api_client.dart:60`）。若后续接入第三方 CDN，需确认其容忍带 body 类型头的 GET。

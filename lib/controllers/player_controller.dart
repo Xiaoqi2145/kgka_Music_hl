@@ -787,7 +787,7 @@ class PlayerController extends ChangeNotifier {
     Song song,
     AudioQuality quality,
   ) async {
-    if (song.source == SongSource.local || song.source == SongSource.netease) {
+    if (song.source == SongSource.local) {
       return;
     }
     final key = _loudnessKey(song, quality);
@@ -858,13 +858,6 @@ class PlayerController extends ChangeNotifier {
         loudness: playUrl.loudness,
       );
     }
-    if (song.source == SongSource.netease) {
-      final url =
-          'https://music.163.com/song/media/outer/url?id=${song.id}.mp3';
-      await _loadAudioSource(song, url);
-      return (url: url, quality: audioQuality, loudness: null);
-    }
-
     final qualities = <AudioQuality>[audioQuality];
     if (smartQualityEnabled) {
       var quality = _nextLowerQuality(audioQuality);
@@ -1250,8 +1243,6 @@ class PlayerController extends ChangeNotifier {
         if (playUrl.url.isEmpty) return;
         url = playUrl.url;
         loudness = playUrl.loudness;
-      } else if (next.source == SongSource.netease) {
-        url = 'https://music.163.com/song/media/outer/url?id=${next.id}.mp3';
       } else {
         final playUrl = await _api.songUrl(next, quality: quality);
         if (playUrl.url.isEmpty) return;
@@ -1861,11 +1852,6 @@ class PlayerController extends ChangeNotifier {
         final PlayUrl playUrl;
         if (song.isCloudDrive) {
           playUrl = await _api.cloudSongUrl(song);
-        } else if (song.source == SongSource.netease) {
-          playUrl = PlayUrl(
-            url: 'https://music.163.com/song/media/outer/url?id=${song.id}.mp3',
-            hash: song.hash,
-          );
         } else {
           playUrl = await _api.songUrl(song, quality: quality);
         }

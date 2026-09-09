@@ -231,7 +231,6 @@ Dart 侧解析：`EqualizerConfig.fromMap`（`audio_effects_service.dart:44-59`�
 | `EXTRA_TITLE` | `title` | `""` |
 | `EXTRA_ARTIST` | `artist` | `""` |
 | `EXTRA_PROGRESS` | `progress` | `0f` |
-| `EXTRA_LINE_DURATION_MS` | `line_duration_ms` | `0` |
 | `EXTRA_IS_PLAYING` | `is_playing` | `false` |
 | `EXTRA_IS_FOREGROUND` | `is_foreground` | `false` |
 | `EXTRA_OPACITY` | `opacity` | 沿用当前值（默认 0.8） |

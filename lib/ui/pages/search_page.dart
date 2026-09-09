@@ -31,9 +31,6 @@ class SearchPage extends StatefulWidget {
   State<SearchPage> createState() => _SearchPageState();
 }
 
-/// 搜索平台。
-enum _SearchPlatform { kugou, netease }
-
 class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
@@ -45,7 +42,6 @@ class _SearchPageState extends State<SearchPage> {
   List<Song> _results = const [];
   bool _loading = false;
   bool _searched = false;
-  _SearchPlatform _platform = _SearchPlatform.kugou;
 
   // 搜索历史
   final _historyService = SearchHistoryService();
@@ -124,9 +120,7 @@ class _SearchPageState extends State<SearchPage> {
       _searched = true;
     });
     try {
-      final songs = _platform == _SearchPlatform.netease
-          ? await widget.api.searchNetEaseSongs(keywords)
-          : await widget.api.searchSongs(keywords);
+      final songs = await widget.api.searchSongs(keywords);
       if (mounted) setState(() => _results = songs);
       // 搜索成功后记录历史
       await _historyService.add(keywords);
@@ -151,16 +145,6 @@ class _SearchPageState extends State<SearchPage> {
       TextPosition(offset: keyword.length),
     );
     _search(keyword);
-  }
-
-  void _switchPlatform(_SearchPlatform platform) {
-    if (_platform == platform) return;
-    setState(() => _platform = platform);
-    // 如果已有搜索关键词，切换平台后自动重新搜索
-    final text = _controller.text.trim();
-    if (text.isNotEmpty && _searched) {
-      _search(text);
-    }
   }
 
   void _playSong(Song song) {
@@ -270,12 +254,6 @@ class _SearchPageState extends State<SearchPage> {
 
     return Column(
       children: [
-        // 平台切换栏（仅搜索状态下显示）
-        if (text.isNotEmpty || _searched)
-          _PlatformSelector(
-            platform: _platform,
-            onChanged: _switchPlatform,
-          ),
         Expanded(
           child: _buildContent(context, text),
         ),
@@ -376,57 +354,6 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     return const SizedBox.shrink();
-  }
-}
-
-/// 平台切换选择器。
-class _PlatformSelector extends StatelessWidget {
-  const _PlatformSelector({required this.platform, required this.onChanged});
-
-  final _SearchPlatform platform;
-  final ValueChanged<_SearchPlatform> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 8, 18, 4),
-      child: Row(
-        children: [
-          for (final p in _SearchPlatform.values) ...[
-            GestureDetector(
-              onTap: () => onChanged(p),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: platform == p
-                      ? colorScheme.primary
-                      : colorScheme.surfaceContainerHighest.withValues(alpha: .5),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  p == _SearchPlatform.kugou ? '酷狗' : '网易云',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: platform == p
-                            ? colorScheme.onPrimary
-                            : colorScheme.onSurfaceVariant,
-                        fontWeight: platform == p
-                            ? FontWeight.w800
-                            : FontWeight.w600,
-                      ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-          ],
-        ],
-      ),
-    );
   }
 }
 
@@ -829,8 +756,7 @@ class _SearchResults extends StatelessWidget {
           itemBuilder: (context, index) {
             final song = songs[index];
             final liked = isLiked(song);
-            // 其他平台歌曲（如网易云）仅支持播放，不支持收藏等操作
-            final isExternal = song.source != SongSource.kugou;
+            final isExternal = song.source == SongSource.local;
             return AnimatedBuilder(
               animation: player,
               builder: (context, _) {
@@ -994,9 +920,7 @@ class _SearchResults extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
-                                song.source == SongSource.netease
-                                    ? '网易云'
-                                    : '外部',
+                                '本地',
                                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                                       color: colorScheme.onSurfaceVariant,
                                       fontWeight: FontWeight.w700,
