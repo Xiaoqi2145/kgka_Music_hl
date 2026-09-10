@@ -40,19 +40,23 @@ class MusicAudioHandler extends BaseAudioHandler
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
+  Future<void> Function(Duration)? _onSeek;
   int _queueIndex = 0;
 
   void attachTransportControls({
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
+    Future<void> Function(Duration)? onSeek,
   }) {
     _onNext = onNext;
     _onPrevious = onPrevious;
+    _onSeek = onSeek;
   }
 
   void detachTransportControls() {
     _onNext = null;
     _onPrevious = null;
+    _onSeek = null;
     onPlaybackIntent = null;
   }
 
@@ -71,39 +75,19 @@ class MusicAudioHandler extends BaseAudioHandler
   }) async {
     // setAudioSources 在 playing=true 时会自行出声；加载前暂停，等焦点批准后再播。
     await pauseForInterruption();
-    final currentItem = _mediaItemFor(song);
-    final window = _windowedQueue(queueSongs, queueIndex);
-    _queueIndex = window.index;
-    final items = window.songs.map(_mediaItemFor).toList(growable: false);
-
-    if (items.isNotEmpty) {
-      queue.add(items);
-    }
-    mediaItem.add(currentItem);
-    // 统一走播放列表 API（单曲即单元素列表）：无缝播放需要在此后
-    // 动态追加预载的下一曲，setUrl 无法追加。
+    // Stable mode: replace at the paused load boundary, never mutate a live
+    // playlist. Media metadata is published by the controller's commit only.
     await audioPlayer.setAudioSources([_audioSourceFor(song, url)]);
   }
 
-  /// 无缝播放：追加预解析好的下一曲子源，不打断当前播放。
-  /// ExoPlayer 的 lazy preparation 会在当前曲临近结束时自动预载缓冲。
-  Future<void> appendPlaylistEntry(Song song, String url) async {
-    await audioPlayer.addAudioSource(_audioSourceFor(song, url));
-  }
-
-  /// 移除播放列表中指定下标的子源（用于收缩已播条目/丢弃失效的预载项）。
-  Future<void> removePlaylistEntryAt(int index) async {
-    await audioPlayer.removeAudioSourceAt(index);
-  }
-
-  /// 无缝切换后同步通知栏媒体元数据。
+  /// Only the controller commit publishes the current media identity.
   void setCurrentMediaItem(Song song) {
     mediaItem.add(_mediaItemFor(song));
   }
 
   @override
-  Future<void> updateQueue(List<MediaItem> newQueue) async {
-    queue.add(newQueue);
+  Future<void> updateQueue(List<MediaItem> queue) async {
+    this.queue.add(queue);
   }
 
   Future<void> setSongQueue({
@@ -182,8 +166,16 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> seek(Duration position) async {
-    await audioPlayer.seek(position);
+    final onSeek = _onSeek;
+    if (onSeek != null) {
+      await onSeek(position);
+    } else {
+      await seekDirect(position);
+    }
   }
+
+  /// Controller-owned seeks (including load-position restore) avoid recursion.
+  Future<void> seekDirect(Duration position) => audioPlayer.seek(position);
 
   @override
   Future<void> skipToNext() async {

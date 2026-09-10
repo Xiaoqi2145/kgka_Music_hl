@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/loudness_data.dart';
 import '../models/music_models.dart';
 import '../services/audio_effects_service.dart';
+import '../services/artwork_cache_service.dart';
 import '../services/cache_service.dart';
 import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
@@ -18,14 +19,19 @@ import '../services/music_audio_handler.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_loudness.dart';
 import '../services/playback_stats_service.dart';
+import '../services/transition_coordinator.dart';
 import '../services/volume_normalization_service.dart';
 import 'download_controller.dart';
 
-/// 预解析好的下一曲播放源（无缝播放）。
+/// 纯缓存候选；永不追加到正在播放的音源列表。
 class _PreparedNextSource {
   const _PreparedNextSource({
     required this.song,
     required this.songKey,
+    required this.ownerEntryId,
+    required this.queueRevision,
+    required this.requestRevision,
+    required this.requestedQuality,
     required this.url,
     required this.quality,
     this.loudness,
@@ -33,6 +39,10 @@ class _PreparedNextSource {
 
   final Song song;
   final String songKey;
+  final int ownerEntryId;
+  final int queueRevision;
+  final int requestRevision;
+  final AudioQuality requestedQuality;
   final String url;
   final AudioQuality quality;
   final LoudnessData? loudness;
@@ -111,38 +121,41 @@ class PlayerController extends ChangeNotifier {
 
   PlayerController(this._api, this._audioHandler) {
     unawaited(_restoreSettings());
-    _audioHandler.attachTransportControls(onNext: next, onPrevious: previous);
+    _audioHandler.attachTransportControls(
+      onNext: next,
+      onPrevious: previous,
+      onSeek: seek,
+    );
     _audioHandler.onPlaybackIntent = (playing) {
       _cancelAutomaticResume();
       if (!playing) {
         // 暂停也撤销尚在解析/加载中的播放，防止加载完成后反手拉起。
         ++_playRequestGeneration;
+        _transitions.invalidateWork();
         isPreparing = false;
       }
     };
     _desktopLyrics.setVisibilityChangedHandler(_handleDesktopLyricsVisibility);
     _positionSub = audioPlayer.positionStream.listen((value) {
-      if (!_isSeeking) {
-        _setPositionBase(value, playing: isPlaying);
+      if (!_isSeeking && !isPreparing && _ownsLoadedSource) {
+        _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
-      _maybeCompleteFromPosition(value);
       _maybeSyncDesktopLyricFromPosition();
       // 无缝播放：临近结束（≤30s）时后台预解析下一曲播放地址。
-      if (isPlaying && !_isSeeking) {
+      if (isPlaying && !_isSeeking && !isPreparing && _ownsLoadedSource) {
         unawaited(_prepareNextSourceIfNeeded());
       }
       // 位置高频更新通过 positionListenable 发送，避免触发全局 ChangeNotifier。
     });
-    _durationSub = audioPlayer.durationStream.listen((value) {
-      duration = value ?? Duration.zero;
-      notifyListeners();
-    });
+    _playbackEventSub = audioPlayer.playbackEventStream.listen(
+      _onPlaybackEvent,
+    );
     _stateSub = audioPlayer.playerStateStream.listen((value) {
       isPlaying = value.playing;
       isBuffering =
           value.processingState == ProcessingState.loading ||
           value.processingState == ProcessingState.buffering;
-      if (!_isSeeking) {
+      if (!_isSeeking && !isPreparing && _ownsLoadedSource) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
       if (!isPreparing &&
@@ -159,13 +172,6 @@ class PlayerController extends ChangeNotifier {
       _syncDesktopPlayState();
       notifyListeners();
     });
-    _processingStateSub = audioPlayer.processingStateStream.distinct().listen((
-      state,
-    ) {
-      if (state == ProcessingState.completed) {
-        unawaited(_handleCompleted());
-      }
-    });
     _androidAudioSessionSub = audioPlayer.androidAudioSessionIdStream.listen((
       sessionId,
     ) {
@@ -178,23 +184,11 @@ class PlayerController extends ChangeNotifier {
     _playlistSequenceSub = audioPlayer.sequenceStateStream.listen((state) {
       unawaited(_onPlaylistSequenceChanged(state));
     });
-    // 预载子源在过渡瞬间加载失败等运行时错误：自动重载当前曲恢复，
-    // 避免播放静默停止。playSong 内部的加载错误由 isPreparing 守卫忽略。
     _playerErrorSub = audioPlayer.errorStream.listen((error) {
-      debugPrint(
-        '[KA Music][playback] player error ${error.code}: ${error.message}',
-      );
-      if (_isHandlingPlayerError || isPreparing || _isHandlingCompletion) {
-        return;
-      }
-      final song = currentSong;
-      if (song == null) return;
-      _isHandlingPlayerError = true;
-      unawaited(
-        playSong(song, queue: queue).whenComplete(() {
-          _isHandlingPlayerError = false;
-        }),
-      );
+      if (_disposed || isPreparing) return;
+      _traceTransition('player_error', detail: 'code=${error.code}');
+      errorMessage = '播放失败（${error.code}），请重试';
+      notifyListeners();
     });
     unawaited(_setupAudioSessionListeners());
   }
@@ -211,9 +205,8 @@ class PlayerController extends ChangeNotifier {
   MusicApi get api => _api;
 
   late final StreamSubscription<Duration> _positionSub;
-  late final StreamSubscription<Duration?> _durationSub;
+  late final StreamSubscription<PlaybackEvent> _playbackEventSub;
   late final StreamSubscription<PlayerState> _stateSub;
-  late final StreamSubscription<ProcessingState> _processingStateSub;
   late final StreamSubscription<int?> _androidAudioSessionSub;
   StreamSubscription<AudioInterruptionEvent>? _interruptionSub;
   StreamSubscription<void>? _becomingNoisySub;
@@ -262,17 +255,17 @@ class PlayerController extends ChangeNotifier {
   /// 预解析失败后的冷却期，避免在 30 秒窗口内每个 position 刻度都重试。
   DateTime _prepareNextCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// 播放器播放列表（ConcatenatingAudioSource）的镜像：
-  /// 与 audioPlayer.currentIndex 一一对应，用于无缝过渡与窗口维护。
-  List<Song> _playlistSongs = const [];
-  List<String> _playlistUrls = const [];
+  final _transitions = TransitionCoordinator();
+  int? get currentEntryId => _transitions.committedEntry?.id;
+  int get normalizationGeneration => _playbackLoudness.generation;
   StreamSubscription<SequenceState>? _playlistSequenceSub;
   IndexedAudioSource? _activePlaylistSource;
   int _playlistLoadRevision = 0;
+  Future<void> _sourceLoadChain = Future<void>.value();
+  int _committedQueueIndex = -1;
+  DateTime? _lastMediaEventTime;
   StreamSubscription<PlayerException>? _playerErrorSub;
-  bool _isHandlingPlayerError = false;
   final _random = math.Random();
-  Timer? _completionFallbackTimer;
   Timer? _playCacheDelayTimer;
   Song? _pendingPlayCacheSong;
   AudioQuality? _pendingPlayCacheQuality;
@@ -285,8 +278,6 @@ class PlayerController extends ChangeNotifier {
   int _seekSerial = 0;
   bool _isSeeking = false;
   bool _isScrubbing = false;
-  bool _isHandlingCompletion = false;
-  String? _completedSongHash;
   bool _isAppForeground = true;
   bool _desktopLyricsPreviewVisible = false;
 
@@ -476,7 +467,17 @@ class PlayerController extends ChangeNotifier {
     if (song == null) {
       return -1;
     }
-    return queue.indexWhere((item) => item.hash == song.hash);
+    if (_committedQueueIndex >= 0 &&
+        _committedQueueIndex < queue.length &&
+        identical(queue[_committedQueueIndex], song)) {
+      return _committedQueueIndex;
+    }
+    final index = queue.indexWhere((item) => identical(item, song));
+    return index >= 0
+        ? index
+        : queue.indexWhere(
+            (item) => _metadataSongKey(item) == _metadataSongKey(song),
+          );
   }
 
   int get activeLyricIndex {
@@ -535,24 +536,36 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> playSong(Song song, {List<Song>? queue}) async {
+  Future<void> playSong(Song song, {List<Song>? queue}) =>
+      _playSong(song, queue: queue);
+
+  Future<void> _playSong(
+    Song song, {
+    List<Song>? queue,
+    bool forceReload = false,
+    _PreparedNextSource? prepared,
+    int? queueIndex,
+    String reason = 'explicit_load',
+  }) async {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
     final requestGeneration = ++_playRequestGeneration;
-    bool isCurrentRequest() => requestGeneration == _playRequestGeneration;
-
-    // 点击当前正在播放的歌曲：保持播放进度，仅同步队列上下文并继续播放。
-    // 恢复会话后音源尚未加载（idle），走完整加载路径以消费接续进度。
+    bool isCurrentRequest() =>
+        !_disposed && requestGeneration == _playRequestGeneration;
     final current = currentSong;
-    if (current != null &&
+    if (!forceReload &&
+        !isPreparing &&
+        current != null &&
         errorMessage == null &&
+        _ownsLoadedSource &&
         audioPlayer.processingState != ProcessingState.idle &&
-        _songKey(song) == _songKey(current)) {
+        audioPlayer.processingState != ProcessingState.completed &&
+        identical(song, current)) {
       if (queue != null && queue.isNotEmpty && !listEquals(queue, this.queue)) {
-        this.queue = queue;
-        _queueRevision++;
+        this.queue = List.of(queue);
+        _committedQueueIndex = this.queue.indexOf(song);
+        ++_queueRevision;
         _queueExpansionFuture = null;
-        // 队列上下文变了，预选的下一曲可能不再有效。
         _clearPreparedNext();
         await _audioHandler.setSongQueue(
           queueSongs: this.queue,
@@ -562,51 +575,35 @@ class PlayerController extends ChangeNotifier {
         if (!isCurrentRequest()) return;
         notifyListeners();
       }
-      if (audioPlayer.processingState == ProcessingState.completed) {
-        _completedSongHash = null;
-        await _audioHandler.seek(Duration.zero);
-        if (!isCurrentRequest()) return;
-        _selectNormalizationSource(
-          song,
-          _normalizationQuality ?? audioQuality,
-          force: true,
-        );
-        unawaited(_applyVolumeNormalization());
-      }
-      if (!isCurrentRequest()) return;
       unawaited(
-        _audioHandler.play().catchError((Object error, StackTrace stackTrace) {
+        _audioHandler.play().catchError((Object error, StackTrace stack) {
           if (!isCurrentRequest()) return;
           errorMessage = error.toString();
-          isPreparing = false;
           notifyListeners();
         }),
       );
       _scheduleSessionPersist();
       return;
     }
+    prepared ??= _consumePreparedNext(song);
+    _clearPreparedNext();
+    ++_seekSerial;
+    _isSeeking = false;
+    _isScrubbing = false;
     _cancelPendingPlaybackCache();
-    _completionFallbackTimer?.cancel();
-    _completedSongHash = null;
     isPreparing = true;
     errorMessage = null;
-    currentSong = song;
-    _selectNormalizationSource(song, audioQuality, force: true);
     if (queue != null && queue.isNotEmpty) {
-      this.queue = queue;
-      _queueRevision++;
+      this.queue = List.of(queue);
+      ++_queueRevision;
       _queueExpansionFuture = null;
     } else if (this.queue.isEmpty) {
       this.queue = [song];
     }
-    lyrics = const [];
-    _lastDesktopLyricIndex = -1;
+    final targetIndex =
+        queueIndex ?? this.queue.indexWhere((item) => identical(item, song));
     notifyListeners();
-    unawaited(_syncDesktopLyricsVisibility());
-    // 切歌即开始加载歌词（缓存命中立即显示，未命中走网络），
-    // 与音源解析并行进行，不等音频就绪。
-    unawaited(loadLyrics(song));
-
+    _traceTransition('load_start', detail: 'reason=$reason');
     try {
       String? networkUrl;
       var cacheQuality = audioQuality;
@@ -614,19 +611,17 @@ class PlayerController extends ChangeNotifier {
       final local = downloadController?.localSourceFor(song, audioQuality);
       if (local != null) {
         try {
-          _restoreLocalLoudness(song, audioQuality, local.loudness);
+          cacheLoudness = local.loudness;
           await _loadAudioSource(song, local.path);
           if (!isCurrentRequest()) return;
         } catch (error) {
           if (!isCurrentRequest()) return;
           if (song.source == SongSource.local) rethrow;
-          debugPrint(
-            '[KA Music][playback] local source failed for ${song.hash}: $error',
-          );
           await downloadController?.invalidateLocalSource(song, audioQuality);
+          if (!isCurrentRequest()) return;
           final loaded = await _loadNetworkSourceWithFallback(
             song,
-            prepared: _consumePreparedNext(song),
+            prepared: prepared,
           );
           if (!isCurrentRequest()) return;
           networkUrl = loaded.url;
@@ -639,34 +634,26 @@ class PlayerController extends ChangeNotifier {
       } else {
         final loaded = await _loadNetworkSourceWithFallback(
           song,
-          prepared: _consumePreparedNext(song),
+          prepared: prepared,
         );
         if (!isCurrentRequest()) return;
         networkUrl = loaded.url;
         cacheQuality = loaded.quality;
         cacheLoudness = loaded.loudness;
       }
-      // 主路径播放后，未消费的预解析已随 _loadAudioSource 作废。
       if (!isCurrentRequest()) return;
+      _committedQueueIndex = targetIndex;
+      _commitPlayback(song, cacheQuality, cacheLoudness, reason: reason);
       isPreparing = false;
       notifyListeners();
       unawaited(
-        _audioHandler.play().catchError((Object error, StackTrace stackTrace) {
+        _audioHandler.play().catchError((Object error, StackTrace stack) {
           if (!isCurrentRequest()) return;
           errorMessage = error.toString();
-          isPreparing = false;
           notifyListeners();
         }),
       );
-      if (!isCurrentRequest()) return;
-      _scheduleSessionPersist();
-      // 切歌后立即独立应用音量均衡；不得占用播放/拖拽主流程。
-      unawaited(_applyVolumeNormalization());
-      if (!isCurrentRequest()) return;
-      // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
-      unawaited(_historyService.record(song));
-      unawaited(_statsService.recordPlay(song));
-      // 连续稳定播放 30 秒后再缓存，避免快速切歌产生无效网络与磁盘 IO。
+      unawaited(_applyVolumeNormalization(reason: 'transition'));
       if (networkUrl != null) {
         _schedulePlaybackCache(
           song,
@@ -674,38 +661,89 @@ class PlayerController extends ChangeNotifier {
           networkUrl,
           loudness: cacheLoudness,
         );
+      } else {
+        _restoreLocalLoudness(song, cacheQuality, cacheLoudness);
       }
     } catch (error) {
       if (!isCurrentRequest()) return;
       errorMessage = error.toString();
-      isPreparing = false;
-      notifyListeners();
+      _traceTransition('load_reject', detail: 'reason=$reason');
     } finally {
-      if (isCurrentRequest() && isPreparing) {
+      if (isCurrentRequest()) {
         isPreparing = false;
         notifyListeners();
       }
     }
   }
 
-  Future<void> _loadAudioSource(Song song, String url) async {
-    ++_playlistLoadRevision;
-    _activePlaylistSource = null;
-    // 在开始加载时冻结歌单和目标下标，避免异步期间 currentSong 改变导致偏移。
+  void _commitPlayback(
+    Song song,
+    AudioQuality quality,
+    LoudnessData? loudness, {
+    required String reason,
+    Duration start = Duration.zero,
+  }) {
+    _transitions.commit(_playlistLoadRevision);
+    currentSong = song;
+    _selectNormalizationSource(song, quality, force: true);
+    _rememberLoudness(song, quality, loudness);
+    lyrics = const [];
+    isLoadingLyrics = false;
+    ++_lyricsLoadGeneration;
+    _lastDesktopLyricIndex = -1;
+    final event = audioPlayer.playbackEvent;
+    _lastMediaEventTime = event.updateTime;
+    duration = event.duration ?? Duration.zero;
+    _setPositionBase(start, playing: false);
+    _audioHandler.setCurrentMediaItem(song);
+    unawaited(
+      _audioHandler.setSongQueue(
+        queueSongs: queue,
+        queueIndex: currentIndex,
+        currentSong: null,
+      ),
+    );
+    _traceTransition(
+      'committed',
+      detail:
+          'reason=$reason positionOwner=$currentEntryId durationOwner=$currentEntryId',
+    );
+    unawaited(loadLyrics(song));
+    unawaited(_syncDesktopLyricsVisibility());
+    unawaited(_historyService.record(song));
+    unawaited(_statsService.recordPlay(song));
+    _scheduleSessionPersist();
+  }
+
+  Future<void> _loadAudioSource(Song song, String url) {
+    final generation = _playRequestGeneration;
     final queueSnapshot = List<Song>.of(queue);
-    final foundIndex = queueSnapshot.indexWhere(
-      (item) => _songKey(item) == _songKey(song),
+    final index = queueSnapshot.indexWhere((item) => identical(item, song));
+    final operation = _sourceLoadChain.then((_) async {
+      if (_disposed || generation != _playRequestGeneration) {
+        throw StateError('Superseded playback load');
+      }
+      ++_playlistLoadRevision;
+      _activePlaylistSource = null;
+      await _audioHandler.loadSong(
+        song: song,
+        url: url,
+        queueSongs: queueSnapshot,
+        queueIndex: index < 0 ? 0 : index,
+      );
+      if (_disposed || generation != _playRequestGeneration) {
+        throw StateError('Superseded playback load');
+      }
+      final state = audioPlayer.sequenceState;
+      if (state.sequence.length != 1 || state.currentSource?.tag != song) {
+        throw StateError('Single-source load not acknowledged');
+      }
+      _activePlaylistSource = state.currentSource;
+    });
+    _sourceLoadChain = operation.catchError(
+      (Object error, StackTrace stack) {},
     );
-    final queueIndex = foundIndex < 0 ? 0 : foundIndex;
-    _playlistSongs = [song];
-    _playlistUrls = [url];
-    _preparedNext = null;
-    await _audioHandler.loadSong(
-      song: song,
-      url: url,
-      queueSongs: queueSnapshot,
-      queueIndex: queueIndex,
-    );
+    return operation;
   }
 
   String _metadataSongKey(Song song) => '${song.source.name}:${_songKey(song)}';
@@ -829,7 +867,7 @@ class PlayerController extends ChangeNotifier {
   }) async {
     final generation = _playRequestGeneration;
     void checkCurrent() {
-      if (generation != _playRequestGeneration) {
+      if (_disposed || generation != _playRequestGeneration) {
         throw StateError('Superseded playback source');
       }
     }
@@ -838,8 +876,10 @@ class PlayerController extends ChangeNotifier {
     if (prepared != null) {
       try {
         checkCurrent();
-        _selectNormalizationSource(song, prepared.quality);
-        _rememberLoudness(song, prepared.quality, prepared.loudness);
+        _loudnessLookup.put(
+          _loudnessKey(song, prepared.quality),
+          prepared.loudness,
+        );
         await _loadAudioSource(song, prepared.url);
         return (
           url: prepared.url,
@@ -857,7 +897,7 @@ class PlayerController extends ChangeNotifier {
         throw Exception('云盘歌曲暂时没有可播放地址');
       }
       checkCurrent();
-      _rememberLoudness(song, audioQuality, playUrl.loudness);
+      _loudnessLookup.put(_loudnessKey(song, audioQuality), playUrl.loudness);
       await _loadAudioSource(song, playUrl.url);
       return (
         url: playUrl.url,
@@ -883,8 +923,7 @@ class PlayerController extends ChangeNotifier {
           throw Exception('${quality.badge} 暂时没有可播放地址');
         }
         checkCurrent();
-        _selectNormalizationSource(song, quality);
-        _rememberLoudness(song, quality, playUrl.loudness);
+        _loudnessLookup.put(_loudnessKey(song, quality), playUrl.loudness);
         await _loadAudioSource(song, playUrl.url);
         if (quality != audioQuality) {
           debugPrint(
@@ -951,7 +990,9 @@ class PlayerController extends ChangeNotifier {
       nextQueue.insert(insertIndex, song);
     }
 
+    _invalidateNavigation();
     queue = nextQueue;
+    ++_queueRevision;
     // 插播改变了"下一曲"，预选作废。
     _clearPreparedNext();
     await _audioHandler.setSongQueue(
@@ -977,7 +1018,9 @@ class PlayerController extends ChangeNotifier {
       if (key.isNotEmpty && seen.add(key)) updated.add(song);
     }
     if (updated.isEmpty) return false;
+    _invalidateNavigation();
     queue = updated;
+    ++_queueRevision;
     // 队列被替换，预选的下一曲可能已不在队列中。
     _clearPreparedNext();
     if (current != null &&
@@ -990,7 +1033,6 @@ class PlayerController extends ChangeNotifier {
       queueIndex: currentIndex,
       currentSong: current,
     );
-    _queueRevision++;
     notifyListeners();
     return true;
   }
@@ -998,13 +1040,20 @@ class PlayerController extends ChangeNotifier {
   void registerQueueExpansion(Future<void> future, int expectedRevision) {
     if (expectedRevision != _queueRevision) return;
     _queueExpansionFuture = future;
-    future.whenComplete(() {
-      if (identical(_queueExpansionFuture, future)) {
-        _queueExpansionFuture = null;
-      }
-      // 队列扩充完成，之前预选的下一曲可能来自旧队列。
-      _clearPreparedNext();
-    });
+    unawaited(
+      future.then<void>(
+        (_) {
+          if (_disposed || !identical(_queueExpansionFuture, future)) return;
+          _queueExpansionFuture = null;
+          _clearPreparedNext();
+        },
+        onError: (Object error, StackTrace stack) {
+          if (identical(_queueExpansionFuture, future)) {
+            _queueExpansionFuture = null;
+          }
+        },
+      ),
+    );
   }
 
   void _schedulePlaybackCache(
@@ -1076,6 +1125,13 @@ class PlayerController extends ChangeNotifier {
 
   // ===== 无缝播放 =====
 
+  void _invalidateNavigation() {
+    ++_playRequestGeneration;
+    _transitions.invalidateWork();
+    _audioHandler.invalidatePendingPlay();
+    isPreparing = false;
+  }
+
   void _clearPreparedNext() {
     _prepareNextSerial++;
     _metadataPrefetchKey = null;
@@ -1085,155 +1141,63 @@ class PlayerController extends ChangeNotifier {
     _shuffleContext = null;
     _preparingNextSource = false;
     _preparedNext = null;
-    _dropPlaylistTail();
+    _transitions.invalidateWork();
+    _prepareNextCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
   }
 
-  /// 移除播放列表中当前条目之后的所有子源（预载的下一曲失效时）。
-  /// 从后往前移除，保持前面的下标稳定；不动当前条目，不打断播放。
-  void _dropPlaylistTail() {
-    final state = audioPlayer.sequenceState;
-    final current = state.currentIndex;
-    if (current == null) return;
-    unawaited(
-      _removeUpcomingSources(
-        state.sequence.skip(current + 1).toList().reversed.toList(),
-        _playlistLoadRevision,
-      ),
+  // In stable mode structure is diagnostic data, NEVER a media transition.
+  // Existing multi-child lists are rebuilt only at an explicit load boundary.
+  Future<void> _onPlaylistSequenceChanged(SequenceState state) async {
+    if (_disposed) return;
+    _traceTransition(
+      'playlist_structure_changed',
+      detail:
+          'children=${state.sequence.length} index=${state.currentIndex} '
+          'sourceIds=${state.sequence.map(identityHashCode).join(",")}',
     );
   }
 
-  Future<void> _removeUpcomingSources(
-    List<IndexedAudioSource> sources,
-    int revision,
-  ) async {
-    for (final source in sources) {
-      if (_disposed || revision != _playlistLoadRevision) return;
-      final state = audioPlayer.sequenceState;
-      final index = state.sequence.indexOf(source);
-      if (index <= (state.currentIndex ?? -1)) continue;
-      try {
-        await _audioHandler.removePlaylistEntryAt(index);
-      } catch (error) {
-        debugPrint('[KA Music][playlist] remove tail failed: $error');
-        return;
-      }
-      if (!_disposed && revision == _playlistLoadRevision) {
-        _syncPlaylistSnapshot(audioPlayer.sequenceState);
-      }
-    }
+  bool get _ownsLoadedSource {
+    final sequence = audioPlayer.sequenceState;
+    return _activePlaylistSource != null &&
+        sequence.sequence.length == 1 &&
+        identical(sequence.currentSource, _activePlaylistSource);
   }
 
-  bool _hasPreloadedNextChild() {
-    final index = audioPlayer.currentIndex ?? 0;
-    return index + 1 < _playlistSongs.length;
+  void _traceTransition(String event, {String detail = ''}) {
+    debugPrint(
+      '[KA Music][transition] event=$event entry=$currentEntryId '
+      'candidate=${_preparedNext?.songKey} owner=${_preparedNext?.ownerEntryId} '
+      'queue=$_queueRevision load=$_playlistLoadRevision seek=${_transitions.seekRevision} '
+      'request=${_transitions.requestRevision} monoUs=${_transitionClock.elapsedMicroseconds} $detail',
+    );
   }
 
-  /// 播放器过渡到播放列表的下一曲（无缝切换，或手动跳转到预载项）：
-  /// 音源已就绪无需重新加载，仅切换状态并补齐切歌副作用。
-  Future<void> _onPlaylistSequenceChanged(SequenceState state) async {
-    if (_disposed) return;
-    // Never resolve an index against a separately updated mirror. Removing A
-    // from [A,B] may emit B/index=0 before removeAudioSourceAt completes.
-    if (!identical(state, audioPlayer.sequenceState)) return;
-    final source = state.currentSource;
-    final song = source?.tag;
-    if (song is! Song || source is! UriAudioSource) return;
-    if (isPreparing) {
-      // Explicit loads already select their normalization source. Old sources
-      // can still emit while pause/load is in flight.
-      if (currentSong != null &&
-          _metadataSongKey(song) == _metadataSongKey(currentSong!)) {
-        _activePlaylistSource = source;
-      }
+  final Stopwatch _transitionClock = Stopwatch()..start();
+
+  void _onPlaybackEvent(PlaybackEvent event) {
+    // just_audio exposes no native entry ID. With one controlled source, accept
+    // only the live playback snapshot for the acknowledged load, never a queued
+    // old stream notification or a mixed structural/index snapshot.
+    if (_disposed ||
+        isPreparing ||
+        _isSeeking ||
+        _isScrubbing ||
+        !_ownsLoadedSource ||
+        !identical(event, audioPlayer.playbackEvent) ||
+        event.currentIndex != 0) {
       return;
     }
-    _syncPlaylistSnapshot(state);
-    if (identical(source, _activePlaylistSource)) return;
-    final firstSnapshot = _activePlaylistSource == null;
-    _activePlaylistSource = source;
-    final index = state.currentIndex!;
-    final current = currentSong;
-    // A first snapshot after an explicit load only attaches the source identity.
-    if (firstSnapshot &&
-        current != null &&
-        _metadataSongKey(song) == _metadataSongKey(current) &&
-        index == 0) {
-      return;
-    }
-    errorMessage = null;
-    currentSong = song;
-    final prepared = _preparedNext;
-    final quality = prepared?.songKey == _songKey(song)
-        ? prepared!.quality
-        : (_metadataQualities[_metadataSongKey(song)] ?? audioQuality);
-    _selectNormalizationSource(song, quality, force: true);
-    _playbackLoudness.startPlayback();
-    lyrics = const [];
-    _lastDesktopLyricIndex = -1;
-    _setPositionBase(Duration.zero, playing: isPlaying);
+    final last = _lastMediaEventTime;
+    if (last != null && event.updateTime.isBefore(last)) return;
+    _lastMediaEventTime = event.updateTime;
+    duration = event.duration ?? Duration.zero;
+    _setPositionBase(event.updatePosition, playing: isPlaying);
+    final lease = _transitions.lease;
     notifyListeners();
-    unawaited(_syncDesktopLyricsVisibility());
-    unawaited(loadLyrics(song));
-    // Apply only for a new source, never for an index-only renumbering.
-    unawaited(_applyVolumeNormalization(reason: 'transition'));
-    unawaited(_historyService.record(song));
-    unawaited(_statsService.recordPlay(song));
-    _scheduleSessionPersist();
-    // 预载子源的地址已知，边播边缓存照常调度。
-    _cancelPendingPlaybackCache();
-    if (index < _playlistUrls.length) {
-      final url = _playlistUrls[index];
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        _schedulePlaybackCache(
-          song,
-          quality,
-          url,
-          loudness: _playbackLoudness.data,
-        );
-      }
-    }
-    _preparedNext = null;
-    _audioHandler.setCurrentMediaItem(song);
-    // 收缩窗口：移除当前条目之前的已播子源。
-    await _trimPlaylistBefore(source);
-  }
-
-  void _syncPlaylistSnapshot(SequenceState state) {
-    if (state.sequence.any(
-      (source) => source.tag is! Song || source is! UriAudioSource,
-    )) {
-      return;
-    }
-    _playlistSongs = [for (final source in state.sequence) source.tag as Song];
-    _playlistUrls = [
-      for (final source in state.sequence)
-        (source as UriAudioSource).uri.toString(),
-    ];
-  }
-
-  Future<void> _trimPlaylistBefore(IndexedAudioSource currentSource) async {
-    final revision = _playlistLoadRevision;
-    while (!_disposed && revision == _playlistLoadRevision) {
-      final state = audioPlayer.sequenceState;
-      if (!identical(state.currentSource, currentSource) ||
-          (state.currentIndex ?? 0) <= 0) {
-        return;
-      }
-      final first = state.sequence.first;
-      try {
-        await _audioHandler.removePlaylistEntryAt(0);
-      } catch (error) {
-        debugPrint('[KA Music][playlist] trim failed: $error');
-        return;
-      }
-      if (revision != _playlistLoadRevision || _disposed) return;
-      final latest = audioPlayer.sequenceState;
-      _syncPlaylistSnapshot(latest);
-      // No progress: do not spin or repeatedly remove an unexpected source.
-      if (latest.sequence.isNotEmpty &&
-          identical(latest.sequence.first, first)) {
-        return;
-      }
+    if (event.processingState == ProcessingState.completed &&
+        audioPlayer.processingState == ProcessingState.completed) {
+      unawaited(_handleCompleted(lease));
     }
   }
 
@@ -1244,7 +1208,6 @@ class PlayerController extends ChangeNotifier {
     if (_disposed ||
         _preparedNext != null ||
         _preparingNextSource ||
-        _hasPreloadedNextChild() ||
         playbackMode == PlaybackMode.singleLoop ||
         !isPlaying ||
         isPreparing ||
@@ -1265,6 +1228,13 @@ class PlayerController extends ChangeNotifier {
 
     _preparingNextSource = true;
     final serial = ++_prepareNextSerial;
+    final ownerEntryId = currentEntryId;
+    if (ownerEntryId == null) {
+      _preparingNextSource = false;
+      return;
+    }
+    final queueRevision = _queueRevision;
+    final requestedQuality = audioQuality;
     try {
       final next = await _nextSong();
       if (serial != _prepareNextSerial || next == null || currentSong == null) {
@@ -1281,6 +1251,10 @@ class PlayerController extends ChangeNotifier {
           '${_playbackLoudness.generation}:$_queueRevision:${_lyricKey(next)}:${audioQuality.name}:$volumeNormalizationEnabled';
       if (_metadataPrefetchKey != metadataKey) {
         _metadataPrefetchKey = metadataKey;
+        final cover = next.coverUrl;
+        if (cover != null && cover.isNotEmpty) {
+          unawaited(ArtworkCacheService.instance.load(cover));
+        }
         unawaited(
           _fetchLyrics(next).then<void>(
             (_) {},
@@ -1320,48 +1294,35 @@ class PlayerController extends ChangeNotifier {
         url = playUrl.url;
         loudness = playUrl.loudness;
       }
-      if (serial != _prepareNextSerial || !gaplessPlaybackEnabled) {
+      if (_disposed ||
+          serial != _prepareNextSerial ||
+          ownerEntryId != currentEntryId ||
+          queueRevision != _queueRevision ||
+          requestedQuality != audioQuality ||
+          !gaplessPlaybackEnabled) {
         return;
       }
       _loudnessLookup.put(_loudnessKey(next, quality), loudness);
-      // 播列化：追加为预载子源，ExoPlayer 在当前曲末尾自动预载缓冲，
-      // 过渡由播放器原生完成（样本级无缝）。
-      final loadRevision = _playlistLoadRevision;
-      final beforeAppend = audioPlayer.sequenceState.sequence.toSet();
-      try {
-        await _audioHandler.appendPlaylistEntry(next, url);
-      } catch (_) {
-        _prepareNextCooldownUntil = DateTime.now().add(
-          const Duration(seconds: 15),
-        );
-        return;
-      }
-      if (loadRevision != _playlistLoadRevision || _disposed) return;
-      if (serial != _prepareNextSerial) {
-        final added = audioPlayer.sequenceState.sequence
-            .where(
-              (source) =>
-                  !beforeAppend.contains(source) && identical(source.tag, next),
-            )
-            .toList();
-        await _removeUpcomingSources(added, loadRevision);
-        return;
-      }
-      _syncPlaylistSnapshot(audioPlayer.sequenceState);
-      // Transition may already have consumed the appended source before ack.
-      if (_metadataSongKey(currentSong!) == _metadataSongKey(next)) return;
+      // Pure cache result: no native source, UI, history or gain writes.
       _preparedNext = _PreparedNextSource(
         song: next,
         songKey: nextKey,
+        ownerEntryId: ownerEntryId,
+        queueRevision: queueRevision,
+        requestRevision: serial,
+        requestedQuality: requestedQuality,
         url: url,
         quality: quality,
         loudness: loudness,
       );
+      _traceTransition('prefetch_ready');
     } catch (_) {
       // 预解析失败：冷却 15 秒后重试，避免窗口内每个刻度都重试。
-      _prepareNextCooldownUntil = DateTime.now().add(
-        const Duration(seconds: 15),
-      );
+      if (serial == _prepareNextSerial) {
+        _prepareNextCooldownUntil = DateTime.now().add(
+          const Duration(seconds: 15),
+        );
+      }
     } finally {
       if (serial == _prepareNextSerial) {
         _preparingNextSource = false;
@@ -1375,7 +1336,13 @@ class PlayerController extends ChangeNotifier {
     final prepared = _preparedNext;
     if (prepared == null) return null;
     _preparedNext = null;
-    return prepared.songKey == _songKey(song) ? prepared : null;
+    return prepared.songKey == _songKey(song) &&
+            prepared.ownerEntryId == currentEntryId &&
+            prepared.queueRevision == _queueRevision &&
+            prepared.requestRevision == _prepareNextSerial &&
+            prepared.requestedQuality == audioQuality
+        ? prepared
+        : null;
   }
 
   // ===== 播放会话持久化 =====
@@ -1493,11 +1460,18 @@ class PlayerController extends ChangeNotifier {
       return;
     }
 
+    _invalidateNavigation();
+    final settingGeneration = _playRequestGeneration;
     audioQuality = quality;
     // 播放地址与音质绑定，音质变化后预解析的下一曲地址作废。
     _clearPreparedNext();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_audioQualitySettingKey, quality.apiValue);
+    if (_disposed ||
+        settingGeneration != _playRequestGeneration ||
+        quality != audioQuality) {
+      return;
+    }
     notifyListeners();
 
     if (reloadCurrent && currentSong != null && !sameQuality) {
@@ -1702,9 +1676,11 @@ class PlayerController extends ChangeNotifier {
   Future<void> loadLyrics(Song song, {bool force = false}) async {
     final generation = ++_lyricsLoadGeneration;
     final key = _lyricKey(song);
+    final entryId = currentEntryId;
     bool current() =>
         !_disposed &&
         generation == _lyricsLoadGeneration &&
+        entryId == currentEntryId &&
         currentSong != null &&
         _lyricKey(currentSong!) == key;
     if (!current()) return;
@@ -1734,19 +1710,24 @@ class PlayerController extends ChangeNotifier {
     }
     final generation = _playRequestGeneration;
     // 接续播放恢复的歌曲尚未加载音源：走完整 playSong 从头播放。
-    if (audioPlayer.processingState == ProcessingState.idle &&
+    if ((audioPlayer.processingState == ProcessingState.idle ||
+            !_ownsLoadedSource) &&
         currentSong != null) {
       await playSong(currentSong!);
       return;
     }
-    if (audioPlayer.processingState == ProcessingState.completed) {
-      await _audioHandler.seek(Duration.zero);
+    if (audioPlayer.processingState == ProcessingState.completed &&
+        currentSong != null) {
+      await _playSong(currentSong!, forceReload: true, reason: 'replay');
+      return;
     }
     if (generation != _playRequestGeneration) return;
     await _audioHandler.play();
   }
 
   void previewSeek(Duration position) {
+    _transitions.seek();
+    _invalidateNavigation();
     _isScrubbing = true;
     _isSeeking = true;
     // 拖拽预览只更新进度/歌词监听器，避免每个 pointer move 重建整个播放器。
@@ -1755,6 +1736,10 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> seek(Duration position) async {
     final serial = ++_seekSerial;
+    final entryId = currentEntryId;
+    _transitions.seek();
+    _invalidateNavigation();
+    _traceTransition('seek_start');
     final target = _clampPosition(position);
     seekRevision++;
     _isScrubbing = false;
@@ -1766,9 +1751,15 @@ class PlayerController extends ChangeNotifier {
     // 原生播放器的异步确认只负责在完成后解除 position stream 的抑制。
     unawaited(
       _audioHandler
-          .seek(target)
+          .seekDirect(target)
           .whenComplete(() {
-            if (serial != _seekSerial) return;
+            if (_disposed ||
+                serial != _seekSerial ||
+                entryId != currentEntryId) {
+              return;
+            }
+            _lastMediaEventTime = audioPlayer.playbackEvent.updateTime;
+            _traceTransition('seek_completed');
             _setPositionBase(target, playing: isPlaying);
             _lastDesktopLyricIndex = -1;
             _maybeSyncDesktopLyricFromPosition();
@@ -1778,7 +1769,11 @@ class PlayerController extends ChangeNotifier {
             notifyListeners();
           })
           .catchError((Object error, StackTrace stackTrace) {
-            if (serial != _seekSerial) return;
+            if (_disposed ||
+                serial != _seekSerial ||
+                entryId != currentEntryId) {
+              return;
+            }
             _isSeeking = false;
             _isScrubbing = false;
           }),
@@ -1789,50 +1784,81 @@ class PlayerController extends ChangeNotifier {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
     final generation = ++_playRequestGeneration;
-    // 预载的下一曲已就绪：直接跳转，瞬时切换（无需重新解析加载）。
-    final playlistIndex = audioPlayer.currentIndex ?? -1;
-    if (playlistIndex >= 0 && playlistIndex + 1 < _playlistSongs.length) {
-      await audioPlayer.seek(Duration.zero, index: playlistIndex + 1);
-      if (generation != _playRequestGeneration) return;
-      unawaited(_audioHandler.play());
+    final selected =
+        _preparedNext?.song ??
+        (playbackMode == PlaybackMode.shuffle &&
+                _shuffleContext == '$currentEntryId:$_queueRevision'
+            ? _shuffleNext
+            : null);
+    final prepared = selected == null ? null : _consumePreparedNext(selected);
+    // Freeze the shuffle choice before invalidating outstanding prefetch work.
+    final pending = selected != null
+        ? Future<Song?>.value(selected)
+        : _nextSong();
+    _clearPreparedNext();
+    final lease = _transitions.lease;
+    final song = await pending;
+    if (_disposed ||
+        generation != _playRequestGeneration ||
+        (lease != null && !_transitions.isCurrent(lease)) ||
+        song == null) {
       return;
     }
-    final nextSong = await _nextSong();
-    if (generation != _playRequestGeneration || nextSong == null) return;
-    // 队列只有当前一首歌时，"下一曲"语义为从头重播而不是保持进度。
-    final current = currentSong;
-    if (current != null && _songKey(nextSong) == _songKey(current)) {
-      await seek(Duration.zero);
-      if (generation != _playRequestGeneration) return;
-      await _audioHandler.play();
-      return;
+    await _playSong(
+      song,
+      queue: queue,
+      forceReload: true,
+      prepared: prepared,
+      queueIndex: _nextQueueIndex(song),
+      reason: 'manual_next',
+    );
+  }
+
+  int _nextQueueIndex(Song song) {
+    final next = currentIndex + 1;
+    if (playbackMode != PlaybackMode.shuffle &&
+        next < queue.length &&
+        next >= 0 &&
+        identical(queue[next], song)) {
+      return next;
     }
-    await playSong(nextSong, queue: queue);
+    final identicalIndex = queue.indexWhere((item) => identical(item, song));
+    return identicalIndex >= 0 ? identicalIndex : queue.indexOf(song);
   }
 
   Future<void> previous() async {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
     ++_playRequestGeneration;
+    _clearPreparedNext();
     final index = currentIndex;
     if (index > 0) {
-      await playSong(queue[index - 1], queue: queue);
+      await _playSong(
+        queue[index - 1],
+        queue: queue,
+        forceReload: true,
+        queueIndex: index - 1,
+        reason: 'manual_previous',
+      );
     } else {
       await seek(Duration.zero);
     }
   }
 
-  Future<void> _handleCompleted() async {
-    if (_isHandlingCompletion || currentSong == null || !audioPlayer.playing) {
+  Future<void> _handleCompleted(TransitionLease? lease) async {
+    if (_disposed ||
+        isPreparing ||
+        _isSeeking ||
+        _isScrubbing ||
+        currentSong == null ||
+        !audioPlayer.playing ||
+        !_ownsLoadedSource ||
+        !_transitions.consumeCompletion(lease)) {
       return;
     }
-    if (_completedSongHash == currentSong!.hash) return;
+    _traceTransition('native_completed');
     _cancelAutomaticResume();
     final generation = _playRequestGeneration;
-    _isHandlingCompletion = true;
-    _completionFallbackTimer?.cancel();
-    _completedSongHash = currentSong!.hash;
-
     try {
       if (_sleepFinishCurrentSong) {
         _sleepFinishCurrentSong = false;
@@ -1842,60 +1868,37 @@ class PlayerController extends ChangeNotifier {
         unawaited(_audioHandler.pause());
         return;
       }
-
-      if (playbackMode == PlaybackMode.singleLoop) {
-        _completedSongHash = null;
-        await _audioHandler.seek(Duration.zero);
-        if (generation != _playRequestGeneration) return;
-        await _audioHandler.play();
+      final nextSong = playbackMode == PlaybackMode.singleLoop
+          ? currentSong
+          : (_preparedNext?.song ?? await _nextSong());
+      if (_disposed ||
+          generation != _playRequestGeneration ||
+          !_transitions.isCurrent(lease) ||
+          nextSong == null) {
         return;
       }
-
-      // 无缝播放：优先使用预解析时选定的下一曲（随机模式下同样成立，
-      // 预选在歌曲开始时已定，随机性等价）。
-      final preparedSong = _preparedNext?.song;
-      final nextSong = preparedSong ?? await _nextSong();
-      if (generation != _playRequestGeneration) return;
-      if (nextSong == null) {
-        await _audioHandler.seek(Duration.zero);
-        return;
-      }
-      await playSong(nextSong, queue: queue);
-    } finally {
-      _isHandlingCompletion = false;
+      final index = playbackMode == PlaybackMode.singleLoop
+          ? currentIndex
+          : _nextQueueIndex(nextSong);
+      final prepared = _consumePreparedNext(nextSong);
+      await _playSong(
+        nextSong,
+        queue: queue,
+        forceReload: true,
+        prepared: prepared,
+        queueIndex: index,
+        reason: 'native_completed',
+      );
+    } catch (error) {
+      if (_disposed || !_transitions.isCurrent(lease)) return;
+      errorMessage = '下一曲解析失败，请重试';
+      _traceTransition('completion_reject');
+      notifyListeners();
     }
   }
 
-  void _maybeCompleteFromPosition(Duration value) {
-    if (_isSeeking || _isScrubbing || !isPlaying || duration <= Duration.zero) {
-      return;
-    }
-    if (audioPlayer.processingState == ProcessingState.completed) {
-      return;
-    }
-    // 预载的下一曲存在时，过渡由播放器无缝完成，不做完成兜底。
-    if (_hasPreloadedNextChild()) {
-      return;
-    }
-
-    final remaining = duration - value;
-    if (remaining.inMilliseconds <= 750 &&
-        (_completionFallbackTimer?.isActive != true)) {
-      final delay =
-          (remaining > Duration.zero ? remaining : Duration.zero) +
-          const Duration(milliseconds: 180);
-      _completionFallbackTimer = Timer(delay, () {
-        if (!isPlaying || _isSeeking || _isScrubbing) return;
-        // 预载子源在兜底等待期间就绪时，过渡交给播放器完成。
-        if (_hasPreloadedNextChild()) return;
-        final currentPosition = audioPlayer.position;
-        if (duration > Duration.zero &&
-            duration - currentPosition <= const Duration(milliseconds: 220)) {
-          unawaited(_handleCompleted());
-        }
-      });
-    }
-  }
+  // No position timer: split Dart position/duration streams cannot prove a
+  // native end or stagnation. Never skip the last 750/220ms by estimation.
 
   Future<void> _reloadCurrentSongForQuality() async {
     final song = currentSong;
@@ -1908,7 +1911,10 @@ class PlayerController extends ChangeNotifier {
     final quality = audioQuality;
     bool isCurrent() => !_disposed && generation == _playRequestGeneration;
     _audioHandler.invalidatePendingPlay();
-    _selectNormalizationSource(song, quality, force: true);
+    _clearPreparedNext();
+    ++_seekSerial;
+    _isSeeking = false;
+    _isScrubbing = false;
     final targetPosition = smoothPosition;
     isPreparing = true;
     errorMessage = null;
@@ -1922,7 +1928,7 @@ class PlayerController extends ChangeNotifier {
       if (local != null) {
         url = local.path;
         loudness = local.loudness;
-        _restoreLocalLoudness(song, quality, loudness);
+        _loudnessLookup.put(_loudnessKey(song, quality), loudness);
       } else if (song.source == SongSource.local) {
         url = song.id;
       } else {
@@ -1939,15 +1945,22 @@ class PlayerController extends ChangeNotifier {
         networkUrl = playUrl.url;
         loudness = playUrl.loudness;
         if (!isCurrent()) return;
-        _rememberLoudness(song, quality, playUrl.loudness);
+        _loudnessLookup.put(_loudnessKey(song, quality), playUrl.loudness);
       }
       if (!isCurrent()) return;
       await _loadAudioSource(song, url);
       if (!isCurrent()) return;
       if (targetPosition > Duration.zero) {
-        await _audioHandler.seek(_clampPosition(targetPosition));
+        await _audioHandler.seekDirect(_clampPosition(targetPosition));
       }
       if (!isCurrent()) return;
+      _commitPlayback(
+        song,
+        quality,
+        loudness,
+        reason: 'quality',
+        start: targetPosition,
+      );
       isPreparing = false;
       if (resumePlayback) {
         unawaited(
@@ -2786,8 +2799,17 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<Song?> _nextSong() async {
+    final entry = currentEntryId;
+    final generation = _playRequestGeneration;
+    final revision = _queueRevision;
     if (playbackMode == PlaybackMode.shuffle) {
       await _queueExpansionFuture;
+      if (_disposed ||
+          entry != currentEntryId ||
+          generation != _playRequestGeneration ||
+          revision != _queueRevision) {
+        return null;
+      }
     }
     if (queue.isEmpty) {
       return currentSong;
@@ -2797,8 +2819,7 @@ class PlayerController extends ChangeNotifier {
     if (playbackMode == PlaybackMode.shuffle) {
       if (queue.length == 1) return queue.first;
 
-      final context =
-          '${currentSong?.source.name}:${currentSong == null ? '' : _songKey(currentSong!)}:$_queueRevision';
+      final context = '$currentEntryId:$_queueRevision';
       if (_shuffleContext == context &&
           _shuffleNext != null &&
           queue.contains(_shuffleNext)) {
@@ -2834,16 +2855,14 @@ class PlayerController extends ChangeNotifier {
     _sessionSaveTimer?.cancel();
     _sleepTimer?.cancel();
     _positionSub.cancel();
-    _durationSub.cancel();
+    _playbackEventSub.cancel();
     _stateSub.cancel();
-    _processingStateSub.cancel();
     _androidAudioSessionSub.cancel();
     _interruptionSub?.cancel();
     _becomingNoisySub?.cancel();
     _devicesChangedSub?.cancel();
     _playlistSequenceSub?.cancel();
     _playerErrorSub?.cancel();
-    _completionFallbackTimer?.cancel();
     unawaited(_volNormService.dispose());
     unawaited(
       _audioEffects.configureEqualizer(
