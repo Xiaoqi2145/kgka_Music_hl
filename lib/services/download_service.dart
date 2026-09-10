@@ -193,6 +193,9 @@ class DownloadService {
         options: Options(headers: headers),
         cancelToken: cancelToken,
         deleteOnError: false,
+        fileAccessMode: startOffset > 0
+            ? FileAccessMode.append
+            : FileAccessMode.write,
       );
 
       // 服务端忽略 Range 时，丢弃旧分片并从头下载，避免文件拼接损坏。
@@ -226,6 +229,28 @@ class DownloadService {
       }
       if (!partFile.existsSync() || await partFile.length() == 0) {
         throw StateError('下载结果为空');
+      }
+      final actualLength = await partFile.length();
+      final range = response.headers.value(HttpHeaders.contentRangeHeader);
+      final match = range == null
+          ? null
+          : RegExp(r'/([0-9]+)$').firstMatch(range);
+      final expected = match == null ? null : int.tryParse(match.group(1)!);
+      if (expected != null && actualLength != expected) {
+        await partFile.delete();
+        throw StateError('下载不完整：$actualLength/$expected');
+      }
+      final bytes = await partFile
+          .openRead(0, 4)
+          .fold<List<int>>([], (a, b) => [...a, ...b]);
+      final valid = task.quality == AudioQuality.lossless
+          ? bytes.length >= 4 && String.fromCharCodes(bytes) == 'fLaC'
+          : bytes.length >= 2 &&
+                ((bytes[0] == 0x49 && bytes[1] == 0x44) ||
+                    (bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0));
+      if (!valid) {
+        await partFile.delete();
+        throw StateError('下载文件不是有效音频');
       }
 
       // 下载完成，重命名 .part 为最终文件

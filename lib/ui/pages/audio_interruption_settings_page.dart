@@ -50,10 +50,11 @@ class AudioInterruptionSettingsPage extends StatelessWidget {
                         child: Text(
                           '当你在听歌时，其他 App（如短视频、游戏）可能会抢占音频焦点导致音乐暂停。'
                           '你可以在下方调整打断行为。',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                            height: 1.5,
-                          ),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                                height: 1.5,
+                              ),
                         ),
                       ),
                     ],
@@ -77,9 +78,7 @@ class AudioInterruptionSettingsPage extends StatelessWidget {
                           color: colorScheme.primary,
                         ),
                         title: const Text('阻止后台打断'),
-                        subtitle: const Text(
-                          '被其他 App 抢占焦点后自动抢回（来电等系统级打断除外）',
-                        ),
+                        subtitle: const Text('被其他 App 抢占焦点后自动抢回（来电等系统级打断除外）'),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 14,
                         ),

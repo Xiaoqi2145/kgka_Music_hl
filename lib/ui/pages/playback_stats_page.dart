@@ -67,7 +67,9 @@ class _PlaybackStatsPageState extends State<PlaybackStatsPage> {
             builder: (context, snapshot) {
               final hasData = snapshot.hasData;
               final stats = snapshot.data;
-              final hasStats = hasData && stats != null &&
+              final hasStats =
+                  hasData &&
+                  stats != null &&
                   (stats.totalPlays > 0 ||
                       stats.totalListenTime > Duration.zero);
               return IconButton(
@@ -244,17 +246,14 @@ class _StatRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
         children: [
-          SizedBox(
-            width: 32,
-            child: Icon(icon, size: 22, color: iconColor),
-          ),
+          SizedBox(width: 32, child: Icon(icon, size: 22, color: iconColor)),
           const SizedBox(width: 14),
           Expanded(
             child: Text(
               title,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           Text(
@@ -308,9 +307,9 @@ class _RankRow extends StatelessWidget {
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           const SizedBox(width: 10),
@@ -335,10 +334,7 @@ class _StatsDivider extends StatelessWidget {
     return Divider(
       height: 1,
       indent: 62,
-      color: Theme.of(context)
-          .colorScheme
-          .outlineVariant
-          .withValues(alpha: .4),
+      color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: .4),
     );
   }
 }
@@ -363,9 +359,9 @@ class _EmptyView extends StatelessWidget {
             const SizedBox(height: 16),
             Text(
               '暂无播放统计',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             Text(

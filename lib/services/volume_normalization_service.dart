@@ -177,7 +177,7 @@ class VolumeNormalizationService {
     }
 
     debugPrint(
-      '[VolumeNorm] Applied: lufs=${loudness?.lufs}, '
+      '[VolumeNorm] gain_resolved: lufs=${loudness?.lufs}, '
       'gainLinear=${gainLinear.toStringAsFixed(3)}, '
       'gainDb=${gainDb.toStringAsFixed(1)} dB, '
       'path=${gainDb > 0.5

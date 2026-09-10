@@ -252,13 +252,7 @@ class _SearchPageState extends State<SearchPage> {
   Widget _buildBody(BuildContext context) {
     final text = _controller.text.trim();
 
-    return Column(
-      children: [
-        Expanded(
-          child: _buildContent(context, text),
-        ),
-      ],
-    );
+    return Column(children: [Expanded(child: _buildContent(context, text))]);
   }
 
   Widget _buildContent(BuildContext context, String text) {
@@ -295,9 +289,9 @@ class _SearchPageState extends State<SearchPage> {
                   child: Text(
                     '搜索历史',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 20,
-                        ),
+                      fontWeight: FontWeight.w900,
+                      fontSize: 20,
+                    ),
                   ),
                 ),
                 GestureDetector(
@@ -889,16 +883,18 @@ class _SearchResults extends StatelessWidget {
                                   ),
                                   if (player.downloadController != null)
                                     SongSheetAction(
-                                      icon: player.downloadController!.isDownloaded(song)
+                                      icon:
+                                          player.downloadController!
+                                              .isDownloaded(song)
                                           ? Icons.download_done_rounded
                                           : Icons.download_rounded,
-                                      title: player.downloadController!.isDownloaded(song)
+                                      title:
+                                          player.downloadController!
+                                              .isDownloaded(song)
                                           ? '已下载'
                                           : '下载',
-                                      onTap: () => player.downloadController!.download(
-                                        song,
-                                        player.audioQuality,
-                                      ),
+                                      onTap: () => player.downloadController!
+                                          .download(song, player.audioQuality),
                                     ),
                                 ],
                               );
@@ -915,13 +911,15 @@ class _SearchResults extends StatelessWidget {
                                 vertical: 3,
                               ),
                               decoration: BoxDecoration(
-                                color: colorScheme.outlineVariant
-                                    .withValues(alpha: .5),
+                                color: colorScheme.outlineVariant.withValues(
+                                  alpha: .5,
+                                ),
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
                                 '本地',
-                                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                style: Theme.of(context).textTheme.labelSmall
+                                    ?.copyWith(
                                       color: colorScheme.onSurfaceVariant,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -1009,9 +1007,9 @@ class _HistoryChip extends StatelessWidget {
             children: [
               Text(
                 keyword,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(width: 4),
               GestureDetector(

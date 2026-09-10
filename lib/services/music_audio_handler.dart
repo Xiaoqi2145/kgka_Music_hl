@@ -56,11 +56,11 @@ class MusicAudioHandler extends BaseAudioHandler
     onPlaybackIntent = null;
   }
 
-  AudioSource _audioSourceFor(String url) {
+  AudioSource _audioSourceFor(Song song, String url) {
     if (url.startsWith('http://') || url.startsWith('https://')) {
-      return AudioSource.uri(Uri.parse(url));
+      return AudioSource.uri(Uri.parse(url), tag: song);
     }
-    return AudioSource.file(url);
+    return AudioSource.file(url, tag: song);
   }
 
   Future<void> loadSong({
@@ -82,13 +82,13 @@ class MusicAudioHandler extends BaseAudioHandler
     mediaItem.add(currentItem);
     // 统一走播放列表 API（单曲即单元素列表）：无缝播放需要在此后
     // 动态追加预载的下一曲，setUrl 无法追加。
-    await audioPlayer.setAudioSources([_audioSourceFor(url)]);
+    await audioPlayer.setAudioSources([_audioSourceFor(song, url)]);
   }
 
   /// 无缝播放：追加预解析好的下一曲子源，不打断当前播放。
   /// ExoPlayer 的 lazy preparation 会在当前曲临近结束时自动预载缓冲。
   Future<void> appendPlaylistEntry(Song song, String url) async {
-    await audioPlayer.addAudioSource(_audioSourceFor(url));
+    await audioPlayer.addAudioSource(_audioSourceFor(song, url));
   }
 
   /// 移除播放列表中指定下标的子源（用于收缩已播条目/丢弃失效的预载项）。

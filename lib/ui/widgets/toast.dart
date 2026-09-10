@@ -72,16 +72,25 @@ class Toast {
   }
 
   /// 快捷方法：信息提示。
-  static void info(String message, {Duration? duration}) =>
-      show(message, type: ToastType.info, duration: duration ?? const Duration(seconds: 2));
+  static void info(String message, {Duration? duration}) => show(
+    message,
+    type: ToastType.info,
+    duration: duration ?? const Duration(seconds: 2),
+  );
 
   /// 快捷方法：成功提示。
-  static void success(String message, {Duration? duration}) =>
-      show(message, type: ToastType.success, duration: duration ?? const Duration(seconds: 2));
+  static void success(String message, {Duration? duration}) => show(
+    message,
+    type: ToastType.success,
+    duration: duration ?? const Duration(seconds: 2),
+  );
 
   /// 快捷方法：错误提示。
-  static void error(String message, {Duration? duration}) =>
-      show(message, type: ToastType.error, duration: duration ?? const Duration(seconds: 3));
+  static void error(String message, {Duration? duration}) => show(
+    message,
+    type: ToastType.error,
+    duration: duration ?? const Duration(seconds: 3),
+  );
 }
 
 class _ToastView extends StatefulWidget {
@@ -145,14 +154,18 @@ class _ToastViewState extends State<_ToastView>
 
     final (icon, accentColor) = switch (widget.type) {
       ToastType.info => (Icons.info_outline_rounded, colorScheme.primary),
-      ToastType.success => (Icons.check_circle_rounded, const Color(0xFF24C768)),
+      ToastType.success => (
+        Icons.check_circle_rounded,
+        const Color(0xFF24C768),
+      ),
       ToastType.error => (Icons.error_outline_rounded, colorScheme.error),
     };
 
     return Positioned(
       left: 0,
       right: 0,
-      bottom: MediaQuery.viewInsetsOf(context).bottom +
+      bottom:
+          MediaQuery.viewInsetsOf(context).bottom +
           MediaQuery.paddingOf(context).bottom +
           96,
       child: SafeArea(
@@ -173,8 +186,11 @@ class _ToastViewState extends State<_ToastView>
                       vertical: 12,
                     ),
                     decoration: BoxDecoration(
-                      color: (isDark ? const Color(0xFF1F242E) : const Color(0xFFFFFFFF))
-                          .withValues(alpha: isDark ? .96 : .98),
+                      color:
+                          (isDark
+                                  ? const Color(0xFF1F242E)
+                                  : const Color(0xFFFFFFFF))
+                              .withValues(alpha: isDark ? .96 : .98),
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: accentColor.withValues(alpha: .28),
@@ -182,7 +198,9 @@ class _ToastViewState extends State<_ToastView>
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: isDark ? .45 : .14),
+                          color: Colors.black.withValues(
+                            alpha: isDark ? .45 : .14,
+                          ),
                           blurRadius: 22,
                           offset: const Offset(0, 8),
                         ),
@@ -196,7 +214,8 @@ class _ToastViewState extends State<_ToastView>
                         Flexible(
                           child: Text(
                             widget.message,
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
                                   color: isDark
                                       ? Colors.white
                                       : const Color(0xFF1A1F2B),

@@ -63,13 +63,18 @@ class LocalMusicController extends ChangeNotifier {
 
   Future<void> _scanDirectory(Directory dir, List<Song> list) async {
     try {
-      await for (final entity in dir.list(recursive: false, followLinks: false)) {
+      await for (final entity in dir.list(
+        recursive: false,
+        followLinks: false,
+      )) {
         if (entity is Directory) {
           // Avoid scanning system files or hidden folders
           final name = entity.uri.pathSegments.isNotEmpty
-              ? (entity.uri.pathSegments.last.isEmpty && entity.uri.pathSegments.length > 1
-                  ? entity.uri.pathSegments[entity.uri.pathSegments.length - 2]
-                  : entity.uri.pathSegments.last)
+              ? (entity.uri.pathSegments.last.isEmpty &&
+                        entity.uri.pathSegments.length > 1
+                    ? entity.uri.pathSegments[entity.uri.pathSegments.length -
+                          2]
+                    : entity.uri.pathSegments.last)
               : entity.path.split(Platform.isWindows ? '\\' : '/').last;
           if (name.startsWith('.') || name.startsWith(r'$')) continue;
           await _scanDirectory(entity, list);
@@ -81,17 +86,18 @@ class LocalMusicController extends ChangeNotifier {
               lowerPath.endsWith('.flac') ||
               lowerPath.endsWith('.wav') ||
               lowerPath.endsWith('.ogg')) {
-            
             // Try to parse Artist - Title from file name
-            final filename = entity.uri.pathSegments.isNotEmpty 
-                ? entity.uri.pathSegments.last 
+            final filename = entity.uri.pathSegments.isNotEmpty
+                ? entity.uri.pathSegments.last
                 : path.split(Platform.isWindows ? '\\' : '/').last;
             final dotIndex = filename.lastIndexOf('.');
-            final filenameNoExt = dotIndex != -1 ? filename.substring(0, dotIndex) : filename;
-            
+            final filenameNoExt = dotIndex != -1
+                ? filename.substring(0, dotIndex)
+                : filename;
+
             String title = filenameNoExt;
             String artist = '本地音乐';
-            
+
             if (filenameNoExt.contains(' - ')) {
               final parts = filenameNoExt.split(' - ');
               if (parts.length >= 2) {
@@ -99,16 +105,18 @@ class LocalMusicController extends ChangeNotifier {
                 title = parts.sublist(1).join(' - ').trim();
               }
             }
-            
-            list.add(Song(
-              id: path, // use file path as song ID
-              title: title,
-              artist: artist,
-              hash: path, // use file path as hash
-              coverUrl: null,
-              duration: null,
-              source: SongSource.local,
-            ));
+
+            list.add(
+              Song(
+                id: path, // use file path as song ID
+                title: title,
+                artist: artist,
+                hash: path, // use file path as hash
+                coverUrl: null,
+                duration: null,
+                source: SongSource.local,
+              ),
+            );
           }
         }
       }

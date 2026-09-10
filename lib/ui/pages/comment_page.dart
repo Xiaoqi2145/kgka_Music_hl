@@ -113,10 +113,7 @@ class _CommentPageState extends State<CommentPage> {
         statusBarBrightness: isDark ? Brightness.light : Brightness.dark,
       ),
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('评论'),
-          centerTitle: false,
-        ),
+        appBar: AppBar(title: const Text('评论'), centerTitle: false),
         body: _buildBody(),
       ),
     );
@@ -152,7 +149,9 @@ class _CommentPageState extends State<CommentPage> {
             Icon(
               Icons.comment_outlined,
               size: 56,
-              color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: .42),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurfaceVariant.withValues(alpha: .42),
             ),
             const SizedBox(height: 16),
             Text(
@@ -196,12 +195,15 @@ class _CommentRow extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 18,
-            backgroundImage:
-                comment.userPic != null ? NetworkImage(comment.userPic!) : null,
+            backgroundImage: comment.userPic != null
+                ? NetworkImage(comment.userPic!)
+                : null,
             child: comment.userPic == null
-                ? Icon(Icons.person_rounded,
+                ? Icon(
+                    Icons.person_rounded,
                     size: 18,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant)
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  )
                 : null,
           ),
           const SizedBox(width: 12),
@@ -211,9 +213,9 @@ class _CommentRow extends StatelessWidget {
               children: [
                 Text(
                   comment.userName ?? '匿名用户',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -223,9 +225,11 @@ class _CommentRow extends StatelessWidget {
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    Icon(Icons.thumb_up_outlined,
-                        size: 14,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    Icon(
+                      Icons.thumb_up_outlined,
+                      size: 14,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       '${comment.like?.count ?? 0}',

@@ -29,16 +29,26 @@ class AppTheme {
     },
   );
 
-  static ThemeData light({Color? seedColor, bool transparentBackground = false}) {
-    return _theme(Brightness.light,
-        seedColor: seedColor ?? blue,
-        transparentBackground: transparentBackground);
+  static ThemeData light({
+    Color? seedColor,
+    bool transparentBackground = false,
+  }) {
+    return _theme(
+      Brightness.light,
+      seedColor: seedColor ?? blue,
+      transparentBackground: transparentBackground,
+    );
   }
 
-  static ThemeData dark({Color? seedColor, bool transparentBackground = false}) {
-    return _theme(Brightness.dark,
-        seedColor: seedColor ?? blue,
-        transparentBackground: transparentBackground);
+  static ThemeData dark({
+    Color? seedColor,
+    bool transparentBackground = false,
+  }) {
+    return _theme(
+      Brightness.dark,
+      seedColor: seedColor ?? blue,
+      transparentBackground: transparentBackground,
+    );
   }
 
   static ThemeData _theme(
@@ -47,8 +57,11 @@ class AppTheme {
     bool transparentBackground = false,
   }) {
     final isDark = brightness == Brightness.dark;
-    final scheme = ColorScheme.fromSeed(seedColor: seedColor, brightness: brightness)
-        .copyWith(
+    final scheme =
+        ColorScheme.fromSeed(
+          seedColor: seedColor,
+          brightness: brightness,
+        ).copyWith(
           primary: isDark ? _lighten(seedColor, 0.18) : seedColor,
           secondary: musicRed,
           tertiary: const Color(0xFF24C768),
@@ -88,12 +101,36 @@ class AppTheme {
         bodyMedium: TextStyle(fontSize: 14, height: 1.4),
         labelLarge: TextStyle(fontSize: 14, height: 1.4),
         bodyLarge: TextStyle(fontSize: 16, height: 1.4),
-        titleSmall: TextStyle(fontSize: 16, height: 1.4, fontWeight: FontWeight.w600),
-        titleMedium: TextStyle(fontSize: 18, height: 1.4, fontWeight: FontWeight.w600),
-        titleLarge: TextStyle(fontSize: 20, height: 1.4, fontWeight: FontWeight.w700),
-        headlineSmall: TextStyle(fontSize: 20, height: 1.4, fontWeight: FontWeight.w700),
-        headlineMedium: TextStyle(fontSize: 22, height: 1.4, fontWeight: FontWeight.w700),
-        displaySmall: TextStyle(fontSize: 22, height: 1.4, fontWeight: FontWeight.w700),
+        titleSmall: TextStyle(
+          fontSize: 16,
+          height: 1.4,
+          fontWeight: FontWeight.w600,
+        ),
+        titleMedium: TextStyle(
+          fontSize: 18,
+          height: 1.4,
+          fontWeight: FontWeight.w600,
+        ),
+        titleLarge: TextStyle(
+          fontSize: 20,
+          height: 1.4,
+          fontWeight: FontWeight.w700,
+        ),
+        headlineSmall: TextStyle(
+          fontSize: 20,
+          height: 1.4,
+          fontWeight: FontWeight.w700,
+        ),
+        headlineMedium: TextStyle(
+          fontSize: 22,
+          height: 1.4,
+          fontWeight: FontWeight.w700,
+        ),
+        displaySmall: TextStyle(
+          fontSize: 22,
+          height: 1.4,
+          fontWeight: FontWeight.w700,
+        ),
       ),
       fontFamilyFallback: const [
         'SF Pro Display',

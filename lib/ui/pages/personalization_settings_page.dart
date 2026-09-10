@@ -96,7 +96,8 @@ class _PersonalizationSettingsPageState
                       iconColor: colorScheme.primary,
                       title: '背景预览',
                       subtitle: '点击查看当前背景效果',
-                      onTap: () => _showPreview(context, tc.backgroundImagePath!),
+                      onTap: () =>
+                          _showPreview(context, tc.backgroundImagePath!),
                     ),
                     const _SettingsDivider(),
                     _BackgroundOpacitySlider(
@@ -207,7 +208,10 @@ class _ColorDot extends StatelessWidget {
               color: color,
               shape: BoxShape.circle,
               border: selected
-                  ? Border.all(color: Theme.of(context).colorScheme.onSurface, width: 3)
+                  ? Border.all(
+                      color: Theme.of(context).colorScheme.onSurface,
+                      width: 3,
+                    )
                   : null,
               boxShadow: [
                 BoxShadow(
@@ -225,8 +229,8 @@ class _ColorDot extends StatelessWidget {
           Text(
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-                ),
+              fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+            ),
           ),
         ],
       ),
@@ -246,7 +250,8 @@ class _BackgroundOpacitySlider extends StatefulWidget {
   final ValueChanged<double> onChanged;
 
   @override
-  State<_BackgroundOpacitySlider> createState() => _BackgroundOpacitySliderState();
+  State<_BackgroundOpacitySlider> createState() =>
+      _BackgroundOpacitySliderState();
 }
 
 class _BackgroundOpacitySliderState extends State<_BackgroundOpacitySlider> {
@@ -275,7 +280,11 @@ class _BackgroundOpacitySliderState extends State<_BackgroundOpacitySlider> {
         children: [
           SizedBox(
             width: 32,
-            child: Icon(Icons.opacity_rounded, size: 22, color: colorScheme.primary),
+            child: Icon(
+              Icons.opacity_rounded,
+              size: 22,
+              color: colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -287,16 +296,16 @@ class _BackgroundOpacitySliderState extends State<_BackgroundOpacitySlider> {
                     Text(
                       '背景透明度',
                       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     const Spacer(),
                     Text(
                       '${(_current * 100).round()}%',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: colorScheme.primary,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ],
                 ),
@@ -343,7 +352,9 @@ class _BackgroundPreviewCard extends StatelessWidget {
                 fit: BoxFit.cover,
                 errorBuilder: (_, _, _) => Container(
                   color: colorScheme.surfaceContainerHighest,
-                  child: const Center(child: Icon(Icons.broken_image_rounded, size: 40)),
+                  child: const Center(
+                    child: Icon(Icons.broken_image_rounded, size: 40),
+                  ),
                 ),
               ),
             ),
@@ -357,7 +368,10 @@ class _BackgroundPreviewCard extends StatelessWidget {
               left: 16,
               bottom: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   color: colorScheme.primary,
                   borderRadius: BorderRadius.circular(8),
@@ -365,9 +379,9 @@ class _BackgroundPreviewCard extends StatelessWidget {
                 child: Text(
                   '预览效果（透明度 15%）',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: colorScheme.onPrimary,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    color: colorScheme.onPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ),
@@ -381,7 +395,10 @@ class _BackgroundPreviewCard extends StatelessWidget {
 // ===== 全屏背景预览 =====
 
 class _FullBackgroundPreview extends StatelessWidget {
-  const _FullBackgroundPreview({required this.imagePath, required this.opacity});
+  const _FullBackgroundPreview({
+    required this.imagePath,
+    required this.opacity,
+  });
 
   final String imagePath;
   final double opacity;
@@ -399,9 +416,8 @@ class _FullBackgroundPreview extends StatelessWidget {
             child: Image.file(
               File(imagePath),
               fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => Container(
-                color: colorScheme.surfaceContainerHighest,
-              ),
+              errorBuilder: (_, _, _) =>
+                  Container(color: colorScheme.surfaceContainerHighest),
             ),
           ),
           Positioned.fill(
@@ -427,16 +443,14 @@ class _FullBackgroundPreview extends StatelessWidget {
                       children: [
                         Text(
                           '背景透明度 ${(opacity * 100).round()}%',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w800,
-                              ),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 8),
                         Text(
                           '这是实际使用时的背景效果。内容卡片会叠加在背景图上方，透明度越高背景图越明显。',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
-                              ),
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: colorScheme.onSurfaceVariant),
                         ),
                       ],
                     ),
@@ -465,10 +479,10 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.8,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.8,
+        ),
       ),
     );
   }
@@ -523,7 +537,11 @@ class _SettingsTile extends StatelessWidget {
           children: [
             SizedBox(
               width: 32,
-              child: Icon(icon, size: 22, color: iconColor ?? colorScheme.primary),
+              child: Icon(
+                icon,
+                size: 22,
+                color: iconColor ?? colorScheme.primary,
+              ),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -533,17 +551,17 @@ class _SettingsTile extends StatelessWidget {
                   Text(
                     title,
                     style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: titleColor,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      color: titleColor,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   if (subtitle != null) ...[
                     const SizedBox(height: 2),
                     Text(
                       subtitle!,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
+                        color: colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ],
@@ -588,7 +606,11 @@ class _SettingsSwitchTile extends StatelessWidget {
         children: [
           SizedBox(
             width: 32,
-            child: Icon(icon, size: 22, color: iconColor ?? colorScheme.primary),
+            child: Icon(
+              icon,
+              size: 22,
+              color: iconColor ?? colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -597,17 +619,17 @@ class _SettingsSwitchTile extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
                   Text(
                     subtitle!,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ],

@@ -149,8 +149,7 @@ class _PlaybackHistoryPageState extends State<PlaybackHistoryPage> {
                               index: index + 1,
                               player: widget.player,
                               onTap: () => _play(song, songs),
-                              onAddToPlaylist: () =>
-                                  _addSongToPlaylist(song),
+                              onAddToPlaylist: () => _addSongToPlaylist(song),
                               onViewArtist: () => _openArtist(song),
                             );
                           },
@@ -262,9 +261,7 @@ class _HistorySongRow extends StatelessWidget {
                             ),
                             child: Text(
                               '$index',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelSmall
+                              style: Theme.of(context).textTheme.labelSmall
                                   ?.copyWith(
                                     color: Colors.white.withValues(alpha: .78),
                                     fontWeight: FontWeight.w800,
@@ -415,9 +412,9 @@ class _EmptyOrError extends StatelessWidget {
           const SizedBox(height: 14),
           Text(
             title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 6),
           Text(

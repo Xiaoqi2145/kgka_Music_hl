@@ -39,6 +39,7 @@ class DownloadEntry {
     DownloadStatus? status,
     double? progress,
     String? filePath,
+    bool clearFilePath = false,
     String? error,
     DateTime? downloadedAt,
     LoudnessData? loudness,
@@ -48,7 +49,7 @@ class DownloadEntry {
       quality: quality,
       status: status ?? this.status,
       progress: progress ?? this.progress,
-      filePath: filePath ?? this.filePath,
+      filePath: clearFilePath ? null : (filePath ?? this.filePath),
       error: error,
       downloadedAt: downloadedAt ?? this.downloadedAt,
       loudness: loudness ?? this.loudness,
@@ -501,6 +502,32 @@ class DownloadController extends ChangeNotifier {
     _playCache.clear();
     notifyListeners();
     await flush();
+  }
+
+  Future<bool> invalidateLocalSource(Song song, AudioQuality quality) async {
+    final key = _service.cacheKeyFor(song, quality);
+    final cache = _playCache.remove(key);
+    if (cache != null) await _service.deleteFile(cache.filePath);
+    final download = _downloads[song.hash];
+    if (download?.status == DownloadStatus.downloaded &&
+        download?.filePath != null &&
+        _service.cacheKeyFor(download!.song, download.quality) == key) {
+      await _service.deleteFile(download.filePath!);
+      _downloads[song.hash] = download.copyWith(
+        status: DownloadStatus.failed,
+        clearFilePath: true,
+        error: '本地文件损坏，请重新下载',
+      );
+      notifyListeners();
+      await _persistDownloads();
+      return true;
+    }
+    if (cache != null) {
+      notifyListeners();
+      _schedulePlayCachePersist();
+      return true;
+    }
+    return false;
   }
 
   /// 删除单首播放缓存。

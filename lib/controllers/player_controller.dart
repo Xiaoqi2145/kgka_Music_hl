@@ -173,10 +173,10 @@ class PlayerController extends ChangeNotifier {
       unawaited(_refreshEqualizerConfig());
       unawaited(_applyEqualizer());
       unawaited(_applyBassBoost());
-      unawaited(_applyVolumeNormalization());
+      unawaited(_applyVolumeNormalization(reason: 'session'));
     });
-    _playlistIndexSub = audioPlayer.currentIndexStream.listen((index) {
-      unawaited(_onPlaylistIndexChanged(index));
+    _playlistSequenceSub = audioPlayer.sequenceStateStream.listen((state) {
+      unawaited(_onPlaylistSequenceChanged(state));
     });
     // 预载子源在过渡瞬间加载失败等运行时错误：自动重载当前曲恢复，
     // 避免播放静默停止。playSong 内部的加载错误由 isPreparing 守卫忽略。
@@ -266,7 +266,9 @@ class PlayerController extends ChangeNotifier {
   /// 与 audioPlayer.currentIndex 一一对应，用于无缝过渡与窗口维护。
   List<Song> _playlistSongs = const [];
   List<String> _playlistUrls = const [];
-  StreamSubscription<int?>? _playlistIndexSub;
+  StreamSubscription<SequenceState>? _playlistSequenceSub;
+  IndexedAudioSource? _activePlaylistSource;
+  int _playlistLoadRevision = 0;
   StreamSubscription<PlayerException>? _playerErrorSub;
   bool _isHandlingPlayerError = false;
   final _random = math.Random();
@@ -621,7 +623,7 @@ class PlayerController extends ChangeNotifier {
           debugPrint(
             '[KA Music][playback] local source failed for ${song.hash}: $error',
           );
-          await downloadController?.deletePlayCache(song, audioQuality);
+          await downloadController?.invalidateLocalSource(song, audioQuality);
           final loaded = await _loadNetworkSourceWithFallback(
             song,
             prepared: _consumePreparedNext(song),
@@ -687,6 +689,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _loadAudioSource(Song song, String url) async {
+    ++_playlistLoadRevision;
+    _activePlaylistSource = null;
     // 在开始加载时冻结歌单和目标下标，避免异步期间 currentSong 改变导致偏移。
     final queueSnapshot = List<Song>.of(queue);
     final foundIndex = queueSnapshot.indexWhere(
@@ -746,6 +750,9 @@ class PlayerController extends ChangeNotifier {
     _volNormService.invalidatePending();
     _normalizationQuality = quality;
     _playbackLoudness.begin(key, _loudnessLookup.get(key));
+    debugPrint(
+      '[KA Music][volume-norm] source key=$key generation=${_playbackLoudness.generation}',
+    );
   }
 
   void _rememberLoudness(Song song, AudioQuality quality, LoudnessData? data) {
@@ -801,7 +808,7 @@ class PlayerController extends ChangeNotifier {
       });
       if (loudness == null || _disposed) return;
       if (_playbackLoudness.accept(key, generation, loudness)) {
-        unawaited(_applyVolumeNormalization());
+        unawaited(_applyVolumeNormalization(reason: 'metadata'));
       } else {
         debugPrint('[KA Music][volume-norm] metadata cached for later: $key');
       }
@@ -1084,15 +1091,35 @@ class PlayerController extends ChangeNotifier {
   /// 移除播放列表中当前条目之后的所有子源（预载的下一曲失效时）。
   /// 从后往前移除，保持前面的下标稳定；不动当前条目，不打断播放。
   void _dropPlaylistTail() {
-    final current = audioPlayer.currentIndex ?? 0;
-    if (_playlistSongs.length <= current + 1) {
-      return;
-    }
-    _playlistSongs = _playlistSongs.sublist(0, current + 1);
-    _playlistUrls = _playlistUrls.sublist(0, current + 1);
-    for (var index = current + 1; index <= current + 1; index++) {
-      // 每次只可能有一个预载子源；从尾部移除避免下标漂移。
-      unawaited(_audioHandler.removePlaylistEntryAt(index).catchError((_) {}));
+    final state = audioPlayer.sequenceState;
+    final current = state.currentIndex;
+    if (current == null) return;
+    unawaited(
+      _removeUpcomingSources(
+        state.sequence.skip(current + 1).toList().reversed.toList(),
+        _playlistLoadRevision,
+      ),
+    );
+  }
+
+  Future<void> _removeUpcomingSources(
+    List<IndexedAudioSource> sources,
+    int revision,
+  ) async {
+    for (final source in sources) {
+      if (_disposed || revision != _playlistLoadRevision) return;
+      final state = audioPlayer.sequenceState;
+      final index = state.sequence.indexOf(source);
+      if (index <= (state.currentIndex ?? -1)) continue;
+      try {
+        await _audioHandler.removePlaylistEntryAt(index);
+      } catch (error) {
+        debugPrint('[KA Music][playlist] remove tail failed: $error');
+        return;
+      }
+      if (!_disposed && revision == _playlistLoadRevision) {
+        _syncPlaylistSnapshot(audioPlayer.sequenceState);
+      }
     }
   }
 
@@ -1103,13 +1130,34 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放器过渡到播放列表的下一曲（无缝切换，或手动跳转到预载项）：
   /// 音源已就绪无需重新加载，仅切换状态并补齐切歌副作用。
-  Future<void> _onPlaylistIndexChanged(int? index) async {
-    if (index == null || index < 0 || index >= _playlistSongs.length) {
+  Future<void> _onPlaylistSequenceChanged(SequenceState state) async {
+    if (_disposed) return;
+    // Never resolve an index against a separately updated mirror. Removing A
+    // from [A,B] may emit B/index=0 before removeAudioSourceAt completes.
+    if (!identical(state, audioPlayer.sequenceState)) return;
+    final source = state.currentSource;
+    final song = source?.tag;
+    if (song is! Song || source is! UriAudioSource) return;
+    if (isPreparing) {
+      // Explicit loads already select their normalization source. Old sources
+      // can still emit while pause/load is in flight.
+      if (currentSong != null &&
+          _metadataSongKey(song) == _metadataSongKey(currentSong!)) {
+        _activePlaylistSource = source;
+      }
       return;
     }
-    final song = _playlistSongs[index];
+    _syncPlaylistSnapshot(state);
+    if (identical(source, _activePlaylistSource)) return;
+    final firstSnapshot = _activePlaylistSource == null;
+    _activePlaylistSource = source;
+    final index = state.currentIndex!;
     final current = currentSong;
-    if (current != null && _songKey(song) == _songKey(current)) {
+    // A first snapshot after an explicit load only attaches the source identity.
+    if (firstSnapshot &&
+        current != null &&
+        _metadataSongKey(song) == _metadataSongKey(current) &&
+        index == 0) {
       return;
     }
     errorMessage = null;
@@ -1117,7 +1165,7 @@ class PlayerController extends ChangeNotifier {
     final prepared = _preparedNext;
     final quality = prepared?.songKey == _songKey(song)
         ? prepared!.quality
-        : audioQuality;
+        : (_metadataQualities[_metadataSongKey(song)] ?? audioQuality);
     _selectNormalizationSource(song, quality, force: true);
     _playbackLoudness.startPlayback();
     lyrics = const [];
@@ -1126,8 +1174,8 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     unawaited(_syncDesktopLyricsVisibility());
     unawaited(loadLyrics(song));
-    // 响度增益在过渡钩子里切换（预载子源首帧前的窗口极小）。
-    unawaited(_applyVolumeNormalization());
+    // Apply only for a new source, never for an index-only renumbering.
+    unawaited(_applyVolumeNormalization(reason: 'transition'));
     unawaited(_historyService.record(song));
     unawaited(_statsService.recordPlay(song));
     _scheduleSessionPersist();
@@ -1147,22 +1195,45 @@ class PlayerController extends ChangeNotifier {
     _preparedNext = null;
     _audioHandler.setCurrentMediaItem(song);
     // 收缩窗口：移除当前条目之前的已播子源。
-    await _trimPlaylistBefore(index);
+    await _trimPlaylistBefore(source);
   }
 
-  Future<void> _trimPlaylistBefore(int index) async {
-    var removed = 0;
-    while (index - removed > 0) {
+  void _syncPlaylistSnapshot(SequenceState state) {
+    if (state.sequence.any(
+      (source) => source.tag is! Song || source is! UriAudioSource,
+    )) {
+      return;
+    }
+    _playlistSongs = [for (final source in state.sequence) source.tag as Song];
+    _playlistUrls = [
+      for (final source in state.sequence)
+        (source as UriAudioSource).uri.toString(),
+    ];
+  }
+
+  Future<void> _trimPlaylistBefore(IndexedAudioSource currentSource) async {
+    final revision = _playlistLoadRevision;
+    while (!_disposed && revision == _playlistLoadRevision) {
+      final state = audioPlayer.sequenceState;
+      if (!identical(state.currentSource, currentSource) ||
+          (state.currentIndex ?? 0) <= 0) {
+        return;
+      }
+      final first = state.sequence.first;
       try {
         await _audioHandler.removePlaylistEntryAt(0);
-      } catch (_) {
-        break;
+      } catch (error) {
+        debugPrint('[KA Music][playlist] trim failed: $error');
+        return;
       }
-      removed++;
-    }
-    if (removed > 0) {
-      _playlistSongs = _playlistSongs.sublist(removed);
-      _playlistUrls = _playlistUrls.sublist(removed);
+      if (revision != _playlistLoadRevision || _disposed) return;
+      final latest = audioPlayer.sequenceState;
+      _syncPlaylistSnapshot(latest);
+      // No progress: do not spin or repeatedly remove an unexpected source.
+      if (latest.sequence.isNotEmpty &&
+          identical(latest.sequence.first, first)) {
+        return;
+      }
     }
   }
 
@@ -1255,6 +1326,8 @@ class PlayerController extends ChangeNotifier {
       _loudnessLookup.put(_loudnessKey(next, quality), loudness);
       // 播列化：追加为预载子源，ExoPlayer 在当前曲末尾自动预载缓冲，
       // 过渡由播放器原生完成（样本级无缝）。
+      final loadRevision = _playlistLoadRevision;
+      final beforeAppend = audioPlayer.sequenceState.sequence.toSet();
       try {
         await _audioHandler.appendPlaylistEntry(next, url);
       } catch (_) {
@@ -1263,16 +1336,20 @@ class PlayerController extends ChangeNotifier {
         );
         return;
       }
+      if (loadRevision != _playlistLoadRevision || _disposed) return;
       if (serial != _prepareNextSerial) {
-        // 追加后立即失效（队列/音质/模式在此期间变化）：
-        // 移除刚追加的子源，bookkeeping 已被 _dropPlaylistTail 截断。
-        try {
-          await _audioHandler.removePlaylistEntryAt(_playlistSongs.length);
-        } catch (_) {}
+        final added = audioPlayer.sequenceState.sequence
+            .where(
+              (source) =>
+                  !beforeAppend.contains(source) && identical(source.tag, next),
+            )
+            .toList();
+        await _removeUpcomingSources(added, loadRevision);
         return;
       }
-      _playlistSongs = [..._playlistSongs, next];
-      _playlistUrls = [..._playlistUrls, url];
+      _syncPlaylistSnapshot(audioPlayer.sequenceState);
+      // Transition may already have consumed the appended source before ack.
+      if (_metadataSongKey(currentSong!) == _metadataSongKey(next)) return;
       _preparedNext = _PreparedNextSource(
         song: next,
         songKey: nextKey,
@@ -2349,10 +2426,13 @@ class PlayerController extends ChangeNotifier {
   /// 为当前曲目应用音量均衡增益。
   Future<void> _applyVolumeNormalization({
     bool retryIfSessionPending = true,
+    String reason = 'request',
   }) async {
     if (_disposed || isPreparing) return;
     final serial = ++_volumeNormApplySerial;
     final generation = _playbackLoudness.generation;
+    final sourceKey = _playbackLoudness.key;
+    final watch = Stopwatch()..start();
     final song = currentSong;
     if (song == null) return;
     bool isCurrent() =>
@@ -2371,6 +2451,9 @@ class PlayerController extends ChangeNotifier {
         ? null
         : _volNormService.computeGainDb(loudness);
 
+    debugPrint(
+      '[KA Music][volume-norm] request key=$sourceKey generation=$generation serial=$serial reason=$reason session=$sessionId lufs=${loudness?.lufs}',
+    );
     final gainLinear = await _volNormService.applyForTrack(
       audioSessionId: sessionId,
       loudness: loudness,
@@ -2380,6 +2463,9 @@ class PlayerController extends ChangeNotifier {
               identical(_playbackLoudness.applicableData, loudness)),
     );
     if (!isCurrent()) {
+      debugPrint(
+        '[KA Music][volume-norm] stale key=$sourceKey generation=$generation serial=$serial',
+      );
       return;
     }
     if (loudness != null && _playbackLoudness.applicableData == null) {
@@ -2395,7 +2481,15 @@ class PlayerController extends ChangeNotifier {
         ? gainLinear
         : 1.0;
     try {
+      debugPrint(
+        '[KA Music][volume-norm] volume_requested key=$sourceKey generation=$generation serial=$serial gain=$_normalizationVolume elapsedMs=${watch.elapsedMilliseconds}',
+      );
       await _applyPlaybackVolume();
+      if (isCurrent()) {
+        debugPrint(
+          '[KA Music][volume-norm] volume_ack key=$sourceKey generation=$generation serial=$serial gain=$_normalizationVolume elapsedMs=${watch.elapsedMilliseconds}',
+        );
+      }
       if (isCurrent() && loudness != null && gainLinear != 1.0) {
         _playbackLoudness.markApplied(generation);
       }
@@ -2747,7 +2841,7 @@ class PlayerController extends ChangeNotifier {
     _interruptionSub?.cancel();
     _becomingNoisySub?.cancel();
     _devicesChangedSub?.cancel();
-    _playlistIndexSub?.cancel();
+    _playlistSequenceSub?.cancel();
     _playerErrorSub?.cancel();
     _completionFallbackTimer?.cancel();
     unawaited(_volNormService.dispose());

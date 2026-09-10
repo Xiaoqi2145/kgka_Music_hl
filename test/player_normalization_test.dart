@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,11 +21,33 @@ class _Player implements AudioPlayer {
   @override
   Duration get position => Duration.zero;
   @override
-  int? get currentIndex => 0;
+  int? get currentIndex => sequenceState.currentIndex;
+  final indices = StreamController<int?>.broadcast(sync: true);
+  final sequences = StreamController<SequenceState>.broadcast(sync: true);
+  final positions = StreamController<Duration>.broadcast(sync: true);
+  @override
+  SequenceState sequenceState = SequenceState(
+    sequence: [],
+    currentIndex: null,
+    shuffleIndices: [],
+    shuffleModeEnabled: false,
+    loopMode: LoopMode.off,
+  );
+  @override
+  Stream<SequenceState> get sequenceStateStream => sequences.stream;
+  void emitSequence(List<IndexedAudioSource> sources, int index) {
+    sequenceState = sequenceState.copyWith(
+      sequence: sources,
+      currentIndex: index,
+    );
+    sequences.add(sequenceState);
+    indices.add(sequenceState.currentIndex);
+  }
+
   @override
   int? get androidAudioSessionId => 42;
   @override
-  Stream<Duration> get positionStream => const Stream.empty();
+  Stream<Duration> get positionStream => positions.stream;
   @override
   Stream<Duration?> get durationStream => const Stream.empty();
   @override
@@ -34,7 +57,7 @@ class _Player implements AudioPlayer {
   @override
   Stream<int?> get androidAudioSessionIdStream => const Stream.empty();
   @override
-  Stream<int?> get currentIndexStream => const Stream.empty();
+  Stream<int?> get currentIndexStream => indices.stream;
   @override
   Stream<PlayerException> get errorStream => const Stream.empty();
   @override
@@ -72,7 +95,34 @@ class _Handler implements MusicAudioHandler {
     required int queueIndex,
   }) async {
     audioPlayer.processingState = ProcessingState.ready;
+    audioPlayer.emitSequence([AudioSource.uri(Uri.parse(url), tag: song)], 0);
   }
+
+  Completer<void>? removal;
+  bool failRemoval = false;
+  @override
+  Future<void> appendPlaylistEntry(Song song, String url) async {
+    audioPlayer.emitSequence([
+      ...audioPlayer.sequenceState.sequence,
+      AudioSource.uri(Uri.parse(url), tag: song),
+    ], audioPlayer.currentIndex!);
+  }
+
+  @override
+  Future<void> removePlaylistEntryAt(int index) async {
+    if (failRemoval) throw StateError('remove failed');
+    // Native index notification arrives before remove's acknowledgement.
+    await Future<void>.delayed(Duration.zero);
+    final sources = [...audioPlayer.sequenceState.sequence]..removeAt(index);
+    audioPlayer.emitSequence(
+      sources,
+      (audioPlayer.currentIndex! - 1).clamp(0, sources.length),
+    );
+    await removal?.future;
+  }
+
+  @override
+  void setCurrentMediaItem(Song song) {}
 
   @override
   Future<void> play() {
@@ -84,6 +134,9 @@ class _Handler implements MusicAudioHandler {
   @override
   Future<void> close() async {
     if (!playbackDone.isCompleted) playbackDone.complete();
+    await audioPlayer.indices.close();
+    await audioPlayer.sequences.close();
+    await audioPlayer.positions.close();
   }
 
   @override
@@ -92,13 +145,18 @@ class _Handler implements MusicAudioHandler {
 
 class _Api implements MusicApi {
   @override
+  Future<List<LyricLine>> lyrics(
+    Song song, {
+    bool Function()? isCancelled,
+  }) async => [];
+  @override
   Future<PlayUrl> songUrl(
     Song song, {
     AudioQuality quality = AudioQuality.standard,
   }) async => PlayUrl(
     url: 'https://example.invalid/song.mp3',
     hash: song.hash,
-    loudness: const LoudnessData(lufs: -8),
+    loudness: LoudnessData(lufs: song.hash == 'B' ? -6 : -8),
   );
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -112,6 +170,8 @@ class _Controller extends PlayerController {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
+  tearDown(() => debugDefaultTargetPlatformOverride = null);
   const effects = MethodChannel('kgka_music_hl/audio_effects');
   const song = Song(id: '1', title: 'test', artist: 'artist', hash: 'A');
 
@@ -172,4 +232,106 @@ void main() {
       messenger.setMockMethodCallHandler(effects, null);
     },
   );
+  for (final mode in [0, 1, 2]) {
+    final failRemoval = mode == 1;
+    final replaceDuringTrim = mode == 2;
+    test(
+      'natural transition survives trim (failure=$failRemoval, replacement=$replaceDuringTrim)',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'settings.volume_normalization_enabled': true,
+          'settings.volume_normalization_ref_lufs': -14.0,
+          'settings.add_listening_time_enabled': false,
+          'settings.resume_playback_enabled': false,
+        });
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(effects, (_) async => null);
+        final support = await Directory.systemTemp.createTemp(
+          'kamusic-trim-test-',
+        );
+        const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+        messenger.setMockMethodCallHandler(
+          pathProvider,
+          (_) async => support.path,
+        );
+        final handler = _Handler()..failRemoval = failRemoval;
+        final controller = _Controller(_Api(), handler);
+        addTearDown(() async {
+          if (handler.removal?.isCompleted == false) {
+            handler.removal!.complete();
+          }
+          await controller.flushPersistence();
+          controller.dispose();
+          await Future<void>.delayed(Duration.zero);
+          messenger.setMockMethodCallHandler(effects, null);
+          messenger.setMockMethodCallHandler(pathProvider, null);
+          await support.delete(recursive: true);
+        });
+        Future<void> drain() async {
+          for (var i = 0; i < 10; i++) {
+            await Future<void>.delayed(Duration.zero);
+          }
+        }
+
+        await drain();
+        const next = Song(id: '2', title: 'next', artist: 'artist', hash: 'B');
+        await controller.playSong(song, queue: [song, next]);
+        controller.isPlaying = true;
+        controller.duration = const Duration(seconds: 100);
+        handler.audioPlayer.positions.add(const Duration(seconds: 80));
+        await drain();
+        expect(handler.audioPlayer.sequenceState.sequence, hasLength(2));
+        handler.removal = Completer<void>();
+        final seen = <String?>[];
+        controller.addListener(() => seen.add(controller.currentSong?.hash));
+        handler.audioPlayer.volumes.clear();
+        final oldSnapshot = handler.audioPlayer.sequenceState;
+        handler.audioPlayer.emitSequence([
+          ...handler.audioPlayer.sequenceState.sequence,
+        ], 1);
+        await drain();
+        expect(controller.currentSong?.hash, 'B');
+        expect(seen, isNot(contains('A')));
+        expect(handler.audioPlayer.volumes.last, closeTo(0.398107, 0.00001));
+        expect(
+          handler.audioPlayer.volumes,
+          everyElement(closeTo(0.398107, 0.00001)),
+        );
+        final count = handler.audioPlayer.volumes.length;
+        // A buffered obsolete snapshot and repeated B snapshots must not reopen
+        // the source/window or schedule more normalization work.
+        handler.audioPlayer.sequences.add(oldSnapshot);
+        for (var i = 0; i < 30; i++) {
+          handler.audioPlayer.emitSequence([
+            ...handler.audioPlayer.sequenceState.sequence,
+          ], handler.audioPlayer.currentIndex!);
+        }
+        await drain();
+        expect(controller.currentSong?.hash, 'B');
+        expect(handler.audioPlayer.volumes.length, count);
+        if (replaceDuringTrim) {
+          const replacement = Song(
+            id: '3',
+            title: 'replacement',
+            artist: 'artist',
+            hash: 'C',
+          );
+          await controller.playSong(replacement, queue: [replacement]);
+          await drain();
+        }
+        handler.removal!.complete();
+        await drain();
+        expect(controller.currentSong?.hash, replaceDuringTrim ? 'C' : 'B');
+        expect(
+          handler.audioPlayer.sequenceState.sequence.last.tag,
+          isA<Song>().having(
+            (song) => song.hash,
+            'hash',
+            replaceDuringTrim ? 'C' : 'B',
+          ),
+        );
+      },
+    );
+  }
 }

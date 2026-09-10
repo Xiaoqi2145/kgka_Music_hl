@@ -32,7 +32,9 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
   void initState() {
     super.initState();
     widget.player.addListener(_onPlayerUpdate);
-    _finishSong = widget.player.isSleepFinishCurrentSong || widget.player.sleepFinishCurrentSongOption;
+    _finishSong =
+        widget.player.isSleepFinishCurrentSong ||
+        widget.player.sleepFinishCurrentSongOption;
   }
 
   @override
@@ -44,7 +46,9 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
   void _onPlayerUpdate() {
     if (mounted) {
       setState(() {
-        _finishSong = widget.player.isSleepFinishCurrentSong || widget.player.sleepFinishCurrentSongOption;
+        _finishSong =
+            widget.player.isSleepFinishCurrentSong ||
+            widget.player.sleepFinishCurrentSongOption;
       });
     }
   }
@@ -62,7 +66,8 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final player = widget.player;
-    final isActive = player.isSleepTimerActive || player.isSleepFinishCurrentSong;
+    final isActive =
+        player.isSleepTimerActive || player.isSleepFinishCurrentSong;
 
     return SafeArea(
       child: Padding(
@@ -170,7 +175,8 @@ class _ActiveTimerDisplay extends StatelessWidget {
       if (remaining != null && remaining > Duration.zero) {
         final m = remaining.inMinutes;
         final s = remaining.inSeconds.remainder(60);
-        text = '播完歌曲再停止  ${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+        text =
+            '播完歌曲再停止  ${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
       } else {
         text = '播完当前歌曲后停止';
       }
@@ -192,7 +198,11 @@ class _ActiveTimerDisplay extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.timer_outlined, size: 18, color: colorScheme.onPrimaryContainer),
+          Icon(
+            Icons.timer_outlined,
+            size: 18,
+            color: colorScheme.onPrimaryContainer,
+          ),
           const SizedBox(width: 8),
           Text(
             text,

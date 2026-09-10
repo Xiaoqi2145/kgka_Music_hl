@@ -49,86 +49,93 @@ Future<void> showSongActionSheet({
               children: [
                 // Song info
                 Row(
-                children: [
-                  Artwork(url: song.coverUrl, size: 52, borderRadius: 10),
-                  const SizedBox(width: 12),
-                  Expanded(
+                  children: [
+                    Artwork(url: song.coverUrl, size: 52, borderRadius: 10),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            song.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(sheetContext).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            song.artist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(sheetContext).textTheme.bodyMedium
+                                ?.copyWith(color: colorScheme.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                // Actions card (grid + list in one unified card)
+                if (gridActions.isNotEmpty || listActions.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Material(
+                    color: colorScheme.surfaceContainer,
+                    borderRadius: BorderRadius.circular(16),
+                    clipBehavior: Clip.antiAlias,
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          song.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(sheetContext).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w800),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          song.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(sheetContext).textTheme.bodyMedium
-                              ?.copyWith(color: colorScheme.onSurfaceVariant),
-                        ),
+                        // Grid actions (icon + text, 3-column grid)
+                        if (gridActions.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 10,
+                              horizontal: 12,
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (
+                                  var row = 0;
+                                  row * 3 < gridActions.length;
+                                  row++
+                                )
+                                  Row(
+                                    children: [
+                                      for (var col = 0; col < 3; col++)
+                                        Expanded(
+                                          child:
+                                              row * 3 + col < gridActions.length
+                                              ? _GridItem(
+                                                  action:
+                                                      gridActions[row * 3 +
+                                                          col],
+                                                )
+                                              : const SizedBox.shrink(),
+                                        ),
+                                    ],
+                                  ),
+                              ],
+                            ),
+                          ),
+                        // Divider between grid and list
+                        if (gridActions.isNotEmpty && listActions.isNotEmpty)
+                          const Divider(height: 1, indent: 16, endIndent: 16),
+                        // List actions
+                        for (
+                          var index = 0;
+                          index < listActions.length;
+                          index++
+                        ) ...[
+                          _SongActionTile(action: listActions[index]),
+                          if (index != listActions.length - 1)
+                            const Divider(height: 1, indent: 58),
+                        ],
                       ],
                     ),
                   ),
                 ],
-              ),
-              // Actions card (grid + list in one unified card)
-              if (gridActions.isNotEmpty || listActions.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Material(
-                  color: colorScheme.surfaceContainer,
-                  borderRadius: BorderRadius.circular(16),
-                  clipBehavior: Clip.antiAlias,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Grid actions (icon + text, 3-column grid)
-                      if (gridActions.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 10,
-                            horizontal: 12,
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              for (var row = 0;
-                                  row * 3 < gridActions.length;
-                                  row++)
-                                Row(
-                                  children: [
-                                    for (var col = 0; col < 3; col++)
-                                      Expanded(
-                                        child: row * 3 + col < gridActions.length
-                                            ? _GridItem(
-                                                action: gridActions[row * 3 + col],
-                                              )
-                                            : const SizedBox.shrink(),
-                                      ),
-                                  ],
-                                ),
-                            ],
-                          ),
-                        ),
-                      // Divider between grid and list
-                      if (gridActions.isNotEmpty && listActions.isNotEmpty)
-                        const Divider(height: 1, indent: 16, endIndent: 16),
-                      // List actions
-                      for (var index = 0;
-                          index < listActions.length;
-                          index++) ...[
-                        _SongActionTile(action: listActions[index]),
-                        if (index != listActions.length - 1)
-                          const Divider(height: 1, indent: 58),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
               ],
             ),
           ),
@@ -179,22 +186,22 @@ class _GridItem extends StatelessWidget {
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: color,
               fontWeight: FontWeight.w600,
-                fontSize: 12,
+              fontSize: 12,
+            ),
+          ),
+          if (action.subtitle != null)
+            Text(
+              action.subtitle!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 10,
               ),
             ),
-            if (action.subtitle != null)
-              Text(
-                action.subtitle!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 10,
-                ),
-              ),
-          ],
-        ),
+        ],
+      ),
     );
   }
 }

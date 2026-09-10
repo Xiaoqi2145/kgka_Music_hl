@@ -1076,10 +1076,7 @@ class _CacheLimitInputState extends State<_CacheLimitInput> {
   int get _maxMb => widget.maxBytes ~/ _CacheLimitInput._bytesPerMb;
 
   int _valueMbFromBytes(int bytes) {
-    return (bytes / _CacheLimitInput._bytesPerMb).round().clamp(
-      _minMb,
-      _maxMb,
-    );
+    return (bytes / _CacheLimitInput._bytesPerMb).round().clamp(_minMb, _maxMb);
   }
 
   @override

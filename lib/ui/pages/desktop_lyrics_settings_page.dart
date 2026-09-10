@@ -13,8 +13,7 @@ class DesktopLyricsSettingsPage extends StatefulWidget {
       _DesktopLyricsSettingsPageState();
 }
 
-class _DesktopLyricsSettingsPageState
-    extends State<DesktopLyricsSettingsPage> {
+class _DesktopLyricsSettingsPageState extends State<DesktopLyricsSettingsPage> {
   late DesktopLyricsSettings _settings;
 
   @override
@@ -87,7 +86,8 @@ class _DesktopLyricsSettingsPageState
                   Color(0xFFFF6347), // Tomato
                   Color(0xFF000000), // Black
                 ],
-                onChanged: (c) => _update((s) => s.copyWith(textColor: c.toARGB32())),
+                onChanged: (c) =>
+                    _update((s) => s.copyWith(textColor: c.toARGB32())),
               ),
               _SettingsDivider(),
               _ColorPickerTile(
@@ -102,7 +102,8 @@ class _DesktopLyricsSettingsPageState
                   Color(0xFF2A1E3B), // Dark Purple
                   Color(0xFF1E353B), // Dark Teal
                 ],
-                onChanged: (c) => _update((s) => s.copyWith(backgroundColor: c.toARGB32())),
+                onChanged: (c) =>
+                    _update((s) => s.copyWith(backgroundColor: c.toARGB32())),
               ),
             ],
           ),
@@ -118,19 +119,21 @@ class _DesktopLyricsSettingsPageState
                 title: '锁定位置',
                 subtitle: '锁定后无法拖动移动歌词悬浮窗',
                 value: _settings.locked,
-                onChanged: (v) => _update((s) => s.copyWith(
-                  locked: v,
-                  passthrough: v ? true : s.passthrough, // Lock auto-enables passthrough
-                )),
+                onChanged: (v) => _update(
+                  (s) => s.copyWith(
+                    locked: v,
+                    passthrough: v
+                        ? true
+                        : s.passthrough, // Lock auto-enables passthrough
+                  ),
+                ),
               ),
               _SettingsDivider(),
               _SwitchTile(
                 icon: Icons.touch_app_rounded,
                 iconColor: colorScheme.primary,
                 title: '触摸穿透',
-                subtitle: _settings.locked
-                    ? '锁定位置时自动开启'
-                    : '启用后点击事件会穿透到下层应用',
+                subtitle: _settings.locked ? '锁定位置时自动开启' : '启用后点击事件会穿透到下层应用',
                 value: _settings.locked ? true : _settings.passthrough,
                 onChanged: _settings.locked
                     ? null // Disabled when locked (auto-enabled)
@@ -233,10 +236,9 @@ class _SliderTile extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyLarge
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
               Text(
@@ -283,10 +285,7 @@ class _SwitchTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         children: [
-          SizedBox(
-            width: 32,
-            child: Icon(icon, size: 22, color: iconColor),
-          ),
+          SizedBox(width: 32, child: Icon(icon, size: 22, color: iconColor)),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -294,10 +293,9 @@ class _SwitchTile extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyLarge
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
@@ -344,10 +342,9 @@ class _ColorPickerTile extends StatelessWidget {
               const SizedBox(width: 14),
               Text(
                 title,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyLarge
-                    ?.copyWith(fontWeight: FontWeight.w600),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             ],
           ),
@@ -368,8 +365,8 @@ class _ColorPickerTile extends StatelessWidget {
                         color: currentColor.toARGB32() == color.toARGB32()
                             ? Theme.of(context).colorScheme.primary
                             : (color.toARGB32() == Colors.black.toARGB32()
-                                ? Colors.white30
-                                : Colors.transparent),
+                                  ? Colors.white30
+                                  : Colors.transparent),
                         width: 3,
                       ),
                       boxShadow: [
@@ -383,11 +380,13 @@ class _ColorPickerTile extends StatelessWidget {
                       ],
                     ),
                     child: currentColor.toARGB32() == color.toARGB32()
-                        ? Icon(Icons.check_rounded,
+                        ? Icon(
+                            Icons.check_rounded,
                             color: color.toARGB32() == Colors.black.toARGB32()
                                 ? Colors.white70
                                 : Colors.black54,
-                            size: 20)
+                            size: 20,
+                          )
                         : null,
                   ),
                 ),
