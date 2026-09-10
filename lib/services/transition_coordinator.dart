@@ -13,6 +13,16 @@ class TransitionLease {
   final int requestRevision;
 }
 
+/// One click's load intent. Only the newest intent may pause the player,
+/// replace the native source or commit; older intents must exit before
+/// touching the player.
+class LoadIntent {
+  const LoadIntent(this.entryId, this.seekRevision, this.intentRevision);
+  final int? entryId;
+  final int seekRevision;
+  final int intentRevision;
+}
+
 /// No timers or playlist indices: only an explicit successful load commits.
 /// Structure broadcasts and prefetch responses cannot call commit.
 class TransitionCoordinator {
@@ -20,6 +30,7 @@ class TransitionCoordinator {
   int _entrySerial = 0;
   int seekRevision = 0;
   int requestRevision = 0;
+  int intentRevision = 0;
   bool _completionConsumed = false;
 
   TransitionLease? get lease {
@@ -43,6 +54,27 @@ class TransitionCoordinator {
     // A successful seek can start a new end-of-playback attempt for this entry.
     _completionConsumed = false;
   }
+
+  /// Start a new load intent. Every older intent is revoked immediately,
+  /// before any player state is touched.
+  ///
+  /// A load intent is deliberately NOT tied to [requestRevision]: revoking a
+  /// pending completion/async lease (queue list refresh, prefetch reset) must
+  /// never drop a tap that is still resolving. Only a newer intent, a seek or
+  /// an explicit [invalidateIntents] cancels it.
+  LoadIntent beginIntent() {
+    intentRevision++;
+    return LoadIntent(committedEntry?.id, seekRevision, intentRevision);
+  }
+
+  /// Cancel every pending load intent without touching the player.
+  void invalidateIntents() => intentRevision++;
+
+  bool isCurrentIntent(LoadIntent? value) =>
+      value != null &&
+      value.entryId == committedEntry?.id &&
+      value.seekRevision == seekRevision &&
+      value.intentRevision == intentRevision;
 
   bool isCurrent(TransitionLease? value) =>
       value != null &&

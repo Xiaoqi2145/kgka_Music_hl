@@ -14,6 +14,7 @@ import '../widgets/skeleton_box.dart';
 import '../widgets/music_formatters.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
+import '../widgets/preparing_indicator.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import '../adaptive_layout.dart';
@@ -1476,6 +1477,7 @@ class _SongRow extends StatelessWidget {
       animation: player,
       builder: (context, _) {
         final active = player.currentSong?.hash == song.hash;
+        final preparing = player.isPreparingSong(song);
         final activeColor = colorScheme.primary;
         return InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -1521,7 +1523,7 @@ class _SongRow extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (active)
+                      if (active || preparing)
                         Positioned(
                           right: 4,
                           bottom: 4,
@@ -1532,12 +1534,17 @@ class _SongRow extends StatelessWidget {
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(3),
-                              child: NowPlayingBadge(
-                                active: active,
-                                playing: player.isPlaying,
-                                color: activeColor,
-                                size: 14,
-                              ),
+                              child: preparing
+                                  ? PreparingIndicator(
+                                      color: activeColor,
+                                      size: 14,
+                                    )
+                                  : NowPlayingBadge(
+                                      active: active,
+                                      playing: player.isPlaying,
+                                      color: activeColor,
+                                      size: 14,
+                                    ),
                             ),
                           ),
                         ),

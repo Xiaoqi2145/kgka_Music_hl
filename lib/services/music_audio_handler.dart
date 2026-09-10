@@ -67,17 +67,29 @@ class MusicAudioHandler extends BaseAudioHandler
     return AudioSource.file(url, tag: song);
   }
 
+  /// 暂停与音源替换属于同一临界区：两者之间没有业务逻辑，
+  /// 因此不存在“已暂停但没有新条目”的可被取代窗口。
   Future<void> loadSong({
     required Song song,
     required String url,
     required List<Song> queueSongs,
     required int queueIndex,
+    Duration start = Duration.zero,
+    int? loadSerial,
   }) async {
+    debugPrint(
+      '[KA Music][transition] event=pause_for_load serial=$loadSerial '
+      'startMs=${start.inMilliseconds}',
+    );
     // setAudioSources 在 playing=true 时会自行出声；加载前暂停，等焦点批准后再播。
     await pauseForInterruption();
     // Stable mode: replace at the paused load boundary, never mutate a live
     // playlist. Media metadata is published by the controller's commit only.
-    await audioPlayer.setAudioSources([_audioSourceFor(song, url)]);
+    await audioPlayer.setAudioSources(
+      [_audioSourceFor(song, url)],
+      // initialPosition 由加载本身完成定位，省掉一次额外的播放器往返。
+      initialPosition: start > Duration.zero ? start : null,
+    );
   }
 
   /// Only the controller commit publishes the current media identity.

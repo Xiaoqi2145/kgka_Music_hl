@@ -48,6 +48,35 @@ class _PreparedNextSource {
   final LoudnessData? loudness;
 }
 
+/// 一次点击解析出的播放源。resolve 阶段只解析，绝不触碰播放器。
+class _ResolvedSource {
+  const _ResolvedSource({
+    required this.url,
+    required this.quality,
+    this.loudness,
+    this.networkUrl,
+    this.isLocal = false,
+  });
+
+  final String url;
+  final AudioQuality quality;
+  final LoudnessData? loudness;
+
+  /// 网络地址；非空时提交后进入播放缓存，本地文件为 null。
+  final String? networkUrl;
+
+  /// 来自已下载文件或播放缓存。
+  final bool isLocal;
+}
+
+/// resolve 阶段发现意图已被取代：播放器必须保持原样。
+class _LoadSuperseded implements Exception {
+  const _LoadSuperseded();
+
+  @override
+  String toString() => '加载已被更新的播放意图取代';
+}
+
 enum PlaybackMode { playlistLoop, shuffle, singleLoop }
 
 class AudioEffectPreset {
@@ -133,6 +162,8 @@ class PlayerController extends ChangeNotifier {
         ++_playRequestGeneration;
         _transitions.invalidateWork();
         isPreparing = false;
+        _preparingSongKey = null;
+        notifyListeners();
       }
     };
     _desktopLyrics.setVisibilityChangedHandler(_handleDesktopLyricsVisibility);
@@ -151,6 +182,7 @@ class PlayerController extends ChangeNotifier {
       _onPlaybackEvent,
     );
     _stateSub = audioPlayer.playerStateStream.listen((value) {
+      final wasPlaying = isPlaying;
       isPlaying = value.playing;
       isBuffering =
           value.processingState == ProcessingState.loading ||
@@ -170,6 +202,9 @@ class PlayerController extends ChangeNotifier {
         _pausePendingPlaybackCache();
       }
       _syncDesktopPlayState();
+      if (!wasPlaying && isPlaying && currentEntryId != null) {
+        _traceTransition('play_confirmed');
+      }
       notifyListeners();
     });
     _androidAudioSessionSub = audioPlayer.androidAudioSessionIdStream.listen((
@@ -349,6 +384,24 @@ class PlayerController extends ChangeNotifier {
   Song? _shuffleNext;
   String? _shuffleContext;
   int _playRequestGeneration = 0;
+
+  // ===== 加载状态机：intent → resolve → claim → replace → commit → play =====
+  /// 每次点击 +1；只有最新的意图可以暂停、替换音源或提交。
+  int _loadSerial = 0;
+  String? _preparingSongKey;
+
+  /// 正在解析/替换、尚未提交的歌曲 key；null 表示没有进行中的加载。
+  String? get preparingSongKey => _preparingSongKey;
+
+  /// 最新意图正在加载的歌曲 key（含来源），用于判断队列改动是否让加载失效。
+  String? _pendingLoadSongKey;
+
+  /// UI 判断某首歌是否正在加载（提交之前唯一的可见中间态）。
+  bool isPreparingSong(Song song) =>
+      _preparingSongKey != null && _preparingSongKey == _songKey(song);
+
+  /// 最近一次成功提交的歌曲，用于替换失败后的回滚。
+  Song? _lastCommittedSong;
 
   /// 高频位置更新只通知进度/歌词组件，不触发整个播放器树重建。
   final ValueNotifier<Duration> positionListenable = ValueNotifier<Duration>(
@@ -539,59 +592,80 @@ class PlayerController extends ChangeNotifier {
   Future<void> playSong(Song song, {List<Song>? queue}) =>
       _playSong(song, queue: queue);
 
+  /// 只调整播放队列（增删改），保持当前条目与播放进度继续播放。
+  ///
+  /// 队列增删改必须用它；[playSong] 一律把点击当作从头播放这首歌。
+  Future<void> updateQueueContext(List<Song> songs) async {
+    final current = currentSong;
+    if (current == null || songs.isEmpty) return;
+    final next = List<Song>.of(songs);
+    if (_indexInQueueIn(next, current) < 0) {
+      next.insert(0, current);
+    }
+    queue = next;
+    ++_queueRevision;
+    _queueExpansionFuture = null;
+    // 只换队列上下文：预解析与旧完成租约作废，但在途的播放意图继续。
+    _clearPreparedNext();
+    _cancelLoadIntentIfSongLeftQueue();
+    _committedQueueIndex = _indexInQueueIn(next, current);
+    await _audioHandler.setSongQueue(
+      queueSongs: queue,
+      queueIndex: currentIndex,
+      currentSong: current,
+    );
+    _scheduleSessionPersist();
+    notifyListeners();
+  }
+
+  /// 一次点击 = 一个带检查点的加载状态机：
+  /// intent → resolve → claim → replace → commit → play。
+  ///
+  /// 暂停被推迟到 claim/replace，resolve 期间播放器继续播旧条目；进入
+  /// replace 之后不再放弃，因此“被取代”只可能发生在不改变播放器状态的
+  /// cp1/cp2。
   Future<void> _playSong(
     Song song, {
     List<Song>? queue,
-    bool forceReload = false,
     _PreparedNextSource? prepared,
     int? queueIndex,
     String reason = 'explicit_load',
+    bool preserveProgress = false,
+    AudioQuality? quality,
   }) async {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
-    final requestGeneration = ++_playRequestGeneration;
-    bool isCurrentRequest() =>
-        !_disposed && requestGeneration == _playRequestGeneration;
-    final current = currentSong;
-    if (!forceReload &&
-        !isPreparing &&
-        current != null &&
-        errorMessage == null &&
-        _ownsLoadedSource &&
-        audioPlayer.processingState != ProcessingState.idle &&
-        audioPlayer.processingState != ProcessingState.completed &&
-        identical(song, current)) {
-      if (queue != null && queue.isNotEmpty && !listEquals(queue, this.queue)) {
-        this.queue = List.of(queue);
-        _committedQueueIndex = this.queue.indexOf(song);
-        ++_queueRevision;
-        _queueExpansionFuture = null;
-        _clearPreparedNext();
-        await _audioHandler.setSongQueue(
-          queueSongs: this.queue,
-          queueIndex: currentIndex,
-          currentSong: current,
-        );
-        if (!isCurrentRequest()) return;
-        notifyListeners();
-      }
-      unawaited(
-        _audioHandler.play().catchError((Object error, StackTrace stack) {
-          if (!isCurrentRequest()) return;
-          errorMessage = error.toString();
-          notifyListeners();
-        }),
-      );
-      _scheduleSessionPersist();
-      return;
-    }
+    // ── intent：作废旧意图，此刻绝不触碰播放器 ──
     prepared ??= _consumePreparedNext(song);
     _clearPreparedNext();
+    final serial = ++_loadSerial;
+    final generation = ++_playRequestGeneration;
+    final intent = _transitions.beginIntent();
+    final targetQuality = quality ?? audioQuality;
     ++_seekSerial;
     _isSeeking = false;
     _isScrubbing = false;
     _cancelPendingPlaybackCache();
+    // 只有显式的“保持进度”请求续播；点击一首歌一律从头播放。
+    final start = preserveProgress ? smoothPosition : Duration.zero;
+    final resumePlayback = preserveProgress ? isPlaying : true;
+    bool alive(String stage) {
+      final ok =
+          !_disposed &&
+          serial == _loadSerial &&
+          generation == _playRequestGeneration &&
+          _transitions.isCurrentIntent(intent);
+      if (!ok) {
+        _traceTransition(
+          'load_abandoned',
+          detail: 'stage=$stage serial=$serial reason=$reason',
+        );
+      }
+      return ok;
+    }
     isPreparing = true;
+    _preparingSongKey = _songKey(song);
+    _pendingLoadSongKey = _metadataSongKey(song);
     errorMessage = null;
     if (queue != null && queue.isNotEmpty) {
       this.queue = List.of(queue);
@@ -600,77 +674,166 @@ class PlayerController extends ChangeNotifier {
     } else if (this.queue.isEmpty) {
       this.queue = [song];
     }
-    final targetIndex =
-        queueIndex ?? this.queue.indexWhere((item) => identical(item, song));
+    // 队列上下文按歌曲 key 定位：歌单刷新后同一首歌是新实例。
+    final targetIndex = preserveProgress
+        ? (queueIndex ?? currentIndex)
+        : (queueIndex ?? _indexInQueue(song));
     notifyListeners();
-    _traceTransition('load_start', detail: 'reason=$reason');
+    _traceTransition(
+      'load_intent',
+      detail:
+          'serial=$serial reason=$reason quality=${targetQuality.apiValue} '
+          'queueIndex=$targetIndex',
+    );
+    final stageWatch = Stopwatch()..start();
     try {
-      String? networkUrl;
-      var cacheQuality = audioQuality;
-      LoudnessData? cacheLoudness;
-      final local = downloadController?.localSourceFor(song, audioQuality);
-      if (local != null) {
-        try {
-          cacheLoudness = local.loudness;
-          await _loadAudioSource(song, local.path);
-          if (!isCurrentRequest()) return;
-        } catch (error) {
-          if (!isCurrentRequest()) return;
-          if (song.source == SongSource.local) rethrow;
-          await downloadController?.invalidateLocalSource(song, audioQuality);
-          if (!isCurrentRequest()) return;
-          final loaded = await _loadNetworkSourceWithFallback(
-            song,
-            prepared: prepared,
-          );
-          if (!isCurrentRequest()) return;
-          networkUrl = loaded.url;
-          cacheQuality = loaded.quality;
-          cacheLoudness = loaded.loudness;
+      // ── resolve + claim + replace：过期意图在动播放器之前就退出 ──
+      final qualities = <AudioQuality>[targetQuality];
+      if (smartQualityEnabled) {
+        var lower = _nextLowerQuality(targetQuality);
+        while (lower != null) {
+          qualities.add(lower);
+          lower = _nextLowerQuality(lower);
         }
-      } else if (song.source == SongSource.local) {
-        await _loadAudioSource(song, song.id);
-        if (!isCurrentRequest()) return;
-      } else {
-        final loaded = await _loadNetworkSourceWithFallback(
-          song,
-          prepared: prepared,
-        );
-        if (!isCurrentRequest()) return;
-        networkUrl = loaded.url;
-        cacheQuality = loaded.quality;
-        cacheLoudness = loaded.loudness;
       }
-      if (!isCurrentRequest()) return;
-      _committedQueueIndex = targetIndex;
-      _commitPlayback(song, cacheQuality, cacheLoudness, reason: reason);
-      isPreparing = false;
-      notifyListeners();
-      unawaited(
-        _audioHandler.play().catchError((Object error, StackTrace stack) {
-          if (!isCurrentRequest()) return;
-          errorMessage = error.toString();
-          notifyListeners();
-        }),
+      // 预解析地址只是第一次尝试；它失败后按音质梯度重新解析。
+      final plans = <({AudioQuality quality, bool prepared})>[
+        if (prepared != null) (quality: qualities.first, prepared: true),
+        for (final item in qualities) (quality: item, prepared: false),
+      ];
+      Object? lastError;
+      var forceNetwork = false;
+      var replaced = false;
+      _ResolvedSource? resolved;
+      for (final plan in plans) {
+        if (!alive('resolve')) return;
+        try {
+          resolved = await _resolveSource(
+            song,
+            prepared: plan.prepared ? prepared : null,
+            quality: plan.quality,
+            forceNetwork: forceNetwork,
+            alive: alive,
+          );
+        } catch (error) {
+          if (error is _LoadSuperseded) return;
+          lastError = error;
+          _traceTransition(
+            'load_resolve_failed',
+            detail:
+                'serial=$serial quality=${plan.quality.apiValue} '
+                'elapsedMs=${stageWatch.elapsedMilliseconds}',
+          );
+          continue;
+        }
+        // cp1/cp2：确认自己仍是最新意图后才允许暂停。
+        if (!alive('cp1')) return;
+        if (!alive('cp2')) return;
+        _traceTransition(
+          'load_claim',
+          detail:
+              'serial=$serial quality=${resolved.quality.apiValue} '
+              'local=${resolved.isLocal} '
+              'elapsedMs=${stageWatch.elapsedMilliseconds}',
+        );
+        // ── replace：暂停与替换原子完成，进入临界区后不再放弃 ──
+        try {
+          await _replaceCommittedSource(
+            song,
+            resolved,
+            queueIndex: targetIndex,
+            start: start,
+            serial: serial,
+          );
+          replaced = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          _traceTransition(
+            'load_replace_failed',
+            detail:
+                'serial=$serial elapsedMs=${stageWatch.elapsedMilliseconds}',
+          );
+          // 纯本地文件没有网络回退：直接失败回滚，不再重试。
+          if (song.source == SongSource.local) break;
+          if (resolved.isLocal) {
+            // 已下载/播放缓存的文件损坏或已删除：作废本地音源后改走网络。
+            await downloadController?.invalidateLocalSource(
+              song,
+              resolved.quality,
+            );
+            forceNetwork = true;
+          }
+          if (!alive('replace_retry')) return;
+        }
+      }
+      final committed = resolved;
+      if (!replaced || committed == null) {
+        if (!alive('failure')) return;
+        _traceTransition(
+          'load_fail',
+          detail:
+              'serial=$serial reason=$reason quality=${targetQuality.apiValue} '
+              'elapsedMs=${stageWatch.elapsedMilliseconds} error=$lastError',
+        );
+        errorMessage = '播放失败，请重试';
+        await _recoverPreviousEntry(wasPlaying: resumePlayback);
+        return;
+      }
+      // cp3：替换已经发生，即使被取代也必须清干净加载态（finally 负责），
+      // 但不能提交——展示与状态只属于最新意图。
+      if (!alive('cp3')) return;
+      // ── commit：展示、歌词、通知栏、响度代次与历史一次性提交 ──
+      // 解析期间队列可能已被刷新：提交时以当前队列重新定位。
+      _committedQueueIndex =
+          targetIndex >= 0 &&
+              targetIndex < this.queue.length &&
+              identical(this.queue[targetIndex], song)
+          ? targetIndex
+          : _indexInQueue(song);
+      _commitPlayback(
+        song,
+        committed.quality,
+        committed.loudness,
+        reason: reason,
+        start: start,
       );
+      isPreparing = false;
+      _preparingSongKey = null;
+      notifyListeners();
+      if (resumePlayback) {
+        // ── play：播放请求失败不改动已提交条目，只给出可见错误 ──
+        _traceTransition('play_requested', detail: 'serial=$serial');
+        unawaited(
+          _audioHandler.play().catchError((Object error, StackTrace stack) {
+            if (_disposed || serial != _loadSerial) return;
+            errorMessage = '播放失败，请重试';
+            notifyListeners();
+          }),
+        );
+      }
       unawaited(_applyVolumeNormalization(reason: 'transition'));
+      final networkUrl = committed.networkUrl;
       if (networkUrl != null) {
         _schedulePlaybackCache(
           song,
-          cacheQuality,
+          committed.quality,
           networkUrl,
-          loudness: cacheLoudness,
+          loudness: committed.loudness,
         );
       } else {
-        _restoreLocalLoudness(song, cacheQuality, cacheLoudness);
+        _restoreLocalLoudness(song, committed.quality, committed.loudness);
       }
     } catch (error) {
-      if (!isCurrentRequest()) return;
-      errorMessage = error.toString();
-      _traceTransition('load_reject', detail: 'reason=$reason');
+      if (!alive('failure')) return;
+      _traceTransition('load_fail', detail: 'serial=$serial unhandled=$error');
+      errorMessage = '播放失败，请重试';
     } finally {
-      if (isCurrentRequest()) {
+      // 清加载态只属于最新意图；被取代的意图把清理交给取代它的那次加载。
+      if (serial == _loadSerial && !_disposed) {
         isPreparing = false;
+        _preparingSongKey = null;
+        _pendingLoadSongKey = null;
         notifyListeners();
       }
     }
@@ -685,6 +848,7 @@ class PlayerController extends ChangeNotifier {
   }) {
     _transitions.commit(_playlistLoadRevision);
     currentSong = song;
+    _lastCommittedSong = song;
     _selectNormalizationSource(song, quality, force: true);
     _rememberLoudness(song, quality, loudness);
     lyrics = const [];
@@ -706,7 +870,9 @@ class PlayerController extends ChangeNotifier {
     _traceTransition(
       'committed',
       detail:
-          'reason=$reason positionOwner=$currentEntryId durationOwner=$currentEntryId',
+          'serial=$_loadSerial reason=$reason '
+          'startMs=${start.inMilliseconds} '
+          'positionOwner=$currentEntryId durationOwner=$currentEntryId',
     );
     unawaited(loadLyrics(song));
     unawaited(_syncDesktopLyricsVisibility());
@@ -715,23 +881,114 @@ class PlayerController extends ChangeNotifier {
     _scheduleSessionPersist();
   }
 
-  Future<void> _loadAudioSource(Song song, String url) {
-    final generation = _playRequestGeneration;
+  /// 队列内定位：歌单刷新后同一首歌可能是新实例，按 key 匹配而非对象同一性。
+  int _indexInQueueIn(List<Song> songs, Song song) {
+    final key = _metadataSongKey(song);
+    return songs.indexWhere((item) => _metadataSongKey(item) == key);
+  }
+
+  int _indexInQueue(Song song) => _indexInQueueIn(queue, song);
+
+  /// resolve 阶段：只解析播放地址与响度，绝不触碰播放器。
+  ///
+  /// 本地音源优先，其次预解析地址，最后走网络（含音质梯度）。
+  /// 任何一次网络往返前后都检查意图，过期即抛 [_LoadSuperseded]。
+  Future<_ResolvedSource> _resolveSource(
+    Song song, {
+    _PreparedNextSource? prepared,
+    required AudioQuality quality,
+    required bool Function(String) alive,
+    bool forceNetwork = false,
+  }) async {
+    void checkStage() {
+      if (!alive('resolve')) throw const _LoadSuperseded();
+    }
+
+    if (!forceNetwork) {
+      final local = downloadController?.localSourceFor(song, quality);
+      if (local != null) {
+        checkStage();
+        _loudnessLookup.put(_loudnessKey(song, quality), local.loudness);
+        return _ResolvedSource(
+          url: local.path,
+          quality: quality,
+          loudness: local.loudness,
+          isLocal: true,
+        );
+      }
+    }
+    if (song.source == SongSource.local) {
+      checkStage();
+      return _ResolvedSource(url: song.id, quality: quality, isLocal: true);
+    }
+    if (prepared != null) {
+      checkStage();
+      _loudnessLookup.put(
+        _loudnessKey(song, prepared.quality),
+        prepared.loudness,
+      );
+      return _ResolvedSource(
+        url: prepared.url,
+        quality: prepared.quality,
+        loudness: prepared.loudness,
+        networkUrl: prepared.url,
+      );
+    }
+    checkStage();
+    final PlayUrl playUrl = song.isCloudDrive
+        ? await _api.cloudSongUrl(song)
+        : await _api.songUrl(song, quality: quality);
+    checkStage();
+    if (playUrl.url.isEmpty) {
+      throw Exception(
+        song.isCloudDrive ? '云盘歌曲暂时没有可播放地址' : '${quality.badge} 暂时没有可播放地址',
+      );
+    }
+    _loudnessLookup.put(_loudnessKey(song, quality), playUrl.loudness);
+    return _ResolvedSource(
+      url: playUrl.url,
+      quality: quality,
+      loudness: playUrl.loudness,
+      networkUrl: playUrl.url,
+    );
+  }
+
+  /// replace 阶段：暂停旧条目并替换音源，两者之间没有业务逻辑，
+  /// 因此不存在“已暂停但没有新条目”的可被取代窗口。
+  ///
+  /// 原生加载在 [_sourceLoadChain] 上串行，多个意图不会交叉替换音源。
+  Future<void> _replaceCommittedSource(
+    Song song,
+    _ResolvedSource resolved, {
+    required int queueIndex,
+    required Duration start,
+    required int serial,
+  }) {
     final queueSnapshot = List<Song>.of(queue);
-    final index = queueSnapshot.indexWhere((item) => identical(item, song));
+    final index = queueIndex >= 0 && queueIndex < queueSnapshot.length
+        ? queueIndex
+        : 0;
+    _traceTransition(
+      'load_replace',
+      detail:
+          'serial=$serial index=$index startMs=${start.inMilliseconds} '
+          'local=${resolved.isLocal}',
+    );
     final operation = _sourceLoadChain.then((_) async {
-      if (_disposed || generation != _playRequestGeneration) {
+      if (_disposed) {
         throw StateError('Superseded playback load');
       }
       ++_playlistLoadRevision;
       _activePlaylistSource = null;
       await _audioHandler.loadSong(
         song: song,
-        url: url,
+        url: resolved.url,
         queueSongs: queueSnapshot,
-        queueIndex: index < 0 ? 0 : index,
+        queueIndex: index,
+        start: start,
+        loadSerial: serial,
       );
-      if (_disposed || generation != _playRequestGeneration) {
+      if (_disposed) {
         throw StateError('Superseded playback load');
       }
       final state = audioPlayer.sequenceState;
@@ -744,6 +1001,61 @@ class PlayerController extends ChangeNotifier {
       (Object error, StackTrace stack) {},
     );
     return operation;
+  }
+
+  /// 进入临界区之后失败：重新加载上一有效条目并恢复进度，
+  /// 而不是把播放器留在“已暂停、无提交”的状态。
+  Future<void> _recoverPreviousEntry({required bool wasPlaying}) async {
+    if (_disposed) return;
+    final previous = _lastCommittedSong;
+    if (previous == null) {
+      // 没有可回滚的条目：回到 idle，而不是停在"已暂停且无提交"。
+      try {
+        await _audioHandler.stop();
+      } catch (_) {}
+      return;
+    }
+    final previousPosition = position;
+    final previousIndex = currentIndex;
+    final previousQuality = _normalizationQuality ?? audioQuality;
+    try {
+      final resolved = await _resolveSource(
+        previous,
+        quality: previousQuality,
+        alive: (_) => !_disposed,
+      );
+      if (_disposed) return;
+      await _replaceCommittedSource(
+        previous,
+        resolved,
+        queueIndex: previousIndex,
+        start: previousPosition,
+        serial: _loadSerial,
+      );
+      if (_disposed) return;
+      _committedQueueIndex = previousIndex;
+      _commitPlayback(
+        previous,
+        resolved.quality,
+        resolved.loudness,
+        reason: 'recover',
+        start: previousPosition,
+      );
+      _traceTransition(
+        'load_recovered',
+        detail: 'positionMs=${previousPosition.inMilliseconds}',
+      );
+      if (wasPlaying) {
+        unawaited(
+          _audioHandler.play().catchError((Object error, StackTrace stack) {}),
+        );
+      }
+      unawaited(_applyVolumeNormalization(reason: 'recover'));
+    } catch (error) {
+      // 回滚也失败：保持已提交条目为 previous，给出明确错误，不自动重试。
+      _traceTransition('load_recover_failed', detail: 'error=$error');
+      errorMessage = '播放失败，请重试';
+    }
   }
 
   String _metadataSongKey(Song song) => '${song.source.name}:${_songKey(song)}';
@@ -859,97 +1171,8 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 获取并实际加载网络播放源。播放器拒绝 URL 时也会降级音质重试。
-  Future<({String url, AudioQuality quality, LoudnessData? loudness})>
-  _loadNetworkSourceWithFallback(
-    Song song, {
-    _PreparedNextSource? prepared,
-  }) async {
-    final generation = _playRequestGeneration;
-    void checkCurrent() {
-      if (_disposed || generation != _playRequestGeneration) {
-        throw StateError('Superseded playback source');
-      }
-    }
-
-    // 预解析的源作为首选尝试；加载失败让位后回退完整解析（含音质降级）。
-    if (prepared != null) {
-      try {
-        checkCurrent();
-        _loudnessLookup.put(
-          _loudnessKey(song, prepared.quality),
-          prepared.loudness,
-        );
-        await _loadAudioSource(song, prepared.url);
-        return (
-          url: prepared.url,
-          quality: prepared.quality,
-          loudness: prepared.loudness,
-        );
-      } catch (_) {
-        checkCurrent();
-        await audioPlayer.stop();
-      }
-    }
-    if (song.isCloudDrive) {
-      final playUrl = await _api.cloudSongUrl(song);
-      if (playUrl.url.isEmpty) {
-        throw Exception('云盘歌曲暂时没有可播放地址');
-      }
-      checkCurrent();
-      _loudnessLookup.put(_loudnessKey(song, audioQuality), playUrl.loudness);
-      await _loadAudioSource(song, playUrl.url);
-      return (
-        url: playUrl.url,
-        quality: audioQuality,
-        loudness: playUrl.loudness,
-      );
-    }
-    final qualities = <AudioQuality>[audioQuality];
-    if (smartQualityEnabled) {
-      var quality = _nextLowerQuality(audioQuality);
-      while (quality != null) {
-        qualities.add(quality);
-        quality = _nextLowerQuality(quality);
-      }
-    }
-
-    Object? lastError;
-    StackTrace? lastStackTrace;
-    for (final quality in qualities) {
-      try {
-        final playUrl = await _api.songUrl(song, quality: quality);
-        if (playUrl.url.isEmpty) {
-          throw Exception('${quality.badge} 暂时没有可播放地址');
-        }
-        checkCurrent();
-        _loudnessLookup.put(_loudnessKey(song, quality), playUrl.loudness);
-        await _loadAudioSource(song, playUrl.url);
-        if (quality != audioQuality) {
-          debugPrint(
-            '[KA Music][smart-quality] ${audioQuality.badge} source failed; '
-            'using ${quality.badge}',
-          );
-        }
-        return (url: playUrl.url, quality: quality, loudness: playUrl.loudness);
-      } catch (error, stackTrace) {
-        checkCurrent();
-        lastError = error;
-        lastStackTrace = stackTrace;
-        debugPrint(
-          '[KA Music][playback] ${quality.badge} source failed for '
-          '${song.hash}: $error',
-        );
-        await audioPlayer.stop();
-      }
-    }
-
-    Error.throwWithStackTrace(
-      lastError ?? Exception('这首歌暂时没有可播放地址'),
-      lastStackTrace ?? StackTrace.current,
-    );
-  }
-
+  // 旧的 _loadNetworkSourceWithFallback/_loadAudioSource 已被
+  // resolve + replace 两个阶段取代：解析不再触碰播放器，替换不再可被取代。
   /// 返回更低一档的音质；已是最低档时返回 null。
   AudioQuality? _nextLowerQuality(AudioQuality quality) {
     switch (quality) {
@@ -990,11 +1213,11 @@ class PlayerController extends ChangeNotifier {
       nextQueue.insert(insertIndex, song);
     }
 
-    _invalidateNavigation();
     queue = nextQueue;
     ++_queueRevision;
-    // 插播改变了"下一曲"，预选作废。
+    // 插播改变了"下一曲"，预选与旧完成租约作废；在途的播放意图不受影响。
     _clearPreparedNext();
+    _cancelLoadIntentIfSongLeftQueue();
     await _audioHandler.setSongQueue(
       queueSongs: queue,
       queueIndex: currentIndex,
@@ -1018,11 +1241,12 @@ class PlayerController extends ChangeNotifier {
       if (key.isNotEmpty && seen.add(key)) updated.add(song);
     }
     if (updated.isEmpty) return false;
-    _invalidateNavigation();
     queue = updated;
     ++_queueRevision;
-    // 队列被替换，预选的下一曲可能已不在队列中。
+    // 队列被替换，预选的下一曲可能已不在队列中；在途的播放意图只在其
+    // 目标歌曲离开队列时才作废（歌单页后台补拉整张歌单不得吞掉点击）。
     _clearPreparedNext();
+    _cancelLoadIntentIfSongLeftQueue();
     if (current != null &&
         currentKey.isNotEmpty &&
         !queue.any((song) => _songKey(song) == currentKey)) {
@@ -1128,8 +1352,19 @@ class PlayerController extends ChangeNotifier {
   void _invalidateNavigation() {
     ++_playRequestGeneration;
     _transitions.invalidateWork();
+    _transitions.invalidateIntents();
     _audioHandler.invalidatePendingPlay();
     isPreparing = false;
+    _preparingSongKey = null;
+  }
+
+  /// 队列被显式改动后只作废"目标歌曲已不在队列中"的在途意图：
+  /// 歌单页后台补拉整张歌单（replaceQueue）不得吞掉用户的点击。
+  void _cancelLoadIntentIfSongLeftQueue() {
+    final key = _pendingLoadSongKey;
+    if (key == null) return;
+    if (queue.any((song) => _metadataSongKey(song) == key)) return;
+    _transitions.invalidateIntents();
   }
 
   void _clearPreparedNext() {
@@ -1164,9 +1399,19 @@ class PlayerController extends ChangeNotifier {
         identical(sequence.currentSource, _activePlaylistSource);
   }
 
+  /// 原生音源是否仍属于已提交条目。替换之后被取代的加载会把原生音源
+  /// 换成尚未提交的条目，此时必须先走完整加载再播放。
+  bool get _nativeSourceIsCommitted {
+    final song = currentSong;
+    return song != null &&
+        _activePlaylistSource != null &&
+        identical(_activePlaylistSource!.tag, song);
+  }
+
   void _traceTransition(String event, {String detail = ''}) {
     debugPrint(
       '[KA Music][transition] event=$event entry=$currentEntryId '
+      'serial=$_loadSerial quality=${audioQuality.apiValue} '
       'candidate=${_preparedNext?.songKey} owner=${_preparedNext?.ownerEntryId} '
       'queue=$_queueRevision load=$_playlistLoadRevision seek=${_transitions.seekRevision} '
       'request=${_transitions.requestRevision} monoUs=${_transitionClock.elapsedMicroseconds} $detail',
@@ -1709,16 +1954,18 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     final generation = _playRequestGeneration;
-    // 接续播放恢复的歌曲尚未加载音源：走完整 playSong 从头播放。
+    // 接续播放恢复的歌曲尚未加载音源、或原生音源已不属于已提交条目
+    // （替换后被取代的残留）：走完整加载，避免播错歌。
     if ((audioPlayer.processingState == ProcessingState.idle ||
-            !_ownsLoadedSource) &&
+            !_ownsLoadedSource ||
+            !_nativeSourceIsCommitted) &&
         currentSong != null) {
       await playSong(currentSong!);
       return;
     }
     if (audioPlayer.processingState == ProcessingState.completed &&
         currentSong != null) {
-      await _playSong(currentSong!, forceReload: true, reason: 'replay');
+      await _playSong(currentSong!, reason: 'replay');
       return;
     }
     if (generation != _playRequestGeneration) return;
@@ -1807,7 +2054,6 @@ class PlayerController extends ChangeNotifier {
     await _playSong(
       song,
       queue: queue,
-      forceReload: true,
       prepared: prepared,
       queueIndex: _nextQueueIndex(song),
       reason: 'manual_next',
@@ -1836,7 +2082,6 @@ class PlayerController extends ChangeNotifier {
       await _playSong(
         queue[index - 1],
         queue: queue,
-        forceReload: true,
         queueIndex: index - 1,
         reason: 'manual_previous',
       );
@@ -1884,7 +2129,6 @@ class PlayerController extends ChangeNotifier {
       await _playSong(
         nextSong,
         queue: queue,
-        forceReload: true,
         prepared: prepared,
         queueIndex: index,
         reason: 'native_completed',
@@ -1900,93 +2144,16 @@ class PlayerController extends ChangeNotifier {
   // No position timer: split Dart position/duration streams cannot prove a
   // native end or stagnation. Never skip the last 750/220ms by estimation.
 
+  /// 换音质：走同一条加载状态机，只是显式保持进度。
   Future<void> _reloadCurrentSongForQuality() async {
     final song = currentSong;
-    if (song == null) {
-      return;
-    }
-
-    final resumePlayback = isPlaying;
-    final generation = ++_playRequestGeneration;
-    final quality = audioQuality;
-    bool isCurrent() => !_disposed && generation == _playRequestGeneration;
-    _audioHandler.invalidatePendingPlay();
-    _clearPreparedNext();
-    ++_seekSerial;
-    _isSeeking = false;
-    _isScrubbing = false;
-    final targetPosition = smoothPosition;
-    isPreparing = true;
-    errorMessage = null;
-    notifyListeners();
-
-    try {
-      String url;
-      String? networkUrl;
-      LoudnessData? loudness;
-      final local = downloadController?.localSourceFor(song, quality);
-      if (local != null) {
-        url = local.path;
-        loudness = local.loudness;
-        _loudnessLookup.put(_loudnessKey(song, quality), loudness);
-      } else if (song.source == SongSource.local) {
-        url = song.id;
-      } else {
-        final PlayUrl playUrl;
-        if (song.isCloudDrive) {
-          playUrl = await _api.cloudSongUrl(song);
-        } else {
-          playUrl = await _api.songUrl(song, quality: quality);
-        }
-        if (playUrl.url.isEmpty) {
-          throw Exception('当前音质暂时没有可播放地址');
-        }
-        url = playUrl.url;
-        networkUrl = playUrl.url;
-        loudness = playUrl.loudness;
-        if (!isCurrent()) return;
-        _loudnessLookup.put(_loudnessKey(song, quality), playUrl.loudness);
-      }
-      if (!isCurrent()) return;
-      await _loadAudioSource(song, url);
-      if (!isCurrent()) return;
-      if (targetPosition > Duration.zero) {
-        await _audioHandler.seekDirect(_clampPosition(targetPosition));
-      }
-      if (!isCurrent()) return;
-      _commitPlayback(
-        song,
-        quality,
-        loudness,
-        reason: 'quality',
-        start: targetPosition,
-      );
-      isPreparing = false;
-      if (resumePlayback) {
-        unawaited(
-          _audioHandler.play().catchError((Object error, StackTrace stack) {
-            if (!isCurrent()) return;
-            errorMessage = error.toString();
-            notifyListeners();
-          }),
-        );
-      }
-      // play() completes on pause/end, not on startup. Never await it here.
-      unawaited(_applyVolumeNormalization());
-      // 切音质后后台缓存
-      if (networkUrl != null) {
-        _cancelPendingPlaybackCache();
-        _schedulePlaybackCache(song, quality, networkUrl, loudness: loudness);
-      }
-    } catch (error) {
-      if (!isCurrent()) return;
-      errorMessage = error.toString();
-    } finally {
-      if (isCurrent()) {
-        isPreparing = false;
-        notifyListeners();
-      }
-    }
+    if (song == null) return;
+    await _playSong(
+      song,
+      preserveProgress: true,
+      quality: audioQuality,
+      reason: 'quality',
+    );
   }
 
   Future<void> _setupAudioSessionListeners() async {
@@ -2016,6 +2183,7 @@ class PlayerController extends ChangeNotifier {
               isPreparing;
           ++_playRequestGeneration;
           isPreparing = false;
+          _preparingSongKey = null;
           _audioHandler.invalidatePendingPlay();
           if (!_wasPlayingOnInterruptionBegin || currentSong == null) {
             return;

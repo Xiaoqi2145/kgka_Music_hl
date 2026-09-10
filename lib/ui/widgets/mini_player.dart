@@ -7,6 +7,7 @@ import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import '../pages/player_page.dart';
 import 'artwork.dart';
+import 'preparing_indicator.dart';
 import 'toast.dart';
 
 class MiniPlayer extends StatelessWidget {
@@ -125,17 +126,25 @@ class MiniPlayer extends StatelessWidget {
                                         ),
                                       ),
                                       IconButton(
-                                        tooltip: player.isPlaying ? '暂停' : '播放',
+                                        tooltip: player.isPreparing
+                                            ? '正在加载'
+                                            : (player.isPlaying ? '暂停' : '播放'),
                                         onPressed: player.isPreparing
                                             ? null
                                             : player.togglePlay,
-                                        icon: Icon(
-                                          player.isPlaying
-                                              ? Icons.pause_rounded
-                                              : Icons.play_arrow_rounded,
-                                          color: colorScheme.onSurface,
-                                          size: 30,
-                                        ),
+                                        icon: player.isPreparing
+                                            ? PreparingIndicator(
+                                                color: colorScheme.primary,
+                                                size: 20,
+                                                strokeWidth: 2.2,
+                                              )
+                                            : Icon(
+                                                player.isPlaying
+                                                    ? Icons.pause_rounded
+                                                    : Icons.play_arrow_rounded,
+                                                color: colorScheme.onSurface,
+                                                size: 30,
+                                              ),
                                       ),
                                       IconButton(
                                         tooltip: '播放队列',
@@ -402,14 +411,14 @@ class MiniPlayer extends StatelessWidget {
       final nextIndex = index.clamp(0, newQueue.length - 1);
       if (newQueue.isEmpty) {
         Navigator.of(sheetContext).pop();
-        player.playSong(current, queue: [current]);
+        player.updateQueueContext([current]);
         return;
       }
       Navigator.of(sheetContext).pop();
       player.playSong(newQueue[nextIndex], queue: newQueue);
     } else {
       // 非当前歌曲：仅更新队列，不打断播放
-      player.playSong(current, queue: newQueue);
+      player.updateQueueContext(newQueue);
     }
   }
 
@@ -418,7 +427,7 @@ class MiniPlayer extends StatelessWidget {
     final current = player.currentSong;
     if (current == null) return;
     Navigator.of(sheetContext).pop();
-    player.playSong(current, queue: [current]);
+    player.updateQueueContext([current]);
     Toast.success('已清空播放队列');
   }
 }

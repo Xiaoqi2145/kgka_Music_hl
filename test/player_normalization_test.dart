@@ -112,6 +112,12 @@ class _Handler implements MusicAudioHandler {
   int removals = 0;
   Completer<void>? loadGate;
   bool failLoad = false;
+  /// 原生替换次数（模拟真实 handler 里"暂停 + setAudioSources"的原子操作）。
+  int replacements = 0;
+  /// 每次原生替换发生时的已提交条目，用于校验不变量 1。
+  final commitAtReplace = <int?>[];
+  /// 按歌曲 hash 持续失败，用于替换失败回滚测试。
+  final Set<String> failingHashes = <String>{};
   @override
   void Function(bool)? onPlaybackIntent;
   @override
@@ -130,9 +136,15 @@ class _Handler implements MusicAudioHandler {
     required String url,
     required List<Song> queueSongs,
     required int queueIndex,
+    Duration start = Duration.zero,
+    int? loadSerial,
   }) async {
+    // 真实 handler 在替换前先暂停：测试里同步模拟，便于检查不变量。
+    audioPlayer.playing = false;
+    replacements++;
+    onNativeReplace?.call(song, start);
     await loadGate?.future;
-    if (failLoad) {
+    if (failLoad || failingHashes.contains(song.hash)) {
       failLoad = false;
       throw StateError('load failed');
     }
@@ -140,6 +152,8 @@ class _Handler implements MusicAudioHandler {
     audioPlayer.emitSequence([AudioSource.uri(Uri.parse(url), tag: song)], 0);
     audioPlayer.emitNative(ProcessingState.ready);
   }
+
+  void Function(Song song, Duration start)? onNativeReplace;
 
   Completer<void>? removal;
   bool failRemoval = false;
@@ -185,6 +199,13 @@ class _Handler implements MusicAudioHandler {
   Future<void> pause() async {
     onPlaybackIntent?.call(false);
     audioPlayer.playing = false;
+  }
+
+  @override
+  Future<void> stop() async {
+    onPlaybackIntent?.call(false);
+    audioPlayer.playing = false;
+    audioPlayer.processingState = ProcessingState.idle;
   }
 
   @override
@@ -796,5 +817,222 @@ void main() {
     await drain();
     expect(controller.lyrics.single.text, 'B lyrics');
     expect(controller.currentSong, b);
+  });
+
+  // ===== 换歌单"点两次才播放"的回归测试（见
+  // diagnostics/playlist-switch-two-tap-fix-plan.md 第 6 节） =====
+
+  Song copyOf(Song other) => Song(
+    id: other.id,
+    title: other.title,
+    artist: other.artist,
+    hash: other.hash,
+    source: other.source,
+  );
+
+  PlayUrl urlFor(String hash) => PlayUrl(
+    url: 'https://example.invalid/${hash.toLowerCase()}',
+    hash: hash,
+    loudness: LoudnessData(lufs: -8),
+  );
+
+  test('a second tap while the first is resolving commits only the newest', () async {
+    await setup();
+    final entry = controller.currentEntryId;
+    final gate = Completer<PlayUrl>();
+    api.responses['B'] = gate;
+    final first = controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    // 第一次点击仍在 resolve：播放器没有被暂停，也没有被替换。
+    expect(handler.audioPlayer.playing, isTrue);
+    expect(handler.replacements, 1, reason: '只有 setup 那次原生替换');
+    expect(handler.loads, [song]);
+    expect(controller.currentEntryId, entry);
+    expect(controller.isPreparingSong(b), isTrue);
+
+    final second = controller.playSong(c, queue: [song, b, c]);
+    await second;
+    await drain();
+    expect(controller.currentSong, c);
+    expect(handler.loads, [song, c]);
+    expect(handler.replacements, 2);
+    expect(controller.isPreparing, isFalse);
+
+    // 过期的第一次点击恢复后必须在 cp1 退出：不提交、不碰播放器。
+    gate.complete(urlFor('B'));
+    await first;
+    await drain();
+    expect(controller.currentSong, c);
+    expect(handler.loads, [song, c], reason: '被取代的点击不再执行原生替换');
+    expect(handler.replacements, 2);
+    expect(handler.media, [song, c]);
+    expect(api.requests.where((s) => s == 'B'), hasLength(1),
+        reason: '被取代的点击不会重复请求');
+  });
+
+  test('rapid taps A to B to C commit only C once', () async {
+    await setup();
+    final bGate = Completer<PlayUrl>();
+    final cGate = Completer<PlayUrl>();
+    api.responses['B'] = bGate;
+    api.responses['C'] = cGate;
+    final first = controller.playSong(b, queue: [song, b, c, d]);
+    await drain();
+    final second = controller.playSong(c, queue: [song, b, c, d]);
+    await drain();
+    final third = controller.playSong(d, queue: [song, b, c, d]);
+    await third;
+    await drain();
+    bGate.complete(urlFor('B'));
+    cGate.complete(urlFor('C'));
+    await first;
+    await second;
+    await drain();
+    expect(controller.currentSong, d);
+    expect(handler.loads, [song, d]);
+    expect(handler.replacements, 2, reason: '只有最后一次点击替换了音源');
+    expect(handler.plays, 2, reason: '只请求一次播放');
+    expect(handler.media, [song, d], reason: '通知栏只写一次');
+    expect(controller.isPreparing, isFalse);
+    expect(controller.isPreparingSong(d), isFalse);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('a failed replace rolls back to the previous entry and its position', () async {
+    await setup();
+    handler.audioPlayer.emitNative(
+      ProcessingState.ready,
+      position: const Duration(seconds: 42),
+    );
+    await drain();
+    expect(controller.position, const Duration(seconds: 42));
+    final entry = controller.currentEntryId;
+    handler.failingHashes.add('B');
+
+    await controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    // 回滚：重新加载上一有效条目并恢复进度，错误可见且不自动重试。
+    expect(controller.errorMessage, isNotNull);
+    expect(controller.currentSong, song);
+    expect(controller.position, const Duration(seconds: 42));
+    expect(handler.loads, [song, song]);
+    expect(handler.media, [song, song]);
+    expect(handler.audioPlayer.playing, isTrue);
+    expect(controller.currentEntryId, isNot(entry));
+    expect(handler.failingHashes, hasLength(1));
+  });
+
+  test('tapping the playing song from another queue reloads it', () async {
+    await setup();
+    final entry = controller.currentEntryId;
+    final other = copyOf(song);
+    final otherQueue = [other, c];
+    await controller.playSong(other, queue: otherQueue);
+    await drain();
+    expect(handler.loads, [song, other], reason: '跨歌单同一首歌按新播放处理');
+    expect(handler.replacements, 2);
+    expect(controller.currentSong, other);
+    expect(controller.currentEntryId, isNot(entry));
+    expect(controller.isPreparing, isFalse);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('a queue refresh during a pending resolve keeps the tap alive', () async {
+    await setup();
+    final gate = Completer<PlayUrl>();
+    api.responses['B'] = gate;
+    final pending = controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    // 歌单页打开后会在后台补拉整张歌单并 replaceQueue；
+    // 这只是队列上下文刷新，绝不能吞掉用户刚发出的点击。
+    await controller.replaceQueue([song, b, c, d]);
+    await drain();
+    gate.complete(urlFor('B'));
+    await pending;
+    await drain();
+    expect(controller.currentSong, b);
+    expect(controller.isPreparing, isFalse);
+    expect(controller.errorMessage, isNull);
+    expect(handler.loads, [song, b]);
+    expect(handler.replacements, 2);
+    expect(handler.audioPlayer.playing, isTrue);
+  });
+
+  test('a queue edit that drops the pending song cancels that load', () async {
+    await setup();
+    final gate = Completer<PlayUrl>();
+    api.responses['B'] = gate;
+    final pending = controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    final entry = controller.currentEntryId;
+    await controller.replaceQueue([song, c]);
+    await drain();
+    gate.complete(urlFor('B'));
+    await pending;
+    await drain();
+    expect(controller.currentSong, song);
+    expect(controller.currentEntryId, entry);
+    expect(handler.loads, [song]);
+    expect(handler.replacements, 1);
+  });
+
+  test('queue edits keep the current entry without reloading it', () async {
+    await setup();
+    final entry = controller.currentEntryId;
+    final loads = handler.loads.length;
+    final replacements = handler.replacements;
+    await controller.updateQueueContext([song, c]);
+    await drain();
+    expect(handler.loads, hasLength(loads));
+    expect(handler.replacements, replacements);
+    expect(controller.currentEntryId, entry);
+    expect(controller.currentSong, song);
+    expect(controller.queue, [song, c]);
+    expect(controller.isPreparing, isFalse);
+    expect(controller.isPreparingSong(song), isFalse);
+  });
+
+  test('a seek during a pending load cannot pause the player', () async {
+    await setup();
+    final gate = Completer<PlayUrl>();
+    api.responses['B'] = gate;
+    final pending = controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    await controller.seek(const Duration(seconds: 10));
+    await drain();
+    expect(handler.audioPlayer.playing, isTrue);
+    expect(handler.replacements, 1);
+    expect(controller.currentSong, song);
+    gate.complete(urlFor('B'));
+    await pending;
+    await drain();
+    // seek 作废了这次加载，播放器保持原条目。
+    expect(controller.currentSong, song);
+    expect(handler.loads, [song]);
+    expect(handler.replacements, 1);
+  });
+
+  test('invariant: no native replace without a committed entry', () async {
+    await setup();
+    final violations = <String>[];
+    handler.onNativeReplace = (replaced, start) {
+      if (controller.currentEntryId == null) {
+        violations.add(replaced.hash);
+      }
+    };
+    final gate = Completer<PlayUrl>();
+    api.responses['B'] = gate;
+    final first = controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    final second = controller.playSong(c, queue: [song, b, c]);
+    await second;
+    await drain();
+    gate.complete(urlFor('B'));
+    await first;
+    await drain();
+    expect(violations, isEmpty, reason: '不得出现"已暂停且无提交条目"');
+    expect(controller.currentSong, c);
+    expect(controller.currentEntryId, isNotNull);
+    expect(handler.audioPlayer.playing, isTrue);
   });
 }

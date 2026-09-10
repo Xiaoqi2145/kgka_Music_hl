@@ -10,6 +10,7 @@ import '../widgets/artwork.dart';
 import '../widgets/skeleton_box.dart';
 import '../widgets/music_formatters.dart';
 import '../widgets/now_playing_badge.dart';
+import '../widgets/preparing_indicator.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import 'album_shop_page.dart';
@@ -914,6 +915,7 @@ class _HomeSongRow extends StatelessWidget {
       builder: (context, _) {
         final active =
             song.hash.isNotEmpty && player.currentSong?.hash == song.hash;
+        final preparing = player.isPreparingSong(song);
         final activeColor = colorScheme.primary;
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -930,7 +932,7 @@ class _HomeSongRow extends StatelessWidget {
                 Stack(
                   children: [
                     Artwork(url: song.coverUrl, size: 58, borderRadius: 8),
-                    if (active)
+                    if (active || preparing)
                       Positioned(
                         right: 5,
                         bottom: 5,
@@ -943,12 +945,17 @@ class _HomeSongRow extends StatelessWidget {
                           ),
                           child: Padding(
                             padding: const EdgeInsets.all(3),
-                            child: NowPlayingBadge(
-                              active: active,
-                              playing: player.isPlaying,
-                              color: activeColor,
-                              size: 14,
-                            ),
+                            child: preparing
+                                ? PreparingIndicator(
+                                    color: activeColor,
+                                    size: 14,
+                                  )
+                                : NowPlayingBadge(
+                                    active: active,
+                                    playing: player.isPlaying,
+                                    color: activeColor,
+                                    size: 14,
+                                  ),
                           ),
                         ),
                       ),

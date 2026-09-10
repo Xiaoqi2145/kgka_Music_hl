@@ -36,6 +36,46 @@ void main() {
     expect(coordinator.seekRevision, 60);
     expect(coordinator.consumeCompletion(coordinator.lease), isTrue);
   });
+  test('beginIntent revokes older intents, not committed entries', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final first = coordinator.beginIntent();
+    expect(coordinator.isCurrentIntent(first), isTrue);
+    final second = coordinator.beginIntent();
+    expect(coordinator.isCurrentIntent(first), isFalse);
+    expect(coordinator.isCurrentIntent(second), isTrue);
+    expect(coordinator.committedEntry?.id, 1);
+  });
+
+  test('a queue refresh revokes work leases but never a pending intent', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final intent = coordinator.beginIntent();
+    final lease = coordinator.lease;
+    // 歌单页后台补拉整张歌单 / 预解析重置：只作废完成与异步租约。
+    coordinator.invalidateWork();
+    expect(coordinator.isCurrent(lease), isFalse);
+    expect(coordinator.isCurrentIntent(intent), isTrue);
+    // 显式取消（seek、换音质、暂停）才作废在途的加载意图。
+    coordinator.invalidateIntents();
+    expect(coordinator.isCurrentIntent(intent), isFalse);
+  });
+
+  test('a commit ends its own load intent', () {
+    final coordinator = TransitionCoordinator();
+    final intent = coordinator.beginIntent();
+    expect(coordinator.isCurrentIntent(intent), isTrue);
+    coordinator.commit(1);
+    expect(coordinator.isCurrentIntent(intent), isFalse);
+    expect(coordinator.committedEntry?.id, 1);
+  });
+
+  test('a seek revokes a load intent before it touches the player', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final intent = coordinator.beginIntent();
+    coordinator.seek();
+    expect(coordinator.isCurrentIntent(intent), isFalse);
+    expect(coordinator.isCurrent(coordinator.lease), isTrue);
+  });
+
   for (final intent in ['pause', 'next', 'previous', 'queue', 'quality']) {
     test('$intent revokes a pending navigation lease, not entry identity', () {
       final coordinator = TransitionCoordinator()..commit(1);
