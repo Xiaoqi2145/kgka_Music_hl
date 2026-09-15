@@ -1178,7 +1178,8 @@ class _LandscapeLyricPanel extends StatefulWidget {
   State<_LandscapeLyricPanel> createState() => _LandscapeLyricPanelState();
 }
 
-class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
+class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel>
+    with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   Duration _position = Duration.zero;
 
@@ -1187,7 +1188,7 @@ class _LandscapeLyricPanelState extends State<_LandscapeLyricPanel> {
     super.initState();
     _position = widget.player.smoothPosition;
     widget.player.positionListenable.addListener(_handlePositionChanged);
-    _ticker = Ticker(_onTick);
+    _ticker = createTicker(_onTick);
     _syncTicker();
   }
 
@@ -1588,7 +1589,8 @@ class _PosterLyricPreview extends StatefulWidget {
   State<_PosterLyricPreview> createState() => _PosterLyricPreviewState();
 }
 
-class _PosterLyricPreviewState extends State<_PosterLyricPreview> {
+class _PosterLyricPreviewState extends State<_PosterLyricPreview>
+    with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   Duration _position = Duration.zero;
 
@@ -1597,7 +1599,7 @@ class _PosterLyricPreviewState extends State<_PosterLyricPreview> {
     super.initState();
     _position = widget.player.smoothPosition;
     widget.player.positionListenable.addListener(_handlePositionChanged);
-    _ticker = Ticker(_onTick);
+    _ticker = createTicker(_onTick);
     _syncTicker();
   }
 
@@ -2425,7 +2427,7 @@ class _LyricViewport extends StatefulWidget {
 }
 
 class _LyricViewportState extends State<_LyricViewport>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final _controller = ScrollController();
   late final Ticker _ticker;
   late final AnimationController _lineMotionController;
@@ -2458,7 +2460,7 @@ class _LyricViewportState extends State<_LyricViewport>
           )
           ..value = 1
           ..addListener(_handleLineMotionTick);
-    _ticker = Ticker(_onTick);
+    _ticker = createTicker(_onTick);
     _syncTicker();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _syncToActive(immediate: true, resetManualScroll: false),
