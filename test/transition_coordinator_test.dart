@@ -59,6 +59,18 @@ void main() {
     expect(coordinator.isCurrentIntent(intent), isFalse);
   });
 
+  test('reset clears committed identity and invalidates pending work', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final intent = coordinator.beginIntent();
+    final lease = coordinator.lease;
+
+    coordinator.reset();
+
+    expect(coordinator.committedEntry, isNull);
+    expect(coordinator.isCurrentIntent(intent), isFalse);
+    expect(coordinator.isCurrent(lease), isFalse);
+  });
+
   test('a commit ends its own load intent', () {
     final coordinator = TransitionCoordinator();
     final intent = coordinator.beginIntent();

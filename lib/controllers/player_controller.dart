@@ -663,6 +663,7 @@ class PlayerController extends ChangeNotifier {
       }
       return ok;
     }
+
     isPreparing = true;
     _preparingSongKey = _songKey(song);
     _pendingLoadSongKey = _metadataSongKey(song);
@@ -798,6 +799,9 @@ class PlayerController extends ChangeNotifier {
         reason: reason,
         start: start,
       );
+      downloadController?.setActivePlaybackPath(
+        committed.isLocal ? committed.url : null,
+      );
       isPreparing = false;
       _preparingSongKey = null;
       notifyListeners();
@@ -905,7 +909,14 @@ class PlayerController extends ChangeNotifier {
     }
 
     if (!forceNetwork) {
-      final local = downloadController?.localSourceFor(song, quality);
+      final controller = downloadController;
+      try {
+        await controller?.initialize();
+      } catch (_) {
+        // A damaged cache index must not prevent network playback fallback.
+      }
+      checkStage();
+      final local = controller?.localSourceFor(song, quality);
       if (local != null) {
         checkStage();
         _loudnessLookup.put(_loudnessKey(song, quality), local.loudness);
@@ -1663,6 +1674,44 @@ class PlayerController extends ChangeNotifier {
       );
       notifyListeners();
     } catch (_) {}
+  }
+
+  /// Drop account-specific playback state and its persistent snapshot on logout.
+  Future<void> clearSessionForLogout() async {
+    _cancelAutomaticResume();
+    _cancelPendingPlaybackCache();
+    _sessionSaveTimer?.cancel();
+    _playbackSessionDirty = false;
+    ++_playRequestGeneration;
+    ++_loadSerial;
+    _transitions.reset();
+    _clearPreparedNext();
+    _lastCommittedSong = null;
+    queue = const <Song>[];
+    currentSong = null;
+    lyrics = const <LyricLine>[];
+    isLoadingLyrics = false;
+    position = Duration.zero;
+    duration = Duration.zero;
+    isPlaying = false;
+    isBuffering = false;
+    _committedQueueIndex = -1;
+    try {
+      await _audioHandler.stop();
+      await _audioHandler.setSongQueue(
+        queueSongs: const <Song>[],
+        queueIndex: 0,
+      );
+    } catch (_) {
+      // Authentication cleanup must still complete if the native player fails.
+    }
+    final cache = cacheService;
+    if (cache != null) {
+      try {
+        await cache.remove(_playbackSessionCacheKey);
+      } catch (_) {}
+    }
+    notifyListeners();
   }
 
   Future<void> setResumePlaybackEnabled(bool enabled) async {

@@ -309,32 +309,63 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   Future<List<Song>> _loadAllSongsImpl({bool Function()? shouldCancel}) async {
     if (_isLoadingAllSongs) return List<Song>.of(_songs);
     setState(() => _isLoadingAllSongs = true);
+    List<Song>? cachedSongs;
+    void applySongs(List<Song> allSongs) {
+      if (!mounted || shouldCancel?.call() == true) return;
+      setState(() {
+        final isCurrentPrefix =
+            _songs.length <= allSongs.length &&
+            List.generate(
+              _songs.length,
+              (index) => index,
+            ).every((index) => _songs[index].hash == allSongs[index].hash);
+        if (isCurrentPrefix) {
+          _songs.addAll(allSongs.skip(_songs.length));
+        } else {
+          _songs
+            ..clear()
+            ..addAll(allSongs);
+        }
+        _songsVersion++;
+        _allSongsLoaded = true;
+        _hasMore = false;
+        _isLoadingAllSongs = false;
+      });
+    }
+
     try {
       final id = _isAlbum
           ? (widget.playlist.albumId ?? widget.playlist.id)
           : widget.playlist.id;
-
-      // 优先尝试从完整歌单缓存读取（命中则跳过网络请求）
       final fullCacheKey = _isAlbum
           ? 'cache_album_${widget.playlist.albumId ?? widget.playlist.id}$_fullSongsCacheSuffix'
           : 'cache_playlist_${widget.playlist.id}$_fullSongsCacheSuffix';
-
-      CacheResult<Map<String, dynamic>>? fullCached;
-      try {
-        fullCached = await _cache.read<Map<String, dynamic>>(
-          fullCacheKey,
-          decode: (json) => json,
-          ttl: AppConfig.playlistDetailTtl,
-        );
-      } catch (_) {}
-
-      List<Song> allSongs;
+      final fullCached = await _cache.read<Map<String, dynamic>>(
+        fullCacheKey,
+        decode: (json) => json,
+        ttl: AppConfig.playlistDetailTtl,
+      );
       if (fullCached != null) {
-        allSongs = (fullCached.data['songs'] as List? ?? const [])
+        cachedSongs = (fullCached.data['songs'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(Song.fromCache)
             .where((song) => song.hash.isNotEmpty)
             .toList();
+      }
+
+      final candidateSongs = cachedSongs;
+      final cachedMatchesCurrentPrefix =
+          candidateSongs != null &&
+          _songs.length <= candidateSongs.length &&
+          List.generate(
+            _songs.length,
+            (index) => index,
+          ).every((index) => _songs[index].hash == candidateSongs[index].hash);
+      List<Song> allSongs;
+      if (cachedSongs != null &&
+          !fullCached!.isStale &&
+          cachedMatchesCurrentPrefix) {
+        allSongs = cachedSongs;
       } else {
         if (_isAlbum) {
           allSongs = <Song>[];
@@ -361,33 +392,21 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           if (mounted) setState(() => _isLoadingAllSongs = false);
           return allSongs;
         }
-        // 写入完整歌单缓存，后续播放可直接复用
         await _cache.write(fullCacheKey, {
           'songs': allSongs.map((s) => s.toCache()).toList(),
         });
       }
-
       if (!mounted || shouldCancel?.call() == true) {
         if (mounted) setState(() => _isLoadingAllSongs = false);
         return allSongs;
       }
-      setState(() {
-        // 增量追加：保留已有歌曲，仅追加尚未加载的歌曲，
-        // 避免先清空再重建列表导致滚动位置被强制重置。
-        final existingHashes = _songs.map((s) => s.hash).toSet();
-        for (final song in allSongs) {
-          if (song.hash.isNotEmpty && !existingHashes.contains(song.hash)) {
-            _songs.add(song);
-            existingHashes.add(song.hash);
-          }
-        }
-        _songsVersion++;
-        _allSongsLoaded = true;
-        _hasMore = false;
-        _isLoadingAllSongs = false;
-      });
+      applySongs(allSongs);
       return allSongs;
     } catch (_) {
+      if (cachedSongs != null && mounted && shouldCancel?.call() != true) {
+        applySongs(cachedSongs);
+        return cachedSongs;
+      }
       if (mounted) setState(() => _isLoadingAllSongs = false);
       return List<Song>.of(_songs);
     }

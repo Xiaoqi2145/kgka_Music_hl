@@ -30,6 +30,7 @@ class AuthController extends ChangeNotifier {
   LoginSession? session;
   UserProfile? profile;
   List<PlaylistSummary> playlists = const [];
+  Future<void> Function()? onLogout;
 
   final Set<String> _likedHashes = {};
 
@@ -154,18 +155,21 @@ class AuthController extends ChangeNotifier {
     if (listId == null) return;
     await _run(() async {
       await _api.deletePlaylist(listId);
+      await _invalidatePlaylistCache(target);
       playlists = await _loadUserPlaylistsWithCache();
       await _syncLikedSongs();
     });
   }
 
   Future<void> addSongToPlaylist(PlaylistSummary playlist, Song song) async {
-    final listId = _playlistListId(playlist);
+    final target = findUserPlaylist(playlist) ?? playlist;
+    final listId = _playlistListId(target);
     if (listId == null) return;
     await _run(() async {
       await _api.addToPlaylist(listId, song);
+      await _invalidatePlaylistCache(target);
       playlists = await _loadUserPlaylistsWithCache();
-      if (playlist.isLikedPlaylist) {
+      if (target.isLikedPlaylist) {
         _likedHashes.add(song.hash);
         await _persistLikedHashes();
       }
@@ -181,6 +185,7 @@ class AuthController extends ChangeNotifier {
     if (listId == null) return;
     await _run(() async {
       await _api.removeFromPlaylist(listId, song);
+      await _invalidatePlaylistCache(target);
       playlists = await _loadUserPlaylistsWithCache();
       if (target.isLikedPlaylist) {
         _likedHashes.remove(song.hash);
@@ -441,6 +446,26 @@ class AuthController extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> _invalidatePlaylistCache(PlaylistSummary playlist) async {
+    final ids = <String>{
+      playlist.id,
+      if (playlist.listId?.isNotEmpty == true) playlist.listId!,
+      if (playlist.sourceGlobalId?.isNotEmpty == true) playlist.sourceGlobalId!,
+      if (playlist.albumId?.isNotEmpty == true) playlist.albumId!,
+    };
+    for (final id in ids.where((value) => value.isNotEmpty)) {
+      try {
+        await _cacheService.remove('cache_playlist_$id');
+        await _cacheService.remove('cache_playlist_${id}_full');
+        await _cacheService.remove('cache_album_$id');
+        await _cacheService.remove('cache_album_${id}_full');
+      } catch (_) {
+        // A cache invalidation failure must not turn a successful API mutation
+        // into a reported mutation failure.
+      }
+    }
+  }
+
   Future<List<PlaylistSummary>> _loadUserPlaylistsWithCache() async {
     final prefs = await SharedPreferences.getInstance();
     final fetched = await _api.userPlaylists(pageSize: 100);
@@ -531,6 +556,7 @@ class AuthController extends ChangeNotifier {
       'cache_user_playlists_${session?.userId ?? 'default'}';
 
   Future<void> _clearSession() async {
+    await onLogout?.call();
     final prefs = await SharedPreferences.getInstance();
     session = null;
     profile = null;

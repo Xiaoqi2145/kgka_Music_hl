@@ -48,6 +48,14 @@ class TransitionCoordinator {
 
   void invalidateWork() => requestRevision++;
 
+  void reset() {
+    committedEntry = null;
+    seekRevision++;
+    requestRevision++;
+    intentRevision++;
+    _completionConsumed = false;
+  }
+
   void seek() {
     seekRevision++;
     invalidateWork();

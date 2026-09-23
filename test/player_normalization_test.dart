@@ -112,10 +112,13 @@ class _Handler implements MusicAudioHandler {
   int removals = 0;
   Completer<void>? loadGate;
   bool failLoad = false;
+
   /// 原生替换次数（模拟真实 handler 里"暂停 + setAudioSources"的原子操作）。
   int replacements = 0;
+
   /// 每次原生替换发生时的已提交条目，用于校验不变量 1。
   final commitAtReplace = <int?>[];
+
   /// 按歌曲 hash 持续失败，用于替换失败回滚测试。
   final Set<String> failingHashes = <String>{};
   @override
@@ -836,39 +839,45 @@ void main() {
     loudness: LoudnessData(lufs: -8),
   );
 
-  test('a second tap while the first is resolving commits only the newest', () async {
-    await setup();
-    final entry = controller.currentEntryId;
-    final gate = Completer<PlayUrl>();
-    api.responses['B'] = gate;
-    final first = controller.playSong(b, queue: [song, b, c]);
-    await drain();
-    // 第一次点击仍在 resolve：播放器没有被暂停，也没有被替换。
-    expect(handler.audioPlayer.playing, isTrue);
-    expect(handler.replacements, 1, reason: '只有 setup 那次原生替换');
-    expect(handler.loads, [song]);
-    expect(controller.currentEntryId, entry);
-    expect(controller.isPreparingSong(b), isTrue);
+  test(
+    'a second tap while the first is resolving commits only the newest',
+    () async {
+      await setup();
+      final entry = controller.currentEntryId;
+      final gate = Completer<PlayUrl>();
+      api.responses['B'] = gate;
+      final first = controller.playSong(b, queue: [song, b, c]);
+      await drain();
+      // 第一次点击仍在 resolve：播放器没有被暂停，也没有被替换。
+      expect(handler.audioPlayer.playing, isTrue);
+      expect(handler.replacements, 1, reason: '只有 setup 那次原生替换');
+      expect(handler.loads, [song]);
+      expect(controller.currentEntryId, entry);
+      expect(controller.isPreparingSong(b), isTrue);
 
-    final second = controller.playSong(c, queue: [song, b, c]);
-    await second;
-    await drain();
-    expect(controller.currentSong, c);
-    expect(handler.loads, [song, c]);
-    expect(handler.replacements, 2);
-    expect(controller.isPreparing, isFalse);
+      final second = controller.playSong(c, queue: [song, b, c]);
+      await second;
+      await drain();
+      expect(controller.currentSong, c);
+      expect(handler.loads, [song, c]);
+      expect(handler.replacements, 2);
+      expect(controller.isPreparing, isFalse);
 
-    // 过期的第一次点击恢复后必须在 cp1 退出：不提交、不碰播放器。
-    gate.complete(urlFor('B'));
-    await first;
-    await drain();
-    expect(controller.currentSong, c);
-    expect(handler.loads, [song, c], reason: '被取代的点击不再执行原生替换');
-    expect(handler.replacements, 2);
-    expect(handler.media, [song, c]);
-    expect(api.requests.where((s) => s == 'B'), hasLength(1),
-        reason: '被取代的点击不会重复请求');
-  });
+      // 过期的第一次点击恢复后必须在 cp1 退出：不提交、不碰播放器。
+      gate.complete(urlFor('B'));
+      await first;
+      await drain();
+      expect(controller.currentSong, c);
+      expect(handler.loads, [song, c], reason: '被取代的点击不再执行原生替换');
+      expect(handler.replacements, 2);
+      expect(handler.media, [song, c]);
+      expect(
+        api.requests.where((s) => s == 'B'),
+        hasLength(1),
+        reason: '被取代的点击不会重复请求',
+      );
+    },
+  );
 
   test('rapid taps A to B to C commit only C once', () async {
     await setup();
@@ -898,29 +907,32 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('a failed replace rolls back to the previous entry and its position', () async {
-    await setup();
-    handler.audioPlayer.emitNative(
-      ProcessingState.ready,
-      position: const Duration(seconds: 42),
-    );
-    await drain();
-    expect(controller.position, const Duration(seconds: 42));
-    final entry = controller.currentEntryId;
-    handler.failingHashes.add('B');
+  test(
+    'a failed replace rolls back to the previous entry and its position',
+    () async {
+      await setup();
+      handler.audioPlayer.emitNative(
+        ProcessingState.ready,
+        position: const Duration(seconds: 42),
+      );
+      await drain();
+      expect(controller.position, const Duration(seconds: 42));
+      final entry = controller.currentEntryId;
+      handler.failingHashes.add('B');
 
-    await controller.playSong(b, queue: [song, b, c]);
-    await drain();
-    // 回滚：重新加载上一有效条目并恢复进度，错误可见且不自动重试。
-    expect(controller.errorMessage, isNotNull);
-    expect(controller.currentSong, song);
-    expect(controller.position, const Duration(seconds: 42));
-    expect(handler.loads, [song, song]);
-    expect(handler.media, [song, song]);
-    expect(handler.audioPlayer.playing, isTrue);
-    expect(controller.currentEntryId, isNot(entry));
-    expect(handler.failingHashes, hasLength(1));
-  });
+      await controller.playSong(b, queue: [song, b, c]);
+      await drain();
+      // 回滚：重新加载上一有效条目并恢复进度，错误可见且不自动重试。
+      expect(controller.errorMessage, isNotNull);
+      expect(controller.currentSong, song);
+      expect(controller.position, const Duration(seconds: 42));
+      expect(handler.loads, [song, song]);
+      expect(handler.media, [song, song]);
+      expect(handler.audioPlayer.playing, isTrue);
+      expect(controller.currentEntryId, isNot(entry));
+      expect(handler.failingHashes, hasLength(1));
+    },
+  );
 
   test('tapping the playing song from another queue reloads it', () async {
     await setup();
@@ -937,26 +949,29 @@ void main() {
     expect(controller.errorMessage, isNull);
   });
 
-  test('a queue refresh during a pending resolve keeps the tap alive', () async {
-    await setup();
-    final gate = Completer<PlayUrl>();
-    api.responses['B'] = gate;
-    final pending = controller.playSong(b, queue: [song, b, c]);
-    await drain();
-    // 歌单页打开后会在后台补拉整张歌单并 replaceQueue；
-    // 这只是队列上下文刷新，绝不能吞掉用户刚发出的点击。
-    await controller.replaceQueue([song, b, c, d]);
-    await drain();
-    gate.complete(urlFor('B'));
-    await pending;
-    await drain();
-    expect(controller.currentSong, b);
-    expect(controller.isPreparing, isFalse);
-    expect(controller.errorMessage, isNull);
-    expect(handler.loads, [song, b]);
-    expect(handler.replacements, 2);
-    expect(handler.audioPlayer.playing, isTrue);
-  });
+  test(
+    'a queue refresh during a pending resolve keeps the tap alive',
+    () async {
+      await setup();
+      final gate = Completer<PlayUrl>();
+      api.responses['B'] = gate;
+      final pending = controller.playSong(b, queue: [song, b, c]);
+      await drain();
+      // 歌单页打开后会在后台补拉整张歌单并 replaceQueue；
+      // 这只是队列上下文刷新，绝不能吞掉用户刚发出的点击。
+      await controller.replaceQueue([song, b, c, d]);
+      await drain();
+      gate.complete(urlFor('B'));
+      await pending;
+      await drain();
+      expect(controller.currentSong, b);
+      expect(controller.isPreparing, isFalse);
+      expect(controller.errorMessage, isNull);
+      expect(handler.loads, [song, b]);
+      expect(handler.replacements, 2);
+      expect(handler.audioPlayer.playing, isTrue);
+    },
+  );
 
   test('a queue edit that drops the pending song cancels that load', () async {
     await setup();

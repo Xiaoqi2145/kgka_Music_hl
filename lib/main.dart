@@ -99,11 +99,18 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _player = PlayerController(_api, widget.audioHandler)
       ..downloadController = _downloads
       ..cacheService = _cacheService;
+    _auth.onLogout = _player.clearSessionForLogout;
     // 接续上次退出时的播放会话（队列 + 当前歌曲 + 进度，不自动播放）。
     unawaited(_player.restorePlaybackSession());
     _theme = widget.themeController;
     _auth.restore();
-    _downloads.initialize();
+    unawaited(
+      _downloads.initialize().catchError((Object error) {
+        debugPrint(
+          '[KA Music][cache] download index initialization failed: $error',
+        );
+      }),
+    );
     // 加载缩略图缓存上限并扫描一次缓存目录，超额时按 LRU 淘汰。
     unawaited(ArtworkCacheService.instance.initialize());
     _orientationPolicyReady = true;

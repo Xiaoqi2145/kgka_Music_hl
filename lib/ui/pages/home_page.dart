@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../config/app_config.dart';
@@ -38,22 +40,35 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static _HomeData? _cachedData;
+  static String? _cachedDataOwner;
 
   Future<_HomeData>? _future;
+  late int _observedCacheClearGeneration;
+  late String _activeCacheOwner;
+  var _cacheRestorePending = false;
   var _sectionIndex = 0;
+
+  String get _currentCacheOwner =>
+      widget.auth.session?.userId?.isNotEmpty == true
+      ? widget.auth.session!.userId!
+      : 'anonymous';
+
+  String _cacheKeyForOwner(String owner) =>
+      owner == 'anonymous' ? 'cache_home' : 'cache_user_home_$owner';
 
   @override
   void initState() {
     super.initState();
-    final cached = _cachedData;
+    _observedCacheClearGeneration = widget.cache.clearGeneration;
+    _activeCacheOwner = _currentCacheOwner;
+    widget.cache.addListener(_handleCacheChange);
+    final cached = _cachedDataOwner == _activeCacheOwner ? _cachedData : null;
     if (cached != null) {
       _future = Future.value(cached);
-      // 有缓存数据，立即显示并后台静默刷新
       _silentRefresh();
-    } else if (!widget.auth.isRestoring) {
-      _future = _load();
     } else {
-      _tryRestoreFromCache();
+      _cacheRestorePending = true;
+      _tryRestoreFromCache(owner: _activeCacheOwner);
     }
     widget.auth.addListener(_handleAuthChanged);
   }
@@ -61,93 +76,124 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     widget.auth.removeListener(_handleAuthChanged);
+    widget.cache.removeListener(_handleCacheChange);
     super.dispose();
   }
 
+  void _handleCacheChange() {
+    final generation = widget.cache.clearGeneration;
+    if (generation == _observedCacheClearGeneration) return;
+    _observedCacheClearGeneration = generation;
+    _cachedData = null;
+    _cachedDataOwner = null;
+    if (!mounted) return;
+    setState(() => _future = null);
+  }
+
   void _handleAuthChanged() {
-    if (widget.auth.isRestoring || !widget.auth.isLoggedIn) {
+    if (widget.auth.isRestoring) return;
+    final owner = _currentCacheOwner;
+    if (owner != _activeCacheOwner) {
+      _activeCacheOwner = owner;
+      _future = null;
+      if (_cachedDataOwner != owner) _cachedData = null;
+      _cacheRestorePending = true;
+      _tryRestoreFromCache(owner: owner);
       return;
     }
-    // 首次加载（无缓存）或 auth 恢复完成后触发加载
+    if (!widget.auth.isLoggedIn || _cacheRestorePending) return;
     if (_future == null) {
-      setState(() {
-        _future = _load();
-      });
+      setState(() => _future = _load());
     }
   }
 
-  /// 后台静默刷新首页数据。
-  ///
-  /// 先从缓存显示（已在 initState/_tryRestoreFromCache 中完成），
-  /// 然后后台请求最新数据，成功后更新 UI，失败则保持缓存数据。
+  /// 后台静默刷新首页数据，统一通过 CacheService 的 SWR 语义执行。
   Future<void> _silentRefresh() async {
     try {
-      final results = await Future.wait([
-        widget.api.dailyRecommend(),
-        widget.api.recommendedPlaylists(),
-        widget.api.albumShop(),
-      ]);
-      if (!mounted) return;
-      final data = _HomeData(
-        daily: results[0] as DailyRecommend,
-        playlists: results[1] as List<PlaylistSummary>,
-        albums: results[2] as List<AlbumShopItem>,
-      );
-      _cachedData = data;
-      await widget.cache.write('cache_home', {
+      await _loadHomeSWR(updateUi: true);
+    } catch (_) {
+      // 静默刷新失败，保持缓存数据不变。
+    }
+  }
+
+  Future<_HomeData> _load() => _loadHomeSWR(forceRefresh: true);
+
+  Future<_HomeData> _loadHomeSWR({
+    bool forceRefresh = false,
+    bool updateUi = false,
+  }) async {
+    final owner = _activeCacheOwner;
+    final completion = Completer<_HomeData>();
+    await widget.cache.swr<_HomeData>(
+      key: _cacheKeyForOwner(owner),
+      ttl: AppConfig.homeCacheTtl,
+      fetch: () async {
+        final results = await Future.wait([
+          widget.api.dailyRecommend(),
+          widget.api.recommendedPlaylists(),
+          widget.api.albumShop(),
+        ]);
+        if (owner != _currentCacheOwner) {
+          throw StateError('Homepage cache owner changed during refresh');
+        }
+        return _HomeData(
+          daily: results[0] as DailyRecommend,
+          playlists: results[1] as List<PlaylistSummary>,
+          albums: results[2] as List<AlbumShopItem>,
+        );
+      },
+      decode: _homeDataFromCache,
+      encode: (data) => {
         'daily': data.daily.toCache(),
         'playlists': data.playlists.map((p) => p.toCache()).toList(),
         'albums': data.albums.map((a) => a.toCache()).toList(),
-      });
-      if (!mounted) return;
-      setState(() {
-        _future = Future.value(data);
-      });
+      },
+      onData: (data) {
+        if (owner != _currentCacheOwner) {
+          if (!completion.isCompleted) {
+            completion.completeError(
+              StateError('Homepage cache owner changed during refresh'),
+            );
+          }
+          return;
+        }
+        _cachedData = data;
+        _cachedDataOwner = owner;
+        if (!completion.isCompleted) completion.complete(data);
+        if (updateUi && mounted) {
+          setState(() => _future = Future.value(data));
+        }
+      },
+      onError: (error) {
+        if (!completion.isCompleted) completion.completeError(error);
+      },
+      forceRefresh: forceRefresh,
+    );
+    return completion.future;
+  }
+
+  Future<void> _tryRestoreFromCache({required String owner}) async {
+    CacheResult<Map<String, dynamic>>? cached;
+    try {
+      cached = await widget.cache.read<Map<String, dynamic>>(
+        _cacheKeyForOwner(owner),
+        decode: (json) => json,
+        ttl: AppConfig.homeCacheTtl,
+      );
     } catch (_) {
-      // 静默刷新失败，保持缓存数据不变
+      cached = null;
     }
-  }
-
-  Future<_HomeData> _load() async {
-    final results = await Future.wait([
-      widget.api.dailyRecommend(),
-      widget.api.recommendedPlaylists(),
-      widget.api.albumShop(),
-    ]);
-    final data = _HomeData(
-      daily: results[0] as DailyRecommend,
-      playlists: results[1] as List<PlaylistSummary>,
-      albums: results[2] as List<AlbumShopItem>,
-    );
-    _cachedData = data;
-    await widget.cache.write('cache_home', {
-      'daily': data.daily.toCache(),
-      'playlists': data.playlists.map((p) => p.toCache()).toList(),
-      'albums': data.albums.map((a) => a.toCache()).toList(),
-    });
-    return data;
-  }
-
-  Future<void> _tryRestoreFromCache() async {
-    final cached = await widget.cache.read<Map<String, dynamic>>(
-      'cache_home',
-      decode: (json) => json,
-      ttl: AppConfig.homeCacheTtl,
-    );
-    if (!mounted || _future != null) return;
+    if (owner != _activeCacheOwner || !mounted) return;
+    _cacheRestorePending = false;
+    if (_future != null) return;
     if (cached != null) {
       final data = _homeDataFromCache(cached.data);
       _cachedData = data;
-      setState(() {
-        _future = Future.value(data);
-      });
-      // 缓存数据已显示，后台静默刷新
+      _cachedDataOwner = owner;
+      setState(() => _future = Future.value(data));
       _silentRefresh();
     } else {
-      // 无缓存数据，直接从网络加载
-      setState(() {
-        _future = _load();
-      });
+      setState(() => _future = _load());
     }
   }
 
