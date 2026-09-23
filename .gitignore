@@ -46,3 +46,8 @@ app.*.map.json
 
 # Local diagnostics (device logs, debug evidence, fix notes)
 /diagnostics/
+
+# Local tool state (flutter tool markers, agent workspace)
+/.flutter
+/.flutter_tool_state
+/.workbuddy-ai/
