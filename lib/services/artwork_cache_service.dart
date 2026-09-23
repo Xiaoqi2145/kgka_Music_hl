@@ -93,9 +93,18 @@ class ArtworkCacheService {
     var total = 0;
     var count = 0;
     await for (final entity in directory.list()) {
-      if (entity is! File || !entity.path.endsWith('.img')) continue;
-      total += await entity.length();
-      count++;
+      if (entity is! File) continue;
+      if (entity.path.endsWith('.img')) {
+        total += await entity.length();
+        count++;
+      } else if (entity.path.endsWith('.part')) {
+        try {
+          final age = DateTime.now().difference(await entity.lastModified());
+          if (age > const Duration(days: 1)) await entity.delete();
+        } catch (_) {
+          // Ignore a partial file concurrently removed by another operation.
+        }
+      }
     }
     _totalBytes = total;
     _entryCount = count;
@@ -113,7 +122,12 @@ class ArtworkCacheService {
     if (existing != null) return existing;
     final future = _loadTracked(url);
     _pending[url] = future;
-    unawaited(future.whenComplete(() => _pending.remove(url)));
+    unawaited(
+      future.then<void>(
+        (_) => _pending.remove(url),
+        onError: (Object _, StackTrace _) => _pending.remove(url),
+      ),
+    );
     return future;
   }
 
@@ -131,10 +145,24 @@ class ArtworkCacheService {
       _totalBytes += await downloaded.length();
       _entryCount++;
       await _enforceLimit();
-      return downloaded;
+      return await downloaded.exists() ? downloaded : null;
     } catch (_) {
       // 缓存读写异常不应影响界面渲染，降级为占位图。
       return null;
+    }
+  }
+
+  Future<void> invalidate(String url) async {
+    try {
+      await _ensureLoaded();
+      final file = await _fileFor(url);
+      if (!await file.exists()) return;
+      final size = await file.length();
+      await file.delete();
+      _totalBytes = _totalBytes > size ? _totalBytes - size : 0;
+      _entryCount = _entryCount > 0 ? _entryCount - 1 : 0;
+    } catch (_) {
+      // Cache invalidation is best-effort; callers can still show a fallback.
     }
   }
 
@@ -216,7 +244,6 @@ class ArtworkCacheService {
   Future<void> _prune() async {
     final directory = await _getDirectory();
     final entries = <ArtworkCacheEntry>[];
-    var total = 0;
     await for (final entity in directory.list()) {
       if (entity is! File || !entity.path.endsWith('.img')) continue;
       try {
@@ -228,7 +255,6 @@ class ArtworkCacheService {
             accessedAt: await entity.lastModified(),
           ),
         );
-        total += size;
       } catch (_) {
         // 文件在扫描期间被删除，忽略。
       }
@@ -246,9 +272,10 @@ class ArtworkCacheService {
         // 已被删除或占用，跳过。
       }
     }
-    // 以本次扫描结果为准修正计数，避免与并发写入产生漂移。
-    _totalBytes = total - removedBytes;
-    _entryCount = entries.length - removedCount;
+    // Subtract only files deleted by this pass. Downloads may have completed
+    // during the scan and already incremented these live counters.
+    _totalBytes = _totalBytes > removedBytes ? _totalBytes - removedBytes : 0;
+    _entryCount = _entryCount > removedCount ? _entryCount - removedCount : 0;
   }
 
   /// 按最后访问时间升序挑选需要淘汰的条目，直到剩余总量不超过 [maxBytes]。

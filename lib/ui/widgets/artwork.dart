@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -67,8 +68,12 @@ class _ArtworkState extends State<Artwork> {
         ? Image.file(
             file,
             fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) =>
-                _Fallback(icon: widget.icon),
+            errorBuilder: (context, error, stackTrace) {
+              if (imageUrl.isNotEmpty) {
+                unawaited(ArtworkCacheService.instance.invalidate(imageUrl));
+              }
+              return _Fallback(icon: widget.icon);
+            },
           )
         : _Fallback(icon: widget.icon);
 

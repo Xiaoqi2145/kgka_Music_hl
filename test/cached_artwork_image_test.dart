@@ -67,18 +67,16 @@ void main() {
 
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     baseUrl = 'http://127.0.0.1:${server.port}';
-    unawaited(
-      () async {
-        await for (final request in server) {
-          requestCount++;
-          request.response
-            ..statusCode = HttpStatus.ok
-            ..headers.contentType = ContentType('image', 'png')
-            ..add(png);
-          await request.response.close();
-        }
-      }(),
-    );
+    unawaited(() async {
+      await for (final request in server) {
+        requestCount++;
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType('image', 'png')
+          ..add(png);
+        await request.response.close();
+      }
+    }());
   });
 
   tearDownAll(() async {

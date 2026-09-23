@@ -159,6 +159,7 @@ class DownloadService {
 
   Future<String> _executeTask(_PendingTask task) async {
     final key = cacheKeyFor(task.song, task.quality);
+    final taskKey = '${task.kind.name}:$key';
     final fileName = fileNameFor(task.song, task.quality);
     final dir = task.kind == DownloadTaskKind.download
         ? await downloadDir()
@@ -167,8 +168,8 @@ class DownloadService {
     final partPath = '$targetPath.part';
     final partFile = File(partPath);
     final cancelToken = CancelToken();
-    _cancelTokens[key] = cancelToken;
-    _runningTasks[key] = task;
+    _cancelTokens[taskKey] = cancelToken;
+    _runningTasks[taskKey] = task;
 
     try {
       // 断点续传：检查已有 .part 文件大小
@@ -266,25 +267,31 @@ class DownloadService {
       }
       rethrow;
     } finally {
-      _cancelTokens.remove(key);
-      _runningTasks.remove(key);
+      _cancelTokens.remove(taskKey);
+      _runningTasks.remove(taskKey);
     }
   }
 
   /// 取消下载/缓存任务。
   Future<void> cancel(String cacheKey) async {
     final queued = _queue
-        .where((task) => cacheKeyFor(task.song, task.quality) == cacheKey)
+        .where(
+          (task) =>
+              task.kind == DownloadTaskKind.download &&
+              cacheKeyFor(task.song, task.quality) == cacheKey,
+        )
         .toList();
     _queue.removeWhere(
-      (task) => cacheKeyFor(task.song, task.quality) == cacheKey,
+      (task) =>
+          task.kind == DownloadTaskKind.download &&
+          cacheKeyFor(task.song, task.quality) == cacheKey,
     );
     for (final task in queued) {
       if (!task.completer.isCompleted) {
         task.completer.completeError(StateError('download cancelled'));
       }
     }
-    final token = _cancelTokens[cacheKey];
+    final token = _cancelTokens['download:$cacheKey'];
     if (token != null && !token.isCancelled) {
       token.cancel();
     }
@@ -313,8 +320,9 @@ class DownloadService {
       );
       if (part.existsSync()) await part.delete();
     }
-    if (_runningTasks[cacheKey]?.kind == DownloadTaskKind.playCache) {
-      final token = _cancelTokens[cacheKey];
+    final taskKey = 'playCache:$cacheKey';
+    if (_runningTasks[taskKey]?.kind == DownloadTaskKind.playCache) {
+      final token = _cancelTokens[taskKey];
       if (token != null && !token.isCancelled) token.cancel();
     }
   }
@@ -370,6 +378,28 @@ class DownloadService {
     }
   }
 
+  /// 删除启动后不在索引中的音频文件和上次崩溃遗留的分片。
+  Future<void> cleanPlayCacheOrphans(Set<String> indexedPaths) async {
+    final dir = await playCacheDir();
+    await for (final entity in dir.list()) {
+      if (entity is! File) continue;
+      final path = entity.path;
+      final stalePart =
+          path.endsWith('.part') &&
+          DateTime.now().difference(await entity.lastModified()) >
+              const Duration(days: 1);
+      if (stalePart ||
+          ((path.endsWith('.mp3') || path.endsWith('.flac')) &&
+              !indexedPaths.contains(path))) {
+        try {
+          await entity.delete();
+        } catch (_) {
+          // A file may still be held by the platform; leave it for a later pass.
+        }
+      }
+    }
+  }
+
   /// 清空整个播放缓存目录。
   Future<void> clearPlayCacheDir() async {
     final dir = await playCacheDir();
@@ -384,7 +414,7 @@ class DownloadService {
 
   /// LRU 清理播放缓存至 [maxBytes] 以下。
   ///
-  /// [entries] 为当前缓存索引（按 cachedAt 升序排列）。
+  /// [entries] 为当前缓存索引（按最近访问时间升序排列）。
   /// [excludePaths] 中的文件跳过清理（如正在播放的文件）。
   Future<Set<String>> prunePlayCache(
     List<({String cacheKey, String filePath, int size, DateTime cachedAt})>
@@ -397,7 +427,7 @@ class DownloadService {
 
     if (totalSize <= maxBytes) return removed;
 
-    // 按 cachedAt 升序删除最旧条目
+    // 按最近访问时间升序删除最久未使用条目
     final sorted = List.of(entries)
       ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 

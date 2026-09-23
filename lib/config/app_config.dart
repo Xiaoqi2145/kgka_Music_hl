@@ -27,6 +27,9 @@ class AppConfig {
   static const downloadDirName = 'ka_music_downloads';
   static const playCacheDirName = 'ka_music_play_cache';
 
+  /// JSON 数据缓存容量上限（超额后按访问时间淘汰）。
+  static const maxDataCacheBytes = 256 * 1024 * 1024; // 256MB
+
   /// 数据缓存 TTL（分级）
   static const homeCacheTtl = Duration(minutes: 30); // 首页推荐
   static const playlistDetailTtl = Duration(hours: 24); // 歌单/专辑详情

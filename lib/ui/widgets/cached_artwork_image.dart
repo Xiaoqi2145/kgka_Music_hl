@@ -50,11 +50,16 @@ class CachedArtworkImage extends ImageProvider<CachedArtworkImage> {
       PaintingBinding.instance.imageCache.evict(key);
       throw StateError('缩略图获取失败：${key.url}');
     }
-    if (await file.length() == 0) {
+    try {
+      if (await file.length() == 0) {
+        throw StateError('缩略图文件为空：${file.path}');
+      }
+      return await decode(await ui.ImmutableBuffer.fromFilePath(file.path));
+    } catch (_) {
+      await ArtworkCacheService.instance.invalidate(key.url);
       PaintingBinding.instance.imageCache.evict(key);
-      throw StateError('缩略图文件为空：${file.path}');
+      rethrow;
     }
-    return decode(await ui.ImmutableBuffer.fromFilePath(file.path));
   }
 
   @override

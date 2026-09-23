@@ -66,6 +66,7 @@ class PlayCacheEntry {
     required this.filePath,
     required this.size,
     required this.cachedAt,
+    required this.lastAccessedAt,
     this.loudness,
   });
 
@@ -75,6 +76,7 @@ class PlayCacheEntry {
   final String filePath;
   final int size;
   final DateTime cachedAt;
+  final DateTime lastAccessedAt;
   final LoudnessData? loudness;
 }
 
@@ -94,20 +96,33 @@ class DownloadController extends ChangeNotifier {
 
   final Map<String, DownloadEntry> _downloads = {}; // key = hash
   final Map<String, PlayCacheEntry> _playCache = {}; // key = hash_quality
+  String? _activePlayCachePath;
   bool _initialized = false;
+  Future<void>? _initializing;
   Timer? _playCachePersistTimer;
   Future<void>? _playCachePersistFuture;
   int playCacheMaxBytes = AppConfig.defaultPlayCacheMaxBytes;
 
-  /// 启动时加载索引并校验文件存在性。
-  Future<void> initialize() async {
-    if (_initialized) return;
-    _initialized = true;
-    await _loadPlayCacheSettings();
-    await _loadDownloads();
-    await _loadPlayCache();
-    // 启动时 LRU 清理播放缓存
-    await _prunePlayCache(excludePaths: const {});
+  /// 启动时加载索引并校验文件存在性。并发调用共享同一个初始化 Future。
+  Future<void> initialize() {
+    if (_initialized) return Future<void>.value();
+    return _initializing ??= _initialize();
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await _loadPlayCacheSettings();
+      await _loadDownloads();
+      await _loadPlayCache();
+      await _service.cleanPlayCacheOrphans(
+        _playCache.values.map((entry) => entry.filePath).toSet(),
+      );
+      await _prunePlayCache(excludePaths: const {});
+      _initialized = true;
+    } finally {
+      _initializing = null;
+      notifyListeners();
+    }
   }
 
   Future<void> _loadPlayCacheSettings() async {
@@ -132,28 +147,31 @@ class DownloadController extends ChangeNotifier {
       final list = jsonDecode(raw);
       if (list is! List) return;
       for (final item in list.whereType<Map<String, dynamic>>()) {
-        final song = Song.fromCache(
-          (item['song'] as Map).cast<String, dynamic>(),
-        );
-        final quality = AudioQuality.fromApiValue(item['quality'] as String?);
-        final filePath = item['filePath'] as String?;
-        if (filePath == null) continue;
-        // 校验文件存在性
-        if (!await _service.fileSize(filePath).then((s) => s > 0)) continue;
-        final downloadedAtStr = item['downloadedAt'] as String?;
-        final loudnessJson = item['loudness'];
-        _downloads[song.hash] = DownloadEntry(
-          song: song,
-          quality: quality,
-          status: DownloadStatus.downloaded,
-          filePath: filePath,
-          downloadedAt: downloadedAtStr != null
-              ? DateTime.tryParse(downloadedAtStr)
-              : null,
-          loudness: loudnessJson is Map
-              ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
-              : null,
-        );
+        try {
+          final songJson = item['song'];
+          if (songJson is! Map) continue;
+          final song = Song.fromCache(songJson.cast<String, dynamic>());
+          final quality = AudioQuality.fromApiValue(item['quality'] as String?);
+          final filePath = item['filePath'] as String?;
+          if (song.hash.isEmpty || filePath == null) continue;
+          if (await _service.fileSize(filePath) <= 0) continue;
+          final downloadedAtStr = item['downloadedAt'] as String?;
+          final loudnessJson = item['loudness'];
+          _downloads[song.hash] = DownloadEntry(
+            song: song,
+            quality: quality,
+            status: DownloadStatus.downloaded,
+            filePath: filePath,
+            downloadedAt: downloadedAtStr != null
+                ? DateTime.tryParse(downloadedAtStr)
+                : null,
+            loudness: loudnessJson is Map
+                ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
+                : null,
+          );
+        } catch (_) {
+          // Skip a malformed row without losing the remaining download index.
+        }
       }
     } catch (_) {}
   }
@@ -166,31 +184,48 @@ class DownloadController extends ChangeNotifier {
       final list = jsonDecode(raw);
       if (list is! List) return;
       for (final item in list.whereType<Map<String, dynamic>>()) {
-        final cacheKey = item['cacheKey'] as String? ?? '';
-        final filePath = item['filePath'] as String?;
-        if (filePath == null) continue;
-        // 校验文件存在性
-        final size = await _service.fileSize(filePath);
-        if (size == 0) continue;
-        final song = Song.fromCache(
-          (item['song'] as Map).cast<String, dynamic>(),
-        );
-        final quality = AudioQuality.fromApiValue(item['quality'] as String?);
-        final cachedAtStr = item['cachedAt'] as String?;
-        final loudnessJson = item['loudness'];
-        _playCache[cacheKey] = PlayCacheEntry(
-          cacheKey: cacheKey,
-          song: song,
-          quality: quality,
-          filePath: filePath,
-          size: size,
-          cachedAt: cachedAtStr != null
-              ? DateTime.tryParse(cachedAtStr) ?? DateTime.now()
-              : DateTime.now(),
-          loudness: loudnessJson is Map
-              ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
-              : null,
-        );
+        try {
+          final cacheKey = item['cacheKey'] as String? ?? '';
+          final filePath = item['filePath'] as String?;
+          final songJson = item['song'];
+          if (cacheKey.isEmpty || filePath == null || songJson is! Map) {
+            continue;
+          }
+          final size = await _service.fileSize(filePath);
+          if (size == 0) continue;
+          final song = Song.fromCache(songJson.cast<String, dynamic>());
+          if (song.hash.isEmpty ||
+              _service.cacheKeyFor(
+                    song,
+                    AudioQuality.fromApiValue(item['quality'] as String?),
+                  ) !=
+                  cacheKey) {
+            continue;
+          }
+          final quality = AudioQuality.fromApiValue(item['quality'] as String?);
+          final cachedAtStr = item['cachedAt'] as String?;
+          final loudnessJson = item['loudness'];
+          _playCache[cacheKey] = PlayCacheEntry(
+            cacheKey: cacheKey,
+            song: song,
+            quality: quality,
+            filePath: filePath,
+            size: size,
+            cachedAt: cachedAtStr != null
+                ? DateTime.tryParse(cachedAtStr) ?? DateTime.now()
+                : DateTime.now(),
+            lastAccessedAt:
+                DateTime.tryParse(item['lastAccessedAt'] as String? ?? '') ??
+                (cachedAtStr != null
+                    ? DateTime.tryParse(cachedAtStr) ?? DateTime.now()
+                    : DateTime.now()),
+            loudness: loudnessJson is Map
+                ? LoudnessData.fromJson(loudnessJson.cast<String, dynamic>())
+                : null,
+          );
+        } catch (_) {
+          // Skip a malformed row without losing the remaining play-cache index.
+        }
       }
     } catch (_) {}
   }
@@ -223,6 +258,7 @@ class DownloadController extends ChangeNotifier {
             'filePath': e.filePath,
             'size': e.size,
             'cachedAt': e.cachedAt.toIso8601String(),
+            'lastAccessedAt': e.lastAccessedAt.toIso8601String(),
             if (e.loudness != null) 'loudness': e.loudness!.toJson(),
           },
         )
@@ -239,6 +275,7 @@ class DownloadController extends ChangeNotifier {
   }
 
   Future<void> flush() async {
+    await initialize();
     _playCachePersistTimer?.cancel();
     _playCachePersistTimer = null;
     final pending = _playCachePersistFuture;
@@ -261,6 +298,14 @@ class DownloadController extends ChangeNotifier {
     return localSourceFor(song, quality)?.path;
   }
 
+  /// Mark the source currently committed by the player so LRU never deletes it.
+  void setActivePlaybackPath(String? path) {
+    _activePlayCachePath =
+        path != null && _playCache.values.any((entry) => entry.filePath == path)
+        ? path
+        : null;
+  }
+
   /// 返回本地音频及其持久化响度元数据，优先级与 [localPathFor] 一致。
   ({String path, LoudnessData? loudness})? localSourceFor(
     Song song,
@@ -277,6 +322,18 @@ class DownloadController extends ChangeNotifier {
     // 其次播放缓存
     final cache = _playCache[key];
     if (cache != null) {
+      final now = DateTime.now();
+      _playCache[key] = PlayCacheEntry(
+        cacheKey: cache.cacheKey,
+        song: cache.song,
+        quality: cache.quality,
+        filePath: cache.filePath,
+        size: cache.size,
+        cachedAt: cache.cachedAt,
+        lastAccessedAt: now,
+        loudness: cache.loudness,
+      );
+      _schedulePlayCachePersist();
       return (path: cache.filePath, loudness: cache.loudness);
     }
     return null;
@@ -419,21 +476,30 @@ class DownloadController extends ChangeNotifier {
     // 已有缓存或已在下载则跳过
     final existing = _playCache[key];
     if (existing != null) {
-      if (existing.loudness == null && loudness?.canNormalize == true) {
-        _playCache[key] = PlayCacheEntry(
-          cacheKey: existing.cacheKey,
-          song: existing.song,
-          quality: existing.quality,
-          filePath: existing.filePath,
-          size: existing.size,
-          cachedAt: existing.cachedAt,
-          loudness: loudness,
-        );
-        _schedulePlayCachePersist();
-      }
+      final now = DateTime.now();
+      _playCache[key] = PlayCacheEntry(
+        cacheKey: existing.cacheKey,
+        song: existing.song,
+        quality: existing.quality,
+        filePath: existing.filePath,
+        size: existing.size,
+        cachedAt: existing.cachedAt,
+        lastAccessedAt: now,
+        loudness:
+            existing.loudness ??
+            (loudness?.canNormalize == true ? loudness : null),
+      );
+      _activePlayCachePath = existing.filePath;
+      _schedulePlayCachePersist();
       return;
     }
-    if (_downloads[song.hash]?.status == DownloadStatus.downloading) return;
+    final download = _downloads[song.hash];
+    if (download?.status == DownloadStatus.downloading) return;
+    if (download?.status == DownloadStatus.downloaded &&
+        download?.filePath != null &&
+        _service.cacheKeyFor(download!.song, download.quality) == key) {
+      return;
+    }
 
     try {
       final path = await _service.cacheForPlayback(
@@ -449,6 +515,7 @@ class DownloadController extends ChangeNotifier {
         filePath: path,
         size: size,
         cachedAt: DateTime.now(),
+        lastAccessedAt: DateTime.now(),
         loudness: loudness,
       );
       notifyListeners();
@@ -486,6 +553,7 @@ class DownloadController extends ChangeNotifier {
       filePath: cache.filePath,
       size: cache.size,
       cachedAt: cache.cachedAt,
+      lastAccessedAt: cache.lastAccessedAt,
       loudness: loudness,
     );
     _schedulePlayCachePersist();
@@ -550,15 +618,16 @@ class DownloadController extends ChangeNotifier {
                 cacheKey: e.cacheKey,
                 filePath: e.filePath,
                 size: e.size,
-                cachedAt: e.cachedAt,
+                cachedAt: e.lastAccessedAt,
               ),
             )
             .toList()
           ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 
+    final protected = <String>{...excludePaths, ?_activePlayCachePath};
     final removed = await _service.prunePlayCache(
       entries,
-      excludePaths: excludePaths,
+      excludePaths: protected,
       maxBytes: playCacheMaxBytes,
     );
 
