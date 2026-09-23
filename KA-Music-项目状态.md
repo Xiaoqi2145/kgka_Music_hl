@@ -1,10 +1,13 @@
 # KA Music - 项目状态记录
 
 > 保存时间：2026-09-08
+> **校订：2026-09-21**（本轮逐项与代码复核，正文事实仍成立；已修正 §4.1 用例数、§6 文件树缺失项、§4.3 ABI 结论）
 > 项目路径：E:\Project\Codex\Project\KAmusic
 > Flutter 版本：3.44.4（D:\SDK\Flutter）
 > Android SDK：37（D:\SDK\Android）
 > JDK：21（D:\SDK\Java\jdk-21）
+
+> ⚠️ **本文档是 2026-09-08 的快照**，记录的是「音量均衡 + 缩略图缓存」两个特性的实现状态，**不是全项目状态**。09-08 之后的变更见 `update.md` 的「开发分支变更」段与 `docx/` 知识库；其中与本快照直接相关的是：**网易云音源已移除（仅保留酷狗 + 本地）**。
 
 ---
 
@@ -153,7 +156,7 @@ double? computeGainLinear(LoudnessData? data) {
 
 ### 4.1 API 响度数据透传
 
-App 侧已完整解析并接入 LUFS 数据：`PlayUrl.fromJson` → `LoudnessData.fromJson` 读取 `volume`/`volume_gain`/`volume_peak`；增益计算、双路径策略、Native `LoudnessEnhancer` 及单测均已完成（`volume_normalization_service_test.dart`、`playback_loudness_test.dart`、`player_normalization_test.dart` 共 18 例全通过）。
+App 侧已完整解析并接入 LUFS 数据：`PlayUrl.fromJson` → `LoudnessData.fromJson` 读取 `volume`/`volume_gain`/`volume_peak`；增益计算、双路径策略、Native `LoudnessEnhancer` 及单测均已完成（`volume_normalization_service_test.dart` 8 例、`playback_loudness_test.dart` 9 例、`player_normalization_test.dart` 32 例，**合计 49 例**；09-08 时记录的 18 例为当时的规模，此后 `player_normalization_test.dart` 已大幅扩充）。
 
 唯一剩余的验证点在后端：`/song/url`（及 `/user/cloud/url`）响应是否真的透传了酷狗的 `volume`/`volume_gain`/`volume_peak`。若后端未返回，`LoudnessData.lufs` 为 null、`canNormalize` 为 false，音量均衡会静默旁路（gain=1.0），不影响正常播放。运行时确认（Flutter 日志走 logcat 的 `flutter` tag）：
 
@@ -173,7 +176,7 @@ adb logcat | grep -iE "loudness|VolumeNorm"
 ### 4.3 Android 构建
 
 - 构建时提示 `file_picker` 插件使用 Kotlin Gradle Plugin（KGP），未来 Flutter 版本可能不兼容
-- 当前仅构建 `arm64-v8a` ABI
+- 构建脚本声明 `abiFilters += listOf("arm64-v8a")`，但 **2026-09-21 复核确认该声明未在产物中生效**：实测 release APK 同时含 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三套 `.so`（61 543 537 字节）。若确需单 ABI，须在命令侧加 `--target-platform android-arm64` 或 `--split-per-abi`。详见 `docx/06-质量保障/已知问题与技术债台账.md` TD-44
 
 ### 4.4 音量均衡增强
 
@@ -236,6 +239,7 @@ lib/
 │   ├── playback_history_service.dart
 │   ├── playback_stats_service.dart
 │   ├── search_history_service.dart
+│   ├── transition_coordinator.dart  # 新增（09-10）：播放实例标识与租约代际
 │   ├── vip_background_task.dart
 │   └── volume_normalization_service.dart  # 新增：音量均衡核心
 └── ui/

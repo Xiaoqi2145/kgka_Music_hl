@@ -156,7 +156,7 @@
 | `theme` / `darkTheme` | `AppTheme.light/dark(seedColor: _theme.seedColor, transparentBackground: _theme.backgroundEnabled)` | 背景图开启时启用透明页面转场 |
 | `builder` | `_AppBackground(themeController: _theme, child: _SystemUiOverlay(child))` | 背景层包住全部页面 |
 
-`AppTheme._theme` 的种子色用法：`ColorScheme.fromSeed(seedColor)`，深色下 `primary = _lighten(seedColor, 0.18)`，`secondary` 固定 `musicRed`，`tertiary` 固定 `0xFF24C768`（`app_theme.dart:50-73`）。`transparentBackground = true` 时替换 `pageTransitionsTheme` 为透明快照的转场集合（`app_theme.dart:7-30`、:78-80`）。
+`AppTheme._theme` 的种子色用法：`ColorScheme.fromSeed(seedColor)`，深色下 `primary = _lighten(seedColor, 0.18)`，`secondary` 固定 `musicRed`，`tertiary` 固定 `0xFF24C768`（`app_theme.dart:50-73`）。`transparentBackground = true` 时替换 `pageTransitionsTheme` 为透明快照的转场集合（`app_theme.dart:7-30`、`:78-80`）。
 
 `_AppBackground`（`main.dart:186-315`）的渲染契约：
 

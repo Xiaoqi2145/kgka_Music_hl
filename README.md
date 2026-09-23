@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Flutter-3.11+-02569B?logo=flutter&logoColor=white" alt="Flutter" />
-  <img src="https://img.shields.io/badge/Dart-3.11+-0175C2?logo=dart&logoColor=white" alt="Dart" />
-  <img src="https://img.shields.io/badge/Version-2.0.5-4CAF50" alt="Version" />
+  <img src="https://img.shields.io/badge/Flutter-3.44.4-02569B?logo=flutter&logoColor=white" alt="Flutter" />
+  <img src="https://img.shields.io/badge/Dart-3.12+-0175C2?logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Version-2.2.0-4CAF50" alt="Version" />
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
 </p>
 
@@ -62,7 +62,7 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 - **后台播放** — 支持 Android 通知栏控制及锁屏播放
 - **播放模式** — 列表循环 / 随机播放 / 单曲循环
 - **倍速播放** — 支持 0.5x ~ 3.0x 变速播放
-- **音频均衡器** — 7 种预设音效（流行、摇滚、人声、低音、古典、电子、平板）
+- **音频均衡器** — 7 种预设音效（平直、流行、摇滚、人声、低音、古典、电子），手动调整后进入「自定义」
 - **低音增强** — 0~100% 强度可调
 - **定时停止** — 支持按时间或当前歌曲播放完毕后自动停止
 
@@ -120,7 +120,7 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 
 | 类别 | 技术 |
 |---|---|
-| **框架** | Flutter (SDK ^3.11.5) |
+| **框架** | Flutter 3.44.4（本机实测版本；`pubspec.yaml` 未约束 Flutter 版本） |
 | **语言** | Dart |
 | **音频播放** | `just_audio` — 低延迟音频引擎 |
 | **后台播放** | `audio_service` — 通知栏控制 & 后台保活 |
@@ -168,8 +168,8 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 
 ### 环境要求
 
-- Flutter SDK >= 3.11.5
-- Dart SDK >= 3.11.5
+- Flutter SDK >= 3.44.4（本机实测版本）
+- Dart SDK >= **3.12.0**（`pubspec.lock` 解析结果的实际要求；`pubspec.yaml` 声明的 `^3.11.5` 偏松，按 3.11.5 装会 `pub get` 失败）
 - Android Studio / VS Code
 - 目标平台对应的 SDK
 
@@ -178,7 +178,7 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 ```bash
 # 克隆仓库
 git clone <repo-url>
-cd kgka_music_hl
+cd KAmusic
 
 # 安装依赖
 flutter pub get
@@ -213,7 +213,7 @@ flutter run --dart-define=KA_MUSIC_API_BASE_URL=https://your-api.com
 lib/
 ├── main.dart                 # 应用入口
 ├── assets/
-│   └── logo.jpg              # App Logo
+│   └── logo.png              # App Logo
 ├── config/
 │   └── app_config.dart       # 全局配置（API 地址、缓存大小等）
 ├── core/
@@ -255,13 +255,15 @@ lib/
 
 详细的版本更新日志请查看 [update.md](update.md)。
 
-**v2.0.5** 主要更新：
+**v2.2.0** 主要更新：
 
-- 播放历史 & 统计页面
-- 搜索历史、缓存管理可视化
-- 歌单排序 & 批量删除 & 分享 & 导入
-- 智能音质降级 & 网络自动重试
-- 封面加载 Shimmer 动画
+- 新增扫码登录功能
+- 新增缩略图缓存管理：设置页可查看占用大小、一键清理并调整上限（64MB ~ 4GB，默认 512MB）
+- 缩略图缓存超过上限时按最近访问时间自动清理，避免长期占用存储空间
+- 播放页背景图改为复用已缓存的封面缩略图，减少一次重复请求，离线时也能正常显示
+- 修复登录页无法修改 API 地址的问题；修复歌单详情页与云盘页顶栏滚动时内容穿透
+
+> 更早版本（v2.1.0 / v2.0.5 / v2.0.0 …）见 [update.md](update.md)。
 
 ---
 

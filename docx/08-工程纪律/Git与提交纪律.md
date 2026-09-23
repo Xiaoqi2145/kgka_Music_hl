@@ -187,7 +187,7 @@ Refs: TD-02 / T-M3-05
 |---|---|---|---|
 | 1 | `git status --short` | 无意外改动；确认无 `build/`、`local.properties` | — |
 | 2 | `dart format lib test` | 无输出改动 | 见 KA-08-02 §14 |
-| 3 | `flutter analyze --no-fatal-infos` | 无新增违规 | 当前基线 11 条 info |
+| 3 | `flutter analyze --no-fatal-infos` | 无新增违规 | 当前基线 10 条 info |
 | 4 | `flutter test` | stdout 出现 `All tests passed!` | **不要只看 PowerShell 退出码**（`docx/06-质量保障/测试策略与现有用例.md:52-54`） |
 | 5 | `git diff --staged` | 逐行确认动机一致、无调试代码 | — |
 | 6 | `git log -1 --format='%s'` | 符合 `type(scope): subject` | — |

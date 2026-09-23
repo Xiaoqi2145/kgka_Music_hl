@@ -158,7 +158,7 @@
 | SharedPreferences | 7 个键（含 `_sessionIdKey`） | :399-405 |
 | CacheService | `_clearSession()` 内的 `_cacheService.clearUserCache(null)` | :546 |
 
-`CacheService.clearUserCache(null)` 按前缀清理 `cache_user_` / `cache_playlist_` / `cache_album_` / `cache_artist_`，**有意保留 `cache_home`**（首页为匿名可访问内容，见 `cache_service.dart:47-61`、:124-148`）。
+`CacheService.clearUserCache(null)` 按前缀清理 `cache_user_` / `cache_playlist_` / `cache_album_` / `cache_artist_`，**有意保留 `cache_home`**（首页为匿名可访问内容，见 `cache_service.dart:47-61`、`:124-148`）。
 
 ### 3.6 与 CacheService 的联动（登录后刷新用户缓存）
 
