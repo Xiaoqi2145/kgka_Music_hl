@@ -14,7 +14,6 @@
   <img src="https://img.shields.io/badge/Flutter-3.44.4-02569B?logo=flutter&logoColor=white" alt="Flutter" />
   <img src="https://img.shields.io/badge/Dart-3.12+-0175C2?logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Version-2.2.0-4CAF50" alt="Version" />
-  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
 </p>
 
 <p align="center">
@@ -37,10 +36,6 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 ---
 
 ## 📸 预览
-
-<!-- TODO: 截图占位 — 请替换为实际截图 -->
-
-## 功能截图
 
 | 首页推荐 | 播放器 | 歌词 |
 |:-------:|:------:|:----:|
