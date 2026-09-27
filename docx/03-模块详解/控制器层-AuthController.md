@@ -22,7 +22,7 @@
 | 项 | 值 | 锚点 |
 |---|---|---|
 | 文件 | `lib/controllers/auth_controller.dart` | — |
-| 行数 | 516 行（口径：PowerShell `Measure-Object -Line`，约等于非空行；文件总行数含空行为 577） | — |
+| 行数 | 603 行（LF 含空行口径，2026-09-25 实测；非空行 541） | — |
 | 基类 | `ChangeNotifier` | `auth_controller.dart:13` |
 | 构造参数 | `AuthController(MusicApi _api, CacheService _cacheService)` | `auth_controller.dart:14` |
 | 装配点 | `_KaMusicAppState.initState()` 中 `_auth = AuthController(_api, _cacheService)` | `main.dart:92` |
@@ -46,13 +46,13 @@
 
 | 成员 | 返回 | 判定规则 | 锚点 |
 |---|---|---|---|
-| `isLoggedIn` | `bool` | `session?.isValid == true` | `auth_controller.dart:36` |
+| `isLoggedIn` | `bool` | `session?.isValid == true` | `auth_controller.dart:37` |
 | `isLiked(Song)` | `bool` | `_likedHashes.contains(song.hash)` | `auth_controller.dart:38` |
-| `likedCount` | `int` | 优先取「我喜欢」歌单的 `songCount`，为空时回退 `_likedHashes.length` | `auth_controller.dart:40-46` |
+| `likedCount` | `int` | 优先取「我喜欢」歌单的 `songCount`，为空时回退 `_likedHashes.length` | `auth_controller.dart:41-46` |
 | `likedPlaylist` | `PlaylistSummary?` | `playlists` 中第一个 `isLikedPlaylist` | `auth_controller.dart:77-84` |
-| `createdPlaylists` | `List<PlaylistSummary>` | 非收藏专辑 且 `isCreatedPlaylist` | `auth_controller.dart:86-93` |
-| `collectedPlaylists` | `List<PlaylistSummary>` | 非我喜欢、非收藏专辑、非自建 | `auth_controller.dart:95-104` |
-| `collectedAlbums` | `List<PlaylistSummary>` | `isCollectedAlbum` | `auth_controller.dart:106-108` |
+| `createdPlaylists` | `List<PlaylistSummary>` | 非收藏专辑 且 `isCreatedPlaylist` | `auth_controller.dart:87-93` |
+| `collectedPlaylists` | `List<PlaylistSummary>` | 非我喜欢、非收藏专辑、非自建 | `auth_controller.dart:96-104` |
+| `collectedAlbums` | `List<PlaylistSummary>` | `isCollectedAlbum` | `auth_controller.dart:107-108` |
 | `findUserPlaylist(PlaylistSummary)` | `PlaylistSummary?` | 依次比对 `id`、`listId`、`sourceGlobalId` | `auth_controller.dart:110-121` |
 | `isPlaylistInLibrary(PlaylistSummary)` | `bool` | `findUserPlaylist(...) != null` | `auth_controller.dart:123-125` |
 | `canEditPlaylist(PlaylistSummary)` | `bool` | 库内项或自身 `isCreatedPlaylist` | `auth_controller.dart:127-130` |

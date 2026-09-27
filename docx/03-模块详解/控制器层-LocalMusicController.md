@@ -22,7 +22,7 @@
 | 项 | 值 | 锚点 |
 |---|---|---|
 | 文件 | `lib/controllers/local_music_controller.dart` | — |
-| 行数 | 105 行（口径：PowerShell `Measure-Object -Line`，约等于非空行；文件总行数含空行为 120） | — |
+| 行数 | 128 行（LF 含空行口径，2026-09-25 实测；非空行 114） | — |
 | 基类 | `ChangeNotifier` | `local_music_controller.dart:6` |
 | 构造 | `LocalMusicController()`，构造体内**未 await** 地调用 `_loadSettings()` | :7-9 |
 | 装配点 | `_localMusic = LocalMusicController()` | `main.dart:93` |

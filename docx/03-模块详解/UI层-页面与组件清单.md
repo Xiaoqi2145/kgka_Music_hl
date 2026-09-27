@@ -65,13 +65,13 @@ UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的�
 | `AppShell` | `MusicApi`、`AuthController`、`PlayerController`、`CacheService`、`DownloadController`、`ThemeController`、`LocalMusicController` | `main.dart:165`（登录后） | `HomePage`、`LibraryPage`（`IndexedStack`，:80）；Android 返回键 → `MethodChannel('kgka_music_hl/screen').moveTaskToBack`（:201-208） |
 | `HomePage` | `MusicApi`、`AuthController`、`PlayerController`、`CacheService` | `app_shell.dart:53` | `SearchPage`（:488）、`ArtistDetailPage`（:197）、`AlbumShopPage`（:210）、`PlaylistDetailPage`（`openPlaylistDetail` :175） |
 | `LibraryPage` | `MusicApi`、`AuthController`、`PlayerController`、`DownloadController`、`ThemeController`、`LocalMusicController` | `app_shell.dart:59` | `SettingsPage`（:70）、`DownloadedSongsPage`（:196）、`CloudDrivePage`（:206）、`LocalSongsPage`（:371）、`PlaybackHistoryPage`（:388）、`PlaylistDetailPage`（:57） |
-| `LoginPage` | `AuthController`、`MusicApi`、`AppConfig` | `main.dart:162`（`!isRestoring && !isLoggedIn`） | 无（登录成功由 `AuthController` 通知，`main.dart` 自动切到 `AppShell`） |
+| `LoginPage` | `AuthController`、`MusicApi`、`AppConfig` | `main.dart:193`（`!isRestoring && !isLoggedIn`） | 无（登录成功由 `AuthController` 通知，`main.dart` 自动切到 `AppShell`） |
 | `SettingsPage` | `MusicApi`、`AuthController`、`PlayerController`、`ThemeController`、`LocalMusicController`、`CacheService?`、`DownloadController?`、`AppUpdateService`、`ArtworkCacheService` | `library_page.dart:70` | `PlaybackStatsPage`（:177）、`PlaybackHistoryPage`（:189）、`AudioInterruptionSettingsPage`（:205）、`DesktopLyricsSettingsPage`（:243）、`PersonalizationSettingsPage`（:311）、`AboutPage`（:348）、`AudioEffectsPage`（经 `showAudioEffectsSheet`） |
 | `PersonalizationSettingsPage` | `ThemeController` | `settings_page.dart:311` | `_FullBackgroundPreview`（:147，`fullscreenDialog: true`） |
 | `PlayerPage` | `PlayerController`、`AuthController`、`ThemeController.instance`、`MethodChannel('kgka_music_hl/screen')`、`SharedPreferences`（歌词字号） | `mini_player.dart:65` | `DesktopLyricsSettingsPage`（:352）、`ArtistDetailPage`（:618）、`_LyricCandidatePreviewPage`（:2032）、`CommentPage`（:3491） |
 | `PlaylistDetailPage` | `MusicApi`、`AuthController`、`PlayerController`、自建 `CacheService()`（:119） | `openPlaylistDetail`（:26）——竖屏 `push` 整页；横屏 `showGeneralDialog` 右侧面板（宽度 `62%`，clamp 420~820）；`importPlaylistById`（:781） | `ArtistDetailPage`（:669） |
 | `AlbumShopPage` | `MusicApi`、`AuthController`、`PlayerController` | `home_page.dart:210` | `PlaylistDetailPage`（:81，构造临时 `PlaylistSummary`） |
-| `ArtistDetailPage` | `MusicApi`、`AuthController`、`PlayerController` | `home_page.dart:197`、`player_page.dart:618`、`playlist_detail_page.dart:669`、`playback_history_page.dart:82`、`cloud_drive_page.dart:142`、`search_page.dart:182` | 无 |
+| `ArtistDetailPage` | `MusicApi`、`AuthController`、`PlayerController` | `home_page.dart:244`、`player_page.dart:624`、`playlist_detail_page.dart:700`、`playback_history_page.dart:82`、`cloud_drive_page.dart:142`、`search_page.dart:182` | 无 |
 | `SearchPage` | `MusicApi`、`AuthController`、`PlayerController`、`SearchHistoryService` | `home_page.dart:488` | `ArtistDetailPage`（:182） |
 | `CommentPage` | `MusicApi`、`mixsongid` 参数 | `player_page.dart:3491`（`song.albumAudioId ?? song.id`） | 无 |
 | `CloudDrivePage` | `MusicApi`、`AuthController`、`PlayerController` | `library_page.dart:206` | `ArtistDetailPage`（:142） |
@@ -97,7 +97,7 @@ UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的�
 
 | 文件（`lib/ui/widgets/`） | 行数 | 公开 API | 用途 | 复用位置 |
 |---|---|---|---|---|
-| `mini_player.dart` | 520 | `MiniPlayer` | 悬浮迷你播放器 + 队列面板（竖屏 BottomSheet / 横屏右侧 `showGeneralDialog`） | `app_shell.dart:87`；内联于 `album_shop_page.dart`、`artist_detail_page.dart`、`cloud_drive_page.dart`、`playback_history_page.dart`、`search_page.dart`、`playlist_detail_page.dart` |
+| `mini_player.dart` | 520 | `MiniPlayer` | 悬浮迷你播放器 + 队列面板（竖屏 BottomSheet / 横屏右侧 `showGeneralDialog`） | `app_shell.dart:86`；内联于 `album_shop_page.dart`、`artist_detail_page.dart`、`cloud_drive_page.dart`、`playback_history_page.dart`、`search_page.dart`、`playlist_detail_page.dart` |
 | `audio_effects_sheet.dart` | 500 | `showAudioEffectsSheet()`、`AudioEffectsPage` | 音效页：均衡器多段、低音增强、曲线绘制 | `settings_page.dart:164`、`player_page.dart:311` |
 | `app_update_widgets.dart` | 340 | `AppUpdateBanner`、`showAppUpdateDialog()` | 更新提示横幅与更新对话框（含轻量 Markdown 渲染） | 当前无实例化点（见 TD-55） |
 | `song_action_sheets.dart` | 315 | `SongSheetAction`、`showSongActionSheet()`、`showAddToPlaylistSheet()`、`addSongToQueueWithFeedback()` | 歌曲操作面板（宫格 + 列表两种形态）、添加到歌单、加入队列 | 首页、歌单详情、歌手详情、云盘、搜索、播放历史、播放页 |
@@ -240,7 +240,7 @@ BottomSheet 私有件：_ActionOption (:1054)、_ActionOptionTile (:1069)、_Sor
 3. **页面构造参数即依赖注入。** 每个页面显式接收 `MusicApi` / 控制器实例，没有 `Provider` / `InheritedWidget`；新增依赖必须逐层透传（`main.dart` → `AppShell` → 页面）。
 4. **`PlaylistDetailPage` 自建了 `CacheService()`**（`playlist_detail_page.dart:131`），而其他页面用 `AppShell.cache` 传入的实例。两者共用同一磁盘目录，但**绕过了装配点**，属于依赖注入的一致性瑕疵（TD-63）。
 5. **`PlayerPage` 在 `initState` 强制放开横屏**（`player_page.dart:55`），`dispose` 再按 `ThemeController.instance.landscapeEnabled` + `AdaptiveLayout.isTabletByPlatform()` 恢复（:72-81），与 `ThemeController.applyOrientations` 是两套并行逻辑。
-6. **歌曲行组件重复四份**：`_HomeSongRow`（`home_page.dart:888`）、`_SongRow`（`playlist_detail_page.dart:1451`）、`_CloudSongRow`（`cloud_drive_page.dart:417`）、`_ArtistSongRow`（`artist_detail_page.dart:453`）。四者都内联了 `NowPlayingBadge`、`Artwork`、操作面板调用，改一处需改四处。
+6. **歌曲行组件重复四份**：`_HomeSongRow`（`home_page.dart:888`）、`_SongRow`（`playlist_detail_page.dart:1561`）、`_CloudSongRow`（`cloud_drive_page.dart:417`）、`_ArtistSongRow`（`artist_detail_page.dart:453`）。四者都内联了 `NowPlayingBadge`、`Artwork`、操作面板调用，改一处需改四处。
 7. **骨架屏同样重复**：`_HomeSkeleton`、`_PlaylistDetailSkeleton`、`_ArtistDetailSkeleton`、`_CloudSkeleton`、`_RadioSkeleton`、`_HotSearchSkeleton`、`_SkeletonBlock` 七个实现，仅 `SkeletonBox` 是公共件。
 8. **私有类型出现在公开 API 上**：`ThemeController.presetColors`（`theme_controller.dart:32`）的元素类型 `_PresetColor`（:202）是库私有（见 `控制器层-ThemeController.md` §2.3），外部只能靠类型推断遍历。
 9. **`LocalSongsPage` 与 `SettingsPage` 各自实现了一份目录选择逻辑**（`local_songs_page.dart:110` vs `settings_page.dart:541`，均为 `FilePicker.getDirectoryPath()`）。

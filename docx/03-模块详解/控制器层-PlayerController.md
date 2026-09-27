@@ -1,15 +1,15 @@
 > 文档编号：KA-03-09
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/player_controller.dart（2833 行 LF / 2639 行非空，最大控制器）、lib/services/music_audio_handler.dart、lib/services/playback_loudness.dart、lib/services/volume_normalization_service.dart
-> 最近更新：2026-09-08
+> 关联代码：lib/controllers/player_controller.dart（3 322 行 LF / 3 089 行非空，最大控制器）、lib/services/music_audio_handler.dart、lib/services/playback_loudness.dart、lib/services/playback_phase.dart、lib/services/playback_failure.dart、lib/services/transition_coordinator.dart、lib/services/volume_normalization_service.dart
+> 最近更新：2026-09-26
 > 变更触发条件：播放链路、状态字段、音质策略、会话持久化、无缝播放逻辑发生变化时
 
 # 控制器层 · PlayerController
 
 ## TL;DR
 
-`PlayerController` 是整个应用的核心，2 833 行（LF 口径）、约 120 个成员，承担**音源解析、音质降级、无缝预载、歌词加载、音效应用、音量均衡、队列管理、会话持久化、播放统计、睡眠定时**十个关注点。它通过订阅 7 个 `just_audio` 流驱动状态，用 `_playRequestGeneration` 代数号解决并发竞态。**这是全项目最需要拆分、也最不能轻率改动的文件。**
+`PlayerController` 是整个应用的核心，3 322 行（LF 含空行口径）、约 120 个成员，承担**音源解析、音质降级、无缝预载、歌词加载、音效应用、音量均衡、队列管理、会话持久化、播放统计、睡眠定时**十个关注点。它通过订阅 7 个 `just_audio` 流驱动状态，用 `_playRequestGeneration` 代数号解决并发竞态。**这是全项目最需要拆分、也最不能轻率改动的文件。**
 
 ---
 
@@ -113,18 +113,26 @@ lossless(FLAC) → high(320K) → standard(128K) → null（停止）
 
 ---
 
-## 5. 无缝播放（`_prepareNextSourceIfNeeded`，`player_controller.dart:1179+`）
+## 5. 无缝播放（`_prepareNextSourceIfNeeded`，`player_controller.dart:1613`）
+
+> **语义边界（重要）**：这里的"无缝"指**预解析下一曲播放地址，消除切歌时的网络往返**，
+> **不承诺样本级音频接续**。预解析结果只是纯缓存（`_PreparedNextSource`），
+> **绝不追加到正在播放的音源列表**；真正换歌仍走"暂停 → `setAudioSources([单个音源])` → 播放"
+> （`lib/services/music_audio_handler.dart:72-93`）。样本级接续需要原生多子源边界交接，尚未实现。
 
 | 门槛 | 条件 |
 |---|---|
 | 未在准备 | `_preparedNext == null && !_preparingNextSource` |
-| 无预载子源 | `!_hasPreloadedNextChild()` |
 | 非单曲循环 | `playbackMode != singleLoop` |
 | 正在播放且非准备中 | `isPlaying && !isPreparing` |
 | 冷却期已过 | `DateTime.now() >= _prepareNextCooldownUntil`（失败后 15s） |
 | 时间窗口 | 剩余 `3s ~ 30s` |
 
-流程：取下一曲 → 更新元数据窗口 → 预取歌词（按 `generation:queueRevision:lyricKey:quality:volNorm` 去重）→ 若本地/缓存命中则跳过网络 → 否则取 URL → `appendPlaylistEntry()` 追加为预载子源（ExoPlayer 样本级无缝）。失败则设置 15s 冷却。
+流程：取下一曲 → 更新元数据窗口 → 预取歌词（按 `generation:queueRevision:lyricKey:quality:volNorm` 去重，`player_controller.dart:1656-1658`）→ 若本地/缓存命中则跳过网络（`player_controller.dart:1679`）→ 否则取 URL → 存入 `_PreparedNextSource`（纯缓存，见 `player_controller.dart:28-51` 的类注释）。失败则设置 15s 冷却（`player_controller.dart:1728`）。
+
+预解析结果的消费点只有三处，且都要通过 `_consumePreparedNext`（`player_controller.dart:1741`）的
+五重校验（`songKey + ownerEntryId + queueRevision + requestRevision + requestedQuality`）：
+显式 `_playSong`（`player_controller.dart:707`）、手动 `next()`（`player_controller.dart:2230`）、自然播完 `_handleCompleted`（`player_controller.dart:2293`）。
 
 > 元数据窗口 `_retainMetadataWindow()` 只保留「上一曲 / 当前曲 / 下一曲」三首的歌词与响度缓存，防止内存无界增长。
 

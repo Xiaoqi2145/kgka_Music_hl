@@ -9,8 +9,8 @@
 
 ## TL;DR
 
-1. 提交粒度 = **一个提交只做一件事**；格式 = **`type(scope): subject`**，type 从 10 个取值中选，冒号必须半角。
-2. 现状是**中英混用**（125 条中 79 条含中文、46 条纯英文、67 条用全角冒号、3 条 `fixs:`、1 条 `flx:`），本文件给出统一规则：**type/scope 英文小写，subject 与正文用中文**。
+1. 提交粒度 = **一个提交只做一件事**；格式 = **`type(scope): subject`**，type 从 12 个取值中选，冒号必须半角。
+2. 现状是**中英混用**（137 条中 87 条含中文、50 条纯英文、67 条用全角冒号、3 条 `fixs:`、1 条 `flx:`），本文件给出统一规则：**type/scope 英文小写，subject 与正文用中文**。
 3. 提交前必须跑通 4 条命令（见 §8），并确认没有 `build/`、`.dart_tool/`、`local.properties`、签名文件入库。
 
 ---
@@ -19,17 +19,17 @@
 
 | 项 | 实测 | 命令/锚点 |
 |---|---|---|
-| 提交总数 | 125 | `git rev-list --count HEAD` |
-| merge 提交 | 14（含 4 个 PR 分支合并） | `git log --merges` |
-| 含中文 subject | 79 | `git log --format='%s'` |
-| 纯英文 subject | 46 | 同上 |
+| 提交总数 | 137 | `git rev-list --count HEAD`（2026-09-25 实测） |
+| merge 提交 | 14 | `git log --merges` |
+| 含中文 subject | 87 | `git log --format='%s'` |
+| 纯英文 subject | 50 | 同上 |
 | 使用全角冒号「：」 | 67 | 同上 |
-| 合规 `type: subject`（半角+空格） | 29 | 同上 |
+| 使用半角冒号「:」 | 54 | 同上 |
 | 类型拼写错误 | `fixs:` 3 条、`flx:` 1 条 | `e4c6a3a`、`f2598ae`、`01b303b`、`91d0b1b` |
 | 非约定 type | `publish` 8、`add` 5、`remove` 4 | `git log` 统计 |
 | 无 type 前缀 | 18 条（如 `增加接续播放功能`、`Update README.md`） | 同上 |
-| 单提交文件数 | 均值 4.3；> 10 个文件的提交 18 条；最大 130 个文件（`b815758 add：init`） | `git show --stat` |
-| 分支 | 仅 `master` | `git branch -a` |
+| 单提交文件数 | 中位数 3；最大 130 个文件（`b815758 add：init`） | `git show --stat`（实时统计） |
+| 分支 | `master` 为主，另有未合并的 `test/mpv-focus-recovery` | `git branch -a` |
 | 远程 | `origin`（SSH）、`upstream`（HTTPS） | `git remote -v` |
 | 标签 | `v1.6.0`、`v2.0.5`、`v2.3.0`、`v2.5.0` | `git tag` |
 | 行尾/大文件属性 | `.gitattributes` 由 UGit 生成，仅对 `*.png/*.jar/*.pbxproj/*.ico/*.metadata` 启用 LFS | `.gitattributes:1-6` |
@@ -42,7 +42,7 @@
 | 规则 | 内容 |
 |---|---|
 | G2.1 | 一个提交只做一件事：功能、修复、重构、格式、文档各自独立 |
-| G2.2 | 单提交建议 ≤ 10 个文件；超过必须说明理由或拆分（历史均值 4.3） |
+| G2.2 | 一个提交的文件数应服务于「可独立验证」；若难以用一句话说明目的，或无法单独回滚，就拆分（历史文件数中位数 3、最大 130，固定阈值不适用） |
 | G2.3 | 重构与功能必须分开：`refactor:` 提交内不得夹带行为变更 |
 | G2.4 | 纯格式改动单独提交（`style:`），不与逻辑改动混合 |
 | G2.5 | 依赖升级单独提交（`build(deps):`），并附 `pubspec.lock` 变更 |
@@ -63,45 +63,34 @@
 
 格式：`<type>(<scope>): <subject>`，第二行空行，第三行起为正文；破坏性改动加脚注。
 
-### 3.1 type 取值（10 个，禁止自造）
+### 3.1 type 取值（12 个，禁止自造）
 
-| type | 含义 | 典型场景 | 历史出现次数 |
+> **本表的权威定义在 `09-模板/提交信息模板.md` §3.2**（含「何时用 / 何时不用」）。
+> 两处曾各写一份且取值数不一致（本节 10 个、模板 12 个），已按模板口径统一为 12 个。
+
+| type | 含义 | 典型场景 | 历史出现次数（2026-09-25） |
 |---|---|---|---|
 | `feat` | 新功能 | 新增扫码登录、接续播放 | 52 |
-| `fix` | 缺陷修复 | 修复歌词错位、空指针 | 33 |
-| `refactor` | 重构（行为不变） | 播放器 UI 状态重构 | 1 |
+| `fix` | 缺陷修复 | 修复歌词错位、空指针 | 39 |
+| `refactor` | 重构（行为不变） | 播放器 UI 状态重构 | 2 |
 | `perf` | 性能优化 | 背景图延迟、长列表虚拟化 | 0 |
 | `test` | 测试相关 | 新增 LRU 淘汰单测 | 0 |
-| `docs` | 文档 | 更新 `docx/`、`update.md` | 0（历史用 `Update README.md`） |
-| `build` | 构建/依赖 | 签名配置、ABI、依赖升级 | 0 |
-| `chore` | 杂项（不含上述） | 清理无效文件 | 0（历史用 `remove:` 4 次） |
+| `docs` | 文档 | 更新 `docx/`、`update.md` | 2 |
+| `build` | 构建/打包 | 签名配置、ABI | 0 |
+| `ci` | CI 与门禁脚本 | `scripts/*.ps1`、校验脚本 | 0 |
 | `style` | 格式（不影响行为） | `dart format` 结果 | 0 |
+| `chore` | 杂项（不含上述） | 清理无效文件、发版 | 3（历史用 `remove:` 4 次） |
 | `revert` | 回滚 | 回滚某次提交 | 0 |
+| `deps` | 依赖升降级 | 仅改版本号、无代码适配 | 0 |
 
 > 历史遗留的 `add`（5）、`remove`（4）、`publish`（8）**不再使用**：`add` → `feat`，`remove` → `chore`/`refactor`，`publish` → `chore(release):`。
 
-### 3.2 scope 取值（与模块对应）
+### 3.2 scope 取值
 
-| scope | 对应路径/领域 | 示例 |
-|---|---|---|
-| `config` | `lib/config/` | `feat(config): 新增缩略图缓存上限常量` |
-| `core` | `lib/core/`（`ApiClient`） | `fix(core): 修正重试 deadline 判断` |
-| `models` | `lib/models/` | `refactor(models): 拆分 music_models` |
-| `services` | `lib/services/` 通用 | `feat(services): 新增失败缓存` |
-| `api` | `lib/services/music_api.dart` | `feat(api): 新增 /listen/timeadd 封装` |
-| `cache` | `cache_service.dart` / `artwork_cache_service.dart` | `fix(cache): 计数按删除量扣减` |
-| `download` | `download_service.dart` / `download_controller.dart` | `feat(download): 支持断点续传` |
-| `player` | `player_controller.dart` | `fix(player): 修复焦点恢复` |
-| `lyrics` | 歌词解析/渲染/桌面歌词 | `feat(lyrics): 支持更换歌词版本`（历史 `e773882`） |
-| `auth` | `auth_controller.dart` / 登录页 | `fix(auth): 修复扫码登录态丢失` |
-| `theme` | `theme_controller.dart` / `app_theme.dart` | `feat(theme): 支持自定义背景` |
-| `search` | 搜索页与搜索历史 | `feat(search): 新增热搜分类` |
-| `ui` | `lib/ui/` 页面与组件 | `fix(ui): 修复顶栏穿透重叠` |
-| `android` | `android/` 原生 | `feat(android): 新增 LoudnessEnhancer 通道` |
-| `ios` / `desktop` | 对应平台目录 | `fix(desktop): 桌面歌词窗口置顶` |
-| `docs` | `docx/`、根目录 `*.md` | `docs: 新增工程纪律九篇` |
-| `ci` | CI 配置与门禁脚本 | `build(ci): 新增 scripts/check.ps1` |
-| `release` | 版本发布 | `chore(release): v2.2.0` |
+> **scope 的权威清单在 `09-模板/提交信息模板.md` §3.3（21 个）**，本文件不复述该表——
+> 两处曾各写一份且只有 6 个取值重合，是典型的重复维护。
+> 取用优先级：能落到具体模块就用模块 scope，跨多模块才用 `services` / `controllers` 级别的兜底 scope；
+> **同一提交只写一个 scope**，跨域时取改动量最大的那个，其余在正文列出。
 
 ### 3.3 subject 与正文
 
@@ -262,7 +251,7 @@ Refs: TD-02 / T-M3-05
 | 4 | PowerShell 下 `flutter test` 退出码不可信 | 以 stdout 判定 |
 | 5 | LFS 生效情况未验证 | 见 §7「待核实」 |
 | 6 | `publish` 等历史 type 无对应现代取值 | 已在 §3.1 给出映射 |
-| 7 | `.tmp-extract.js` 未跟踪但仍在工作区 | 提交前清理 |
+| 7 | 临时脚本（如分析用的 `.js`/`.ps1`）容易残留在工作区 | 提交前用 `git status --porcelain` 核对并清理 |
 
 ---
 

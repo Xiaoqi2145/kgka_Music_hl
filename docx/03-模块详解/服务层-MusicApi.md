@@ -87,7 +87,7 @@
 | 方法签名 | 端点 | HTTP | 请求参数 | 返回模型 | 需登录 | 缓存/降级 |
 |---|---|---|---|---|---|---|
 | `Future<UserProfile> userDetail()` | `/user/detail` | GET | 无 | `UserProfile` | 是（`api.json` 摘要「获取当前登录用户详情」） | 无缓存；调用方 `AuthController` 用 `CacheService` 缓存 24h（`auth_controller.dart:230-237`、`379`） |
-| `Future<List<PlaylistSummary>> userPlaylists({int page = 1, int pageSize = 30})` | `/user/playlist` | GET | `page`、`pagesize` | `List<PlaylistSummary>` | 是（摘要「分页获取当前登录用户歌单」） | 无缓存；过滤 `id` 为空项；展示排序见 `3.9 |
+| `Future<List<PlaylistSummary>> userPlaylists({int page = 1, int pageSize = 30})` | `/user/playlist` | GET | `page`、`pagesize` | `List<PlaylistSummary>` | 是（摘要「分页获取当前登录用户歌单」） | 无缓存；过滤 `id` 为空项；展示排序见 §3.9 |
 | `Future<CloudDriveResult> cloudDrive({int page = 1, int pageSize = 30})` | `/user/cloud` | GET | `page`、`pagesize` | `CloudDriveResult`（`info` + `songs`） | 是（摘要「获取用户云盘」） | 无缓存；过滤 `hash` 为空 |
 | `Future<PlayUrl> cloudSongUrl(Song song)` | `/user/cloud/url` | GET | `hash`、`album_audio_id`、`audio_id`（均取 `albumAudioId`）、`name`（曲名） | `PlayUrl`（仅 `url` + `hash`，**无响度**） | 是 | 无缓存；`url` 为空时返回空串由调用方判错 |
 
@@ -108,7 +108,7 @@
 | 方法签名 | 端点 | HTTP | 请求参数 | 返回模型 | 需登录 | 缓存/降级 |
 |---|---|---|---|---|---|---|
 | `Future<VipReceiveHistory> vipReceiveHistory()` | `/youth/month/vip/record` | GET | 无 | `VipReceiveHistory` | 是 | 无缓存；由 `VipBackgroundTask` 调用（`lib/services/vip_background_task.dart:43`） |
-| `Future<OneDayVipResult> dailyVip()` | `/youth/day/vip` | GET | 无 | `OneDayVipResult` | 是 | 无缓存；**写操作但用 GET**，超时会重试（见 `4.1 MA-03） |
+| `Future<OneDayVipResult> dailyVip()` | `/youth/day/vip` | GET | 无 | `OneDayVipResult` | 是 | 无缓存；**写操作但用 GET**，超时会重试（见 §4.1 MA-03） |
 | `Future<UpgradeVipResult> upgradeVipReward()` | `/youth/day/vip/upgrade` | GET | 无 | `UpgradeVipResult` | 是 | 无缓存；同上 |
 | `Future<void> addListeningTime()` | `/listen/timeadd` | POST | 无 | 无 | 是 | 无缓存；POST 故不重试（`lib/controllers/player_controller.dart:2688`） |
 

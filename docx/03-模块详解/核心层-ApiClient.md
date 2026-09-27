@@ -167,7 +167,7 @@ sequenceDiagram
 | 状态码 4xx（400/401/403/404…） | **否** | 抛 `ApiException(statusCode)`，`message` = 响应体原文 | `143-145` |
 | 2xx 但 body 非 JSON | 不适用（已成功返回） | 返回原始字符串 | `149-154` |
 | 2xx 但 body 为空 | 不适用 | 返回 `null` | `146-148` |
-| 循环跑完未返回（理论分支） | — | 抛 `ApiException('请求失败，已重试 2 次')` | `117`（**实际不可达，见 `4.1 AC-04**） |
+| 循环跑完未返回（理论分支） | — | 抛 `ApiException('请求失败，已重试 2 次')` | `117`（**实际不可达，见 §4.1 AC-04**） |
 
 ### 3.6 响应处理与 sessionId 自动提取
 
@@ -210,7 +210,7 @@ sequenceDiagram
 | `addSongsToPlaylist` | `/playlist/tracks/add` | POST | false | `lib/services/music_api.dart:547` |
 | `removeSongsFromPlaylist` | `/playlist/tracks/del` | POST | false | `lib/services/music_api.dart:563` |
 
-> 结论：**所有写操作（含登录、歌单增删、加收听时长）都不重试**；所有 GET 请求都重试。GET 中并非全部幂等，见 `4.1 AC-03。
+> 结论：**所有写操作（含登录、歌单增删、加收听时长）都不重试**；所有 GET 请求都重试。GET 中并非全部幂等，见 §4.1 AC-03。
 
 ---
 

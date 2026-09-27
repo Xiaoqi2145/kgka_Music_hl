@@ -160,7 +160,7 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | 退避基数 | `500ms × 2^attempt` | `api_client.dart:127` |
 | `Retry-After` | 秒 × 1000，clamp 到 0–15000ms | `api_client.dart:125-128` |
 | 抖动 | 随机 0–249ms | `api_client.dart:129` |
-| 触发重试的异常 | `TimeoutException`、`http.ClientException` | `api_client.dart:107-112` |
+| 触发重试的异常 | `TimeoutException`、`http.ClientException` | `api_client.dart:102-112` |
 | 直接抛出、不重试 | `FormatException` | `api_client.dart:113-114` |
 | 重试耗尽 | `throw ApiException('请求失败，已重试 2 次')` | `api_client.dart:117` |
 | deadline 用尽 | `throw TimeoutException('API request deadline exceeded')` | `api_client.dart:90`、`:133` |

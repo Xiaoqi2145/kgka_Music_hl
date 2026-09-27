@@ -22,7 +22,7 @@
 | 项 | 值 | 锚点 |
 |---|---|---|
 | 文件 | `lib/controllers/theme_controller.dart` | — |
-| 行数 | 179 行（口径：PowerShell `Measure-Object -Line`，约等于非空行；文件总行数含空行为 203） | — |
+| 行数 | 207 行（LF 含空行口径，2026-09-25 实测；非空行 183） | — |
 | 基类 | `ChangeNotifier` | `theme_controller.dart:16` |
 | 构造 | `ThemeController()`，构造体内 `_instance = this` | `theme_controller.dart:17-19` |
 | 单例访问 | `static ThemeController? _instance` + `static ThemeController get instance => _instance!` | `theme_controller.dart:21-22` |
@@ -140,7 +140,7 @@
 
 | 调用点 | 传参 | 锚点 |
 |---|---|---|
-| `main.dart` 每次 build | `_theme.applyOrientations(AdaptiveLayout.isTablet(context))` | `main.dart:135` |
+| `main.dart` 每次 build | `_theme.applyOrientations(AdaptiveLayout.isTablet(context))` | `main.dart:134` |
 | 设置页横屏开关 | `theme.setLandscapeEnabled(value, AdaptiveLayout.isTablet(context))` | `settings_page.dart:324-329` |
 | 播放页 `dispose` | 直接读 `ThemeController.instance.landscapeEnabled` + `AdaptiveLayout.isTabletByPlatform()`，自行调用 `SystemChrome` | `player_page.dart:66-78` |
 
@@ -169,7 +169,7 @@
 | 图层顺序 | 背景图 → 遮罩 → `child` | `main.dart:288-311` |
 | 遮罩色 | 深色 `Color(0xFF06070A)`，浅色 `Colors.white` | `main.dart:277-278` |
 | 遮罩透明度 | `alpha = 1.0 - backgroundOpacity`（opacity 越大背景越明显） | `main.dart:303-307` |
-| 图片参数 | `fit: BoxFit.cover`、`gaplessPlayback: true`、`filterQuality: FilterQuality.low`、`errorBuilder` 返回空 | `main.dart:293-299` |
+| 图片参数 | `fit: BoxFit.cover`、`gaplessPlayback: true`、`filterQuality: FilterQuality.low`、`errorBuilder` 返回空 | `main.dart:329`（`errorBuilder`） |
 
 ### 3.6 个性化设置页入口
 
@@ -202,7 +202,7 @@
 6. **`load()` 不校验文件存在性**。背景图被外部删除后，`backgroundEnabled` 仍为 true，`_AppBackground` 走 `errorBuilder` 返回空白（`main.dart:298`），界面表现为「没有任何背景」而非回退到纯色。
 7. **深色模式不可手动切换。** `themeMode` 固定 `ThemeMode.system`（`main.dart:143`），全仓库没有任何 `ThemeMode` 写入点或「深色模式」设置项。
 8. **平板恒可横屏**：`applyOrientations` 中 `isTablet || _landscapeEnabled`（:115）使平板上「横屏模式」开关**无实际效果**，开关值仅被持久化；设置页文案已注明「平板默认开启」（`settings_page.dart:322`）。
-9. **`setLandscapeEnabled` 的提前返回会跳过方向应用**（:98-99）。若开关值未变（例如启动后首次交互传了相同值），不会重新调用 `applyOrientations`；实际上 `main.dart:135` 每次 build 都会补一次，因此不构成可见缺陷。
+9. **`setLandscapeEnabled` 的提前返回会跳过方向应用**（:98-99）。若开关值未变（例如启动后首次交互传了相同值），不会重新调用 `applyOrientations`；实际上 `main.dart:134` 每次 build 都会补一次，因此不构成可见缺陷。
 10. **方向恢复依赖 `ThemeController.instance`**：播放页 `dispose` 不走 `applyOrientations`，而是自己复制了一份判断逻辑（`player_page.dart:66-78`）。若将来改方向策略，需要同时改两处。
 11. **背景图与缩略图缓存无关**：背景图是本地文件，不进 `ArtworkCacheService`（缩略图缓存），也不参与其 LRU 淘汰。
 
