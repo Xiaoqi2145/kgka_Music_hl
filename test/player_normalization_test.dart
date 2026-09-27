@@ -6,11 +6,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:kgka_music_hl/controllers/download_controller.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
 import 'package:kgka_music_hl/models/loudness_data.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
+import 'package:kgka_music_hl/services/download_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/services/music_audio_handler.dart';
+import 'package:kgka_music_hl/services/playback_phase.dart';
 
 class _Player implements AudioPlayer {
   final volumes = <double>[];
@@ -242,6 +245,9 @@ class _Handler implements MusicAudioHandler {
 class _Api implements MusicApi {
   final requests = <String>[];
   final responses = <String, Completer<PlayUrl>>{};
+
+  /// Hashes whose songUrl() rejects, for prefetch cooldown coverage.
+  final failures = <String>{};
   final lyricResponses = <String, Completer<List<LyricLine>>>{};
   @override
   Future<List<LyricLine>> lyrics(
@@ -254,6 +260,9 @@ class _Api implements MusicApi {
     AudioQuality quality = AudioQuality.standard,
   }) async {
     requests.add(song.hash);
+    if (failures.contains(song.hash)) {
+      throw StateError('songUrl failed for ${song.hash}');
+    }
     return responses[song.hash]?.future ??
         PlayUrl(
           url: 'https://example.invalid/song.mp3',
@@ -270,6 +279,30 @@ class _Controller extends PlayerController {
   _Controller(super.api, super.handler);
   @override
   Future<void> loadLyrics(Song song, {bool force = false}) async {}
+}
+
+/// Reports every song as a local hit, which is the only path that commits
+/// without a network URL and therefore reaches loudness hydration.
+class _LocalHitDownloadController extends DownloadController {
+  _LocalHitDownloadController(MusicApi api) : super(DownloadService(), api);
+  @override
+  Future<void> initialize() async {}
+  @override
+  ({String path, LoudnessData? loudness})? localSourceFor(
+    Song song,
+    AudioQuality quality,
+  ) => (path: '/tmp/${song.hash}.flac', loudness: null);
+  @override
+  Future<void> updateLocalLoudness(
+    Song song,
+    AudioQuality quality,
+    LoudnessData? loudness,
+  ) async {}
+  @override
+  void setActivePlaybackPath(String? path) {}
+  @override
+  Future<bool> invalidateLocalSource(Song song, AudioQuality quality) async =>
+      false;
 }
 
 void main() {
@@ -1049,5 +1082,195 @@ void main() {
     expect(controller.currentSong, c);
     expect(controller.currentEntryId, isNotNull);
     expect(handler.audioPlayer.playing, isTrue);
+  });
+
+  test('leaving and re-entering the prefetch window asks only once', () async {
+    await setup();
+    tail();
+    await drain();
+    expect(api.requests.where((s) => s == 'B'), hasLength(1));
+    // Leave the window: the candidate is cleared, but the resolved URL stays
+    // cached in _loudnessLookup / responses, so re-entering must not re-ask.
+    handler.audioPlayer.emitNative(
+      ProcessingState.ready,
+      position: const Duration(seconds: 10),
+    );
+    await drain();
+    tail();
+    await drain();
+    expect(api.requests.where((s) => s == 'B'), hasLength(1));
+  });
+
+  test('a failed prefetch cools down before it is retried', () async {
+    await setup();
+    api.failures.add('B');
+    tail();
+    await drain();
+    expect(api.requests.where((s) => s == 'B'), hasLength(1));
+    // Still inside the 15s window: every position tick must stay silent.
+    for (var i = 0; i < 5; i++) {
+      tail();
+      await drain();
+    }
+    expect(api.requests.where((s) => s == 'B'), hasLength(1));
+  });
+
+  test('disabling gapless playback drops the in-flight candidate', () async {
+    await setup();
+    final response = Completer<PlayUrl>();
+    api.responses['B'] = response;
+    tail();
+    await drain();
+    await controller.setGaplessPlaybackEnabled(false);
+    response.complete(
+      const PlayUrl(url: 'https://example.invalid/late', hash: 'B'),
+    );
+    await drain();
+    // The candidate was dropped, so a manual next must resolve on its own.
+    api.responses.remove('B');
+    await controller.next();
+    await drain();
+    expect(controller.currentSong, b);
+    expect(api.requests.where((s) => s == 'B'), hasLength(2));
+  });
+
+  test('a song the server has no loudness for is only asked once', () async {
+    await setup();
+    // localSourceFor() must report a hit so _restoreLocalLoudness() takes the
+    // hydration path (network playback commits the URL and never hydrates).
+    controller.downloadController = _LocalHitDownloadController(api);
+    controller.volumeNormalizationEnabled = true;
+    // /song/url returns an empty loudness payload for B.
+    api.responses['B'] = Completer<PlayUrl>()
+      ..complete(
+        const PlayUrl(url: 'https://example.invalid/b.mp3', hash: 'B'),
+      );
+    await controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    final afterFirstLoad = api.requests.where((s) => s == 'B').length;
+    expect(afterFirstLoad, 1, reason: '本地命中需要补一次响度');
+    // Reload twice: each reload commits a new entry and bumps the generation.
+    // This is the end-to-end guard (negative cache + short-circuit + dedup key
+    // together); each mechanism is isolated in test/playback_loudness_test.dart.
+    await controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    await controller.playSong(b, queue: [song, b, c]);
+    await drain();
+    expect(
+      api.requests.where((s) => s == 'B'),
+      hasLength(1),
+      reason: '已知无响度的歌曲不得重复补取',
+    );
+  });
+
+  test('a natural end advances once and is counted as auto-advance', () async {
+    await setup();
+    expect(controller.nativeCompletions, 0);
+    expect(controller.autoAdvanceSuccessRate, isNull);
+    tail();
+    await drain();
+    complete();
+    complete();
+    await drain();
+    expect(controller.currentSong, b);
+    expect(controller.nativeCompletions, 1);
+    expect(controller.autoAdvanceCommits, 1);
+    expect(controller.autoAdvanceSuccessRate, 1.0);
+    // The candidate consumed for the auto advance must not be reused.
+    expect(controller.playbackSuccessRate, isNotNull);
+  });
+
+  test(
+    'an unplayable next song is counted as an auto-advance failure',
+    () async {
+      await setup();
+      api.failures.add('B');
+      tail();
+      await drain();
+      complete();
+      await drain();
+      expect(controller.nativeCompletions, 1);
+      expect(controller.autoAdvanceFailures, 1);
+      expect(controller.autoAdvanceSuccessRate, 0.0);
+    },
+  );
+
+  test(
+    'the loudness generation is the coordinator generation, never a copy',
+    () async {
+      await setup();
+      // Before any commit the coordinator has no entry, so no lease exists.
+      expect(controller.currentEntryId, isNotNull);
+      expect(
+        controller.normalizationGeneration,
+        controller.leaseGenerationForTest,
+        reason: '响度代次必须直接来自过渡协调器，而不是各自维护的计数器',
+      );
+      await controller.setVolumeNormalizationEnabled(true);
+      await drain();
+      expect(
+        controller.normalizationGeneration,
+        controller.leaseGenerationForTest,
+        reason: '重开响度窗口后两者仍必须一致',
+      );
+    },
+  );
+
+  test(
+    'a stalled player is reported as a distinct phase',
+    () async {
+      await setup();
+      expect(controller.playbackPhase, PlaybackPhase.playing);
+      // Position stops advancing while the player still reports "playing".
+      // The first tick only establishes the baseline; the next one arms the
+      // watchdog, so the frozen value must be pushed twice before waiting.
+      final frozen = controller.position;
+      handler.audioPlayer.positions.add(frozen);
+      await drain();
+      handler.audioPlayer.positions.add(frozen);
+      await drain();
+      expect(controller.isStalled, isFalse);
+      await Future<void>.delayed(const Duration(seconds: 6));
+      handler.audioPlayer.positions.add(frozen);
+      await drain();
+      expect(controller.isStalled, isTrue);
+      expect(controller.playbackPhase, PlaybackPhase.stalled);
+      // Progress resumes: the stall flag clears on the next real advance.
+      handler.audioPlayer.positions.add(frozen + const Duration(seconds: 1));
+      await drain();
+      expect(controller.isStalled, isFalse);
+      expect(controller.playbackPhase, PlaybackPhase.playing);
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
+
+  test('progress revision only advances with real position movement', () async {
+    await setup();
+    final revision = controller.progressRevision;
+    // Diagnostic-only events must not advance the revision.
+    handler.audioPlayer.durations.add(const Duration(seconds: 120));
+    await drain();
+    expect(controller.progressRevision, revision);
+    handler.audioPlayer.positions.add(
+      controller.position + const Duration(seconds: 1),
+    );
+    await drain();
+    expect(controller.progressRevision, greaterThan(revision));
+  });
+
+  test('success-rate counters separate attempts from commits', () async {
+    await setup();
+    expect(controller.playbackAttempts, greaterThanOrEqualTo(1));
+    expect(controller.playbackCommits, greaterThanOrEqualTo(1));
+    expect(controller.playbackSuccessRate, isNotNull);
+    final attempts = controller.playbackAttempts;
+    final commits = controller.playbackCommits;
+    // A failed resolve still counts as an attempt but not as a commit.
+    api.failures.add('C');
+    await controller.playSong(c, queue: [song, b, c]);
+    await drain();
+    expect(controller.playbackAttempts, attempts + 1);
+    expect(controller.playbackCommits, commits);
+    expect(controller.autoAdvanceSuccessRate, isNull);
   });
 }

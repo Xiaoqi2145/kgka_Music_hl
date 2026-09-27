@@ -98,4 +98,52 @@ void main() {
       expect(coordinator.committedEntry, same(entry));
     });
   }
+
+  test(
+    'a pipeline generation bump invalidates the lease without a new entry',
+    () {
+      final coordinator = TransitionCoordinator()..commit(1);
+      final entry = coordinator.committedEntry;
+      final lease = coordinator.lease;
+      expect(coordinator.isCurrent(lease), isTrue);
+      final bumped = coordinator.bumpGeneration();
+      expect(bumped, coordinator.generation);
+      expect(coordinator.isCurrent(lease), isFalse);
+      // Identity is untouched: only the pipeline epoch moved.
+      expect(coordinator.committedEntry, same(entry));
+      expect(coordinator.lease?.entryId, entry!.id);
+      expect(coordinator.isCurrent(coordinator.lease), isTrue);
+    },
+  );
+
+  test('a commit advances both identity and generation', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final entryBefore = coordinator.committedEntry;
+    final generationBefore = coordinator.generation;
+    coordinator.commit(2);
+    expect(coordinator.committedEntry, isNot(same(entryBefore)));
+    expect(coordinator.generation, greaterThan(generationBefore));
+  });
+
+  test('30 generation bumps keep revoking every captured lease', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    for (var i = 0; i < 30; i++) {
+      final captured = coordinator.lease;
+      coordinator.bumpGeneration();
+      expect(coordinator.isCurrent(captured), isFalse);
+    }
+    expect(coordinator.generation, 31);
+    expect(coordinator.isCurrent(coordinator.lease), isTrue);
+  });
+
+  test('generation is independent from seekRevision and requestRevision', () {
+    final coordinator = TransitionCoordinator()..commit(1);
+    final lease = coordinator.lease!;
+    expect(lease.generation, coordinator.generation);
+    expect(lease.seekRevision, coordinator.seekRevision);
+    expect(lease.requestRevision, coordinator.requestRevision);
+    coordinator.seek();
+    expect(coordinator.lease!.seekRevision, isNot(lease.seekRevision));
+    expect(coordinator.lease!.generation, lease.generation);
+  });
 }

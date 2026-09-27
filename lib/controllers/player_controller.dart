@@ -16,8 +16,10 @@ import '../services/cache_service.dart';
 import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
+import '../services/playback_failure.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_loudness.dart';
+import '../services/playback_phase.dart';
 import '../services/playback_stats_service.dart';
 import '../services/transition_coordinator.dart';
 import '../services/volume_normalization_service.dart';
@@ -148,6 +150,9 @@ class PlayerController extends ChangeNotifier {
   /// 缓存服务（由 main.dart 在创建后注入，用于歌词等缓存）。
   CacheService? cacheService;
 
+  /// 单调时钟：所有超时/冷却都用它，避免系统时间跳变改变行为。
+  final Stopwatch _transitionClock = Stopwatch()..start();
+
   PlayerController(this._api, this._audioHandler) {
     unawaited(_restoreSettings());
     _audioHandler.attachTransportControls(
@@ -171,6 +176,7 @@ class PlayerController extends ChangeNotifier {
       if (!_isSeeking && !isPreparing && _ownsLoadedSource) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
+      _noteProgressTick(value);
       _maybeSyncDesktopLyricFromPosition();
       // 无缝播放：临近结束（≤30s）时后台预解析下一曲播放地址。
       if (isPlaying && !_isSeeking && !isPreparing && _ownsLoadedSource) {
@@ -288,11 +294,17 @@ class PlayerController extends ChangeNotifier {
   int _prepareNextSerial = 0;
 
   /// 预解析失败后的冷却期，避免在 30 秒窗口内每个 position 刻度都重试。
-  DateTime _prepareNextCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 用单调时钟计时：系统时间被调整不应改变退避时长。
+  Duration _prepareNextCooldownUntil = Duration.zero;
 
   final _transitions = TransitionCoordinator();
   int? get currentEntryId => _transitions.committedEntry?.id;
   int get normalizationGeneration => _playbackLoudness.generation;
+
+  /// Read-only view of the coordinator generation, for invariant tests and
+  /// diagnostics. The loudness window must always report the same value.
+  @visibleForTesting
+  int get leaseGenerationForTest => _transitions.generation;
   StreamSubscription<SequenceState>? _playlistSequenceSub;
   IndexedAudioSource? _activePlaylistSource;
   int _playlistLoadRevision = 0;
@@ -325,6 +337,21 @@ class PlayerController extends ChangeNotifier {
   bool isPlaying = false;
   bool isBuffering = false;
   bool isPreparing = false;
+
+  /// Derived, read-only playback phase. Never written by the controller: it is
+  /// a projection of state the controller already owns (see
+  /// `lib/services/playback_phase.dart`).
+  PlaybackPhase get playbackPhase => resolvePlaybackPhase(
+    PlaybackPhaseInput(
+      hasSong: currentSong != null,
+      isPreparing: isPreparing,
+      isPlaying: isPlaying,
+      isBuffering: isBuffering,
+      isSeeking: _isSeeking || _isScrubbing,
+      hasError: errorMessage != null,
+      stalled: isStalled,
+    ),
+  );
 
   /// 歌词正在异步加载；不应复用音频准备状态阻塞播放器。
   bool isLoadingLyrics = false;
@@ -366,7 +393,12 @@ class PlayerController extends ChangeNotifier {
   int _volumeNormApplySerial = 0;
   final _loudnessLookup = LoudnessLookup();
   final _hydratingLoudness = <String, Future<void>>{};
-  final _playbackLoudness = PlaybackLoudness();
+
+  /// The loudness window shares the transition coordinator's generation, so a
+  /// committed entry and its pipeline generation can never drift apart.
+  late final _playbackLoudness = PlaybackLoudness(
+    generation: () => _transitions.generation,
+  );
   AudioQuality? _normalizationQuality;
   bool _disposed = false;
   int _queueRevision = 0;
@@ -407,6 +439,51 @@ class PlayerController extends ChangeNotifier {
   final ValueNotifier<Duration> positionListenable = ValueNotifier<Duration>(
     Duration.zero,
   );
+
+  // ===== 观测：进度推进代次与静默缓冲检测 =====
+  /// 只在"位置真正前进"时递增。诊断事件（core/ao 状态、会话重建）**不会**
+  /// 推进它，因此可以用它作废那些基于旧快照的 buffering 判定。
+  int progressRevision = 0;
+
+  /// 位置多久没有前进就判定为 stalled。低于一个 positionStream 刻度
+  /// （最长 200ms）会让正常播放被误判。
+  ///
+  /// 已知边界：本看门狗只在 positionStream **有刻度**时求值。若流完全停止
+  /// 发事件（长缓冲、设备丢失），stalled 不会触发——那种情况由
+  /// [isBuffering] / 设备事件覆盖。
+  static const stalledAfter = Duration(seconds: 5);
+  Duration _lastProgressValue = Duration.zero;
+  Duration? _lastProgressAt;
+  bool isStalled = false;
+
+  void _noteProgressTick(Duration value) {
+    final now = _transitionClock.elapsed;
+    if (value > _lastProgressValue) {
+      _lastProgressValue = value;
+      _lastProgressAt = now;
+      if (isStalled) isStalled = false;
+      progressRevision++;
+      return;
+    }
+    // 第一个刻度只建立基线：位置可能一直停在 0（长前奏、纯静音开头），
+    // 不能因为"没动过"就直接判 stalled。
+    final since = _lastProgressAt;
+    if (since == null) {
+      _lastProgressAt = now;
+      return;
+    }
+    if (isStalled || !isPlaying) return;
+    if (now - since < stalledAfter) return;
+    isStalled = true;
+    _traceTransition('stalled', detail: 'positionMs=${value.inMilliseconds}');
+    notifyListeners();
+  }
+
+  void _resetProgressWatch() {
+    _lastProgressValue = Duration.zero;
+    _lastProgressAt = null;
+    isStalled = false;
+  }
 
   LyricCandidate? manualLyricCandidateFor(Song song) =>
       _manualLyricCandidates[song.hash];
@@ -680,6 +757,7 @@ class PlayerController extends ChangeNotifier {
         ? (queueIndex ?? currentIndex)
         : (queueIndex ?? _indexInQueue(song));
     notifyListeners();
+    playbackAttempts++;
     _traceTransition(
       'load_intent',
       detail:
@@ -777,7 +855,13 @@ class PlayerController extends ChangeNotifier {
               'serial=$serial reason=$reason quality=${targetQuality.apiValue} '
               'elapsedMs=${stageWatch.elapsedMilliseconds} error=$lastError',
         );
-        errorMessage = '播放失败，请重试';
+        // 分类只影响文案与诊断，不改变控制流：回滚路径与之前完全一致。
+        final failure = _classifyLoadFailure(lastError);
+        errorMessage = playbackFailureMessage(failure);
+        _traceTransition(
+          'load_fail_classified',
+          detail: 'failure=${failure.name}',
+        );
         await _recoverPreviousEntry(wasPlaying: resumePlayback);
         return;
       }
@@ -863,6 +947,7 @@ class PlayerController extends ChangeNotifier {
     _lastMediaEventTime = event.updateTime;
     duration = event.duration ?? Duration.zero;
     _setPositionBase(start, playing: false);
+    _resetProgressWatch();
     _audioHandler.setCurrentMediaItem(song);
     unawaited(
       _audioHandler.setSongQueue(
@@ -871,6 +956,14 @@ class PlayerController extends ChangeNotifier {
         currentSong: null,
       ),
     );
+    // 回滚（reason=recover）是对上一条目的恢复，不是本次请求的成功，
+    // 计入成功率会把失败请求洗成成功。
+    if (reason == 'recover') {
+      recoverCommits++;
+    } else {
+      playbackCommits++;
+    }
+    if (reason == 'native_completed') autoAdvanceCommits++;
     _traceTransition(
       'committed',
       detail:
@@ -989,6 +1082,7 @@ class PlayerController extends ChangeNotifier {
       if (_disposed) {
         throw StateError('Superseded playback load');
       }
+      _loadStartAtUs = _transitionClock.elapsedMicroseconds;
       ++_playlistLoadRevision;
       _activePlaylistSource = null;
       await _audioHandler.loadSong(
@@ -1135,14 +1229,19 @@ class PlayerController extends ChangeNotifier {
       _rememberLoudness(song, quality, available);
       return;
     }
+    // The server already answered "no loudness for this song": asking again
+    // would be a fresh network round trip for a value that cannot change.
+    if (_loudnessLookup.isKnownUnnormalizable(key)) return;
     if (volumeNormalizationEnabled) {
       unawaited(_hydrateLocalLoudness(song, quality));
     }
   }
 
   Future<void> _hydrateLocalLoudness(Song song, AudioQuality quality) {
-    final key =
-        '${_loudnessKey(song, quality)}:${_playbackLoudness.generation}';
+    // Loudness is per-song metadata, NOT per playback pipeline generation:
+    // keying the dedup map by generation made every reload re-request the same
+    // song. The key now matches LoudnessLookup's own key space.
+    final key = _loudnessKey(song, quality);
     return _hydratingLoudness.putIfAbsent(
       key,
       () => _hydrateLocalLoudnessOnce(song, quality).whenComplete(() {
@@ -1184,6 +1283,25 @@ class PlayerController extends ChangeNotifier {
 
   // 旧的 _loadNetworkSourceWithFallback/_loadAudioSource 已被
   // resolve + replace 两个阶段取代：解析不再触碰播放器，替换不再可被取代。
+
+  /// 把一次失败映射到已存在的恢复动作。仅分类，不改变控制流。
+  PlaybackFailure _classifyLoadFailure(Object? error) {
+    if (error == null) return PlaybackFailure.unknown;
+    if (error is _LoadSuperseded) return PlaybackFailure.unknown;
+    final message = error.toString();
+    if (message.contains('没有可播放地址')) return PlaybackFailure.resolveEmpty;
+    if (error is StateError && message.contains('Single-source load')) {
+      return PlaybackFailure.loadRejected;
+    }
+    if (message.contains('SocketException') ||
+        message.contains('TimeoutException') ||
+        message.contains('HttpException') ||
+        message.contains('DioException')) {
+      return PlaybackFailure.resolveNetwork;
+    }
+    return PlaybackFailure.unknown;
+  }
+
   /// 返回更低一档的音质；已是最低档时返回 null。
   AudioQuality? _nextLowerQuality(AudioQuality quality) {
     switch (quality) {
@@ -1388,7 +1506,7 @@ class PlayerController extends ChangeNotifier {
     _preparingNextSource = false;
     _preparedNext = null;
     _transitions.invalidateWork();
-    _prepareNextCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
+    _prepareNextCooldownUntil = Duration.zero;
   }
 
   // In stable mode structure is diagnostic data, NEVER a media transition.
@@ -1420,16 +1538,53 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _traceTransition(String event, {String detail = ''}) {
+    // 跨事件耗时：把"从原生播完到重新出声"变成可回归的数字。
+    // 单看 monoUs 只能证明"发生过"，证明不了"多快"。
+    final now = _transitionClock.elapsedMicroseconds;
+    final sinceCompleted = _lastCompletedAtUs == null
+        ? ''
+        : ' sinceCompletedUs=${now - _lastCompletedAtUs!}';
+    final sinceLoadStart = _loadStartAtUs == null
+        ? ''
+        : ' sinceLoadStartUs=${now - _loadStartAtUs!}';
+    if (event == 'native_completed') {
+      _lastCompletedAtUs = now;
+      _completedSerial = _loadSerial;
+    }
     debugPrint(
       '[KA Music][transition] event=$event entry=$currentEntryId '
       'serial=$_loadSerial quality=${audioQuality.apiValue} '
       'candidate=${_preparedNext?.songKey} owner=${_preparedNext?.ownerEntryId} '
       'queue=$_queueRevision load=$_playlistLoadRevision seek=${_transitions.seekRevision} '
-      'request=${_transitions.requestRevision} monoUs=${_transitionClock.elapsedMicroseconds} $detail',
+      'request=${_transitions.requestRevision} generation=${_transitions.generation} '
+      'progressRevision=$progressRevision '
+      'monoUs=$now$sinceCompleted$sinceLoadStart $detail',
     );
   }
 
-  final Stopwatch _transitionClock = Stopwatch()..start();
+  /// 最近一次 native_completed 的单调时间戳；null 表示本轮还没有播完过。
+  int? _lastCompletedAtUs;
+
+  /// 该完成事件属于哪一次加载；自动续播聚合用它排除"完成后用户立刻手动切歌"。
+  int? get completedSerial => _completedSerial;
+  int? _completedSerial;
+
+  /// 最近一次进入 replace 阶段的单调时间戳。
+  int? _loadStartAtUs;
+
+  /// 播放成功率计数器：按加载序列去重，避免连点把分母抬高。
+  int playbackAttempts = 0;
+  int playbackCommits = 0;
+  int recoverCommits = 0;
+  int nativeCompletions = 0;
+  int autoAdvanceCommits = 0;
+  int autoAdvanceFailures = 0;
+
+  double? get playbackSuccessRate =>
+      playbackAttempts == 0 ? null : playbackCommits / playbackAttempts;
+
+  double? get autoAdvanceSuccessRate =>
+      nativeCompletions == 0 ? null : autoAdvanceCommits / nativeCompletions;
 
   void _onPlaybackEvent(PlaybackEvent event) {
     // just_audio exposes no native entry ID. With one controlled source, accept
@@ -1470,7 +1625,7 @@ class PlayerController extends ChangeNotifier {
         currentSong == null) {
       return;
     }
-    if (DateTime.now().isBefore(_prepareNextCooldownUntil)) {
+    if (_transitionClock.elapsed < _prepareNextCooldownUntil) {
       return;
     }
     if (duration <= Duration.zero) {
@@ -1575,9 +1730,8 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {
       // 预解析失败：冷却 15 秒后重试，避免窗口内每个刻度都重试。
       if (serial == _prepareNextSerial) {
-        _prepareNextCooldownUntil = DateTime.now().add(
-          const Duration(seconds: 15),
-        );
+        _prepareNextCooldownUntil =
+            _transitionClock.elapsed + const Duration(seconds: 15);
       }
     } finally {
       if (serial == _prepareNextSerial) {
@@ -2040,6 +2194,7 @@ class PlayerController extends ChangeNotifier {
     seekRevision++;
     _isScrubbing = false;
     _isSeeking = true;
+    _resetProgressWatch();
     _setPositionBase(target, playing: isPlaying);
     notifyListeners();
 
@@ -2150,6 +2305,7 @@ class PlayerController extends ChangeNotifier {
         !_transitions.consumeCompletion(lease)) {
       return;
     }
+    nativeCompletions++;
     _traceTransition('native_completed');
     _cancelAutomaticResume();
     final generation = _playRequestGeneration;
@@ -2175,6 +2331,7 @@ class PlayerController extends ChangeNotifier {
           ? currentIndex
           : _nextQueueIndex(nextSong);
       final prepared = _consumePreparedNext(nextSong);
+      final entryBefore = currentEntryId;
       await _playSong(
         nextSong,
         queue: queue,
@@ -2182,10 +2339,24 @@ class PlayerController extends ChangeNotifier {
         queueIndex: index,
         reason: 'native_completed',
       );
+      // _playSong 不抛异常：失败时它设置 errorMessage 并回滚。因此自动续播的
+      // 成败必须按"是否真的提交了目标歌曲"判定，而不是按是否抛异常。
+      if (_disposed) return;
+      if (currentSong != nextSong || currentEntryId == entryBefore) {
+        autoAdvanceFailures++;
+        _traceTransition(
+          'completion_reject',
+          detail: 'outcome=failed_to_commit',
+        );
+      }
     } catch (error) {
       if (_disposed || !_transitions.isCurrent(lease)) return;
-      errorMessage = '下一曲解析失败，请重试';
-      _traceTransition('completion_reject');
+      autoAdvanceFailures++;
+      errorMessage = playbackFailureMessage(_classifyLoadFailure(error));
+      _traceTransition(
+        'completion_reject',
+        detail: 'failure=${_classifyLoadFailure(error).name}',
+      );
       notifyListeners();
     }
   }
@@ -2747,6 +2918,9 @@ class PlayerController extends ChangeNotifier {
     ++_volumeNormApplySerial;
     _volNormService.invalidatePending();
     final key = _playbackLoudness.key;
+    // A setting change is a new pipeline opportunity for the same entry: bump
+    // the shared generation so in-flight work captured earlier is dropped.
+    _transitions.bumpGeneration();
     _playbackLoudness.reopen(key == null ? null : _loudnessLookup.get(key));
     final song = currentSong;
     if (_volNormService.enabled && song != null) {

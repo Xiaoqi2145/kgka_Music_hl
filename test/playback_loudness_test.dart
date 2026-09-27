@@ -162,4 +162,83 @@ void main() {
       expect(await lookup.resolve('A', () async => data), data);
     },
   );
+
+  test(
+    'an authoritative miss is remembered as a negative cache entry',
+    () async {
+      var now = DateTime(2026);
+      final lookup = LoudnessLookup(now: () => now);
+      expect(lookup.isKnownUnnormalizable('A'), isFalse);
+      var calls = 0;
+      Future<LoudnessData?> missing() async {
+        calls++;
+        return null;
+      }
+
+      expect(await lookup.resolve('A', missing), isNull);
+      expect(lookup.isKnownUnnormalizable('A'), isTrue);
+      expect(lookup.get('A'), isNull);
+      // Second call inside the backoff window never reaches the network.
+      expect(await lookup.resolve('A', missing), isNull);
+      expect(calls, 1);
+      // A usable response clears both the negative entry and the backoff.
+      lookup.put('A', data);
+      expect(lookup.isKnownUnnormalizable('A'), isFalse);
+      expect(lookup.get('A'), data);
+    },
+  );
+
+  test('put(null) is a no-op so local cache misses stay unmarked', () {
+    final lookup = LoudnessLookup();
+    lookup.put('A', null);
+    expect(lookup.isKnownUnnormalizable('A'), isFalse);
+    lookup.put('B', const LoudnessData());
+    expect(lookup.isKnownUnnormalizable('B'), isFalse);
+    expect(lookup.get('B'), isNull);
+  });
+
+  test(
+    'markMissing alone suppresses a repeat resolve (backoff path)',
+    () async {
+      var now = DateTime(2026);
+      final lookup = LoudnessLookup(now: () => now);
+      lookup.markMissing('A');
+      var calls = 0;
+      Future<LoudnessData?> fetch() async {
+        calls++;
+        return data;
+      }
+
+      expect(await lookup.resolve('A', fetch), isNull);
+      expect(calls, 0, reason: 'markMissing 必须同时写入退避，否则 resolve 仍会打网络');
+      now = now.add(const Duration(minutes: 1));
+      expect(await lookup.resolve('A', fetch), data);
+      expect(calls, 1);
+    },
+  );
+
+  test('isKnownUnnormalizable alone reports the negative entry', () {
+    final lookup = LoudnessLookup();
+    lookup.markMissing('A');
+    expect(lookup.isKnownUnnormalizable('A'), isTrue);
+    expect(lookup.get('A'), isNull);
+  });
+
+  test('negative entries are evicted with the playback window', () async {
+    final lookup = LoudnessLookup();
+    lookup.retainKeys({'A', 'B'});
+    lookup.markMissing('A');
+    lookup.markMissing('B');
+    expect(lookup.isKnownUnnormalizable('A'), isTrue);
+    lookup.retainKeys({'B'});
+    expect(lookup.isKnownUnnormalizable('A'), isFalse);
+    expect(lookup.isKnownUnnormalizable('B'), isTrue);
+  });
+
+  test('a miss outside the retained window is not remembered', () {
+    final lookup = LoudnessLookup();
+    lookup.retainKeys({'A'});
+    lookup.markMissing('B');
+    expect(lookup.isKnownUnnormalizable('B'), isFalse);
+  });
 }

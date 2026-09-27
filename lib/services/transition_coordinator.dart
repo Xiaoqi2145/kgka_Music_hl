@@ -5,12 +5,23 @@ class PlaybackEntry {
   final int loadRevision;
 }
 
-/// A completion/async navigation lease belongs to an entry AND a seek/work epoch.
+/// A completion/async navigation lease belongs to an entry, a seek/work epoch
+/// AND a pipeline generation.
+///
+/// [generation] is the second identity dimension: it changes while [entryId]
+/// stays the same (quality reload, loudness window reopened, DSP reset), which
+/// is exactly the case an entry id alone cannot describe.
 class TransitionLease {
-  const TransitionLease(this.entryId, this.seekRevision, this.requestRevision);
+  const TransitionLease(
+    this.entryId,
+    this.seekRevision,
+    this.requestRevision,
+    this.generation,
+  );
   final int entryId;
   final int seekRevision;
   final int requestRevision;
+  final int generation;
 }
 
 /// One click's load intent. Only the newest intent may pause the player,
@@ -31,20 +42,30 @@ class TransitionCoordinator {
   int seekRevision = 0;
   int requestRevision = 0;
   int intentRevision = 0;
+
+  /// Pipeline generation: bumped by [commit] and by [bumpGeneration]. Any
+  /// async work captured against an older generation must be dropped, even
+  /// when the committed entry itself did not change.
+  int generation = 0;
   bool _completionConsumed = false;
 
   TransitionLease? get lease {
     final entry = committedEntry;
     return entry == null
         ? null
-        : TransitionLease(entry.id, seekRevision, requestRevision);
+        : TransitionLease(entry.id, seekRevision, requestRevision, generation);
   }
 
   PlaybackEntry commit(int loadRevision) {
     invalidateWork();
+    generation++;
     _completionConsumed = false;
     return committedEntry = PlaybackEntry(++_entrySerial, loadRevision);
   }
+
+  /// Start a new pipeline opportunity without changing the committed entry.
+  /// Used when a setting change reopens work for the song already playing.
+  int bumpGeneration() => ++generation;
 
   void invalidateWork() => requestRevision++;
 
@@ -53,6 +74,7 @@ class TransitionCoordinator {
     seekRevision++;
     requestRevision++;
     intentRevision++;
+    generation++;
     _completionConsumed = false;
   }
 
@@ -88,7 +110,8 @@ class TransitionCoordinator {
       value != null &&
       value.entryId == committedEntry?.id &&
       value.seekRevision == seekRevision &&
-      value.requestRevision == requestRevision;
+      value.requestRevision == requestRevision &&
+      value.generation == generation;
 
   bool consumeCompletion(TransitionLease? value) {
     if (!isCurrent(value) || _completionConsumed) return false;
