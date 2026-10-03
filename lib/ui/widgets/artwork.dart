@@ -23,6 +23,24 @@ class Artwork extends StatefulWidget {
   State<Artwork> createState() => _ArtworkState();
 }
 
+/// 计算封面解码边长（物理像素）。
+///
+/// 封面永远以 [size] 逻辑像素的正方形显示。不给解码提示时平台会按原始分辨率
+/// 解码再缩小，一张 1024px 的歌单封面要解出 1024×1024 位图却只画 44px ——
+/// 歌单页一次铺满十几张封面时，这部分解码会直接压在 UI/raster 线程上，是
+/// 「歌单加载时掉帧」的主要来源。
+///
+/// [size] 非有限值（父级用 `SizedBox.expand` 之类约束）或非正数时返回 null，
+/// 表示不给解码提示。[devicePixelRatio] 用于换算到物理像素。
+int? artworkDecodePixels({
+  required double size,
+  required double devicePixelRatio,
+}) {
+  if (!size.isFinite || size <= 0) return null;
+  if (!devicePixelRatio.isFinite || devicePixelRatio <= 0) return null;
+  return (size * devicePixelRatio).round().clamp(1, 2048);
+}
+
 class _ArtworkState extends State<Artwork> {
   File? _cachedFile;
   String? _loadedUrl;
@@ -56,10 +74,19 @@ class _ArtworkState extends State<Artwork> {
     });
   }
 
+  /// 解码边长（物理像素）；取不到 MediaQuery 时退回 3x。
+  int? _decodePixels(BuildContext context) {
+    return artworkDecodePixels(
+      size: widget.size,
+      devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? 3.0,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final imageUrl = widget.url;
     final file = _loadedUrl == imageUrl ? _cachedFile : null;
+    final decodePixels = _decodePixels(context);
     final child = imageUrl == null || imageUrl.isEmpty
         ? _Fallback(icon: widget.icon)
         : !_cacheResolved || _loadedUrl != imageUrl
@@ -68,6 +95,9 @@ class _ArtworkState extends State<Artwork> {
         ? Image.file(
             file,
             fit: BoxFit.cover,
+            cacheWidth: decodePixels,
+            cacheHeight: decodePixels,
+            gaplessPlayback: true,
             errorBuilder: (context, error, stackTrace) {
               if (imageUrl.isNotEmpty) {
                 unawaited(ArtworkCacheService.instance.invalidate(imageUrl));
@@ -79,9 +109,13 @@ class _ArtworkState extends State<Artwork> {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.borderRadius),
-      child: widget.size.isFinite
-          ? SizedBox.square(dimension: widget.size, child: child)
-          : SizedBox.expand(child: child),
+      // 每张封面自成一个重绘边界：占位 Shimmer 每帧重绘渐变时，脏区被限制在
+      // 这一个 44~128px 的方块里，不会连带把整行列表刷一遍。
+      child: RepaintBoundary(
+        child: widget.size.isFinite
+            ? SizedBox.square(dimension: widget.size, child: child)
+            : SizedBox.expand(child: child),
+      ),
     );
   }
 }
