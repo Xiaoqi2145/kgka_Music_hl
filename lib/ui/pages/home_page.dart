@@ -9,6 +9,7 @@ import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/listenable_selector.dart';
 import '../widgets/skeleton_box.dart';
 import '../widgets/music_formatters.dart';
 import '../widgets/now_playing_badge.dart';
@@ -931,6 +932,33 @@ class _SongSectionState extends State<_SongSection> {
   }
 }
 
+/// 首页歌曲行真正关心的播放态。
+///
+/// 每一行原本都 `AnimatedBuilder(animation: player)` 订阅整个播放器，播放器的
+/// 数十个 `notifyListeners()` 调用点会让 5 行一起重建。这里只取行用到的三个
+/// 字段，值不变不重建。
+class _HomeSongActivity {
+  const _HomeSongActivity({
+    required this.active,
+    required this.preparing,
+    required this.playing,
+  });
+
+  final bool active;
+  final bool preparing;
+  final bool playing;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _HomeSongActivity &&
+      other.active == active &&
+      other.preparing == preparing &&
+      other.playing == playing;
+
+  @override
+  int get hashCode => Object.hash(active, preparing, playing);
+}
+
 class _HomeSongRow extends StatelessWidget {
   const _HomeSongRow({
     required this.song,
@@ -956,12 +984,16 @@ class _HomeSongRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return AnimatedBuilder(
-      animation: player,
-      builder: (context, _) {
-        final active =
-            song.hash.isNotEmpty && player.currentSong?.hash == song.hash;
-        final preparing = player.isPreparingSong(song);
+    return ListenableSelector<PlayerController, _HomeSongActivity>(
+      listenable: player,
+      selector: (_, player) => _HomeSongActivity(
+        active: song.hash.isNotEmpty && player.currentSong?.hash == song.hash,
+        preparing: player.isPreparingSong(song),
+        playing: player.isPlaying,
+      ),
+      builder: (context, activity) {
+        final active = activity.active;
+        final preparing = activity.preparing;
         final activeColor = colorScheme.primary;
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -998,7 +1030,7 @@ class _HomeSongRow extends StatelessWidget {
                                   )
                                 : NowPlayingBadge(
                                     active: active,
-                                    playing: player.isPlaying,
+                                    playing: activity.playing,
                                     color: activeColor,
                                     size: 14,
                                   ),

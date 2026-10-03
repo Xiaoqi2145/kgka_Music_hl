@@ -10,6 +10,7 @@ import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/listenable_selector.dart';
 import '../widgets/skeleton_box.dart';
 import '../widgets/music_formatters.dart';
 import '../widgets/mini_player.dart';
@@ -1467,6 +1468,34 @@ class _LoadMoreFooter extends StatelessWidget {
   }
 }
 
+/// 歌曲行真正关心的播放态。
+///
+/// 歌单详情里每一行都订阅 [PlayerController]，而播放器的 `notifyListeners()`
+/// 调用点有数十处（下载进度、歌词、定时器、音量均衡……）。整控制器订阅意味着
+/// 任何一次通知都会重建全部可见行。这里只挑出行真正用到的三个字段，
+/// 值不变就不重建。
+class _SongRowActivity {
+  const _SongRowActivity({
+    required this.active,
+    required this.preparing,
+    required this.playing,
+  });
+
+  final bool active;
+  final bool preparing;
+  final bool playing;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _SongRowActivity &&
+      other.active == active &&
+      other.preparing == preparing &&
+      other.playing == playing;
+
+  @override
+  int get hashCode => Object.hash(active, preparing, playing);
+}
+
 class _SongRow extends StatelessWidget {
   const _SongRow({
     required this.song,
@@ -1492,11 +1521,16 @@ class _SongRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return AnimatedBuilder(
-      animation: player,
-      builder: (context, _) {
-        final active = player.currentSong?.hash == song.hash;
-        final preparing = player.isPreparingSong(song);
+    return ListenableSelector<PlayerController, _SongRowActivity>(
+      listenable: player,
+      selector: (_, player) => _SongRowActivity(
+        active: song.hash.isNotEmpty && player.currentSong?.hash == song.hash,
+        preparing: player.isPreparingSong(song),
+        playing: player.isPlaying,
+      ),
+      builder: (context, activity) {
+        final active = activity.active;
+        final preparing = activity.preparing;
         final activeColor = colorScheme.primary;
         return InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -1560,7 +1594,7 @@ class _SongRow extends StatelessWidget {
                                     )
                                   : NowPlayingBadge(
                                       active: active,
-                                      playing: player.isPlaying,
+                                      playing: activity.playing,
                                       color: activeColor,
                                       size: 14,
                                     ),
