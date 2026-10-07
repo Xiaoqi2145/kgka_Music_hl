@@ -178,7 +178,7 @@ class PlayerController extends ChangeNotifier {
       }
       _noteProgressTick(value);
       _maybeSyncDesktopLyricFromPosition();
-      // 无缝播放：临近结束（≤30s）时后台预解析下一曲播放地址。
+      // 预加载歌曲：临近结束（≤30s）时后台预解析下一曲播放地址。
       if (isPlaying && !_isSeeking && !isPreparing && _ownsLoadedSource) {
         unawaited(_prepareNextSourceIfNeeded());
       }
@@ -286,7 +286,7 @@ class PlayerController extends ChangeNotifier {
   bool _playbackSessionDirty = false;
   Timer? _sessionSaveTimer;
 
-  // ===== 无缝播放（下一曲预解析） =====
+  // ===== 预加载歌曲（下一曲预解析） =====
   static const _gaplessPlaybackSettingKey = 'settings.gapless_playback_enabled';
   bool gaplessPlaybackEnabled = true;
   _PreparedNextSource? _preparedNext;
@@ -1476,7 +1476,7 @@ class PlayerController extends ChangeNotifier {
 
   String _songKey(Song song) => song.hash.isNotEmpty ? song.hash : song.id;
 
-  // ===== 无缝播放 =====
+  // ===== 预加载歌曲 =====
 
   void _invalidateNavigation() {
     ++_playRequestGeneration;
@@ -1612,7 +1612,7 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 无缝播放：剩余时长进入 30 秒窗口后，后台解析下一曲的播放地址，
+  /// 预加载歌曲：剩余时长进入 30 秒窗口后，后台解析下一曲的播放地址，
   /// 自动切歌时直接使用，省去一次网络往返。解析失败静默忽略，
   /// 切歌走正常解析路径（含音质降级），不影响正常播放。
   Future<void> _prepareNextSourceIfNeeded() async {

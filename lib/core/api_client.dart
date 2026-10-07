@@ -127,7 +127,8 @@ class ApiClient {
   }
 
   /// 处理响应：更新 sessionId、校验状态码、解码 JSON。
-  Future<dynamic> _processResponse(http.Response response) {
+  /// 必须同步：调用点位于 `_sendWithRetry` 的 try 内，返回 Future 会让异常逃逸出重试范围。
+  dynamic _processResponse(http.Response response) {
     final responseSessionId = response.headers['x-kg-session-id'];
     if (responseSessionId != null && responseSessionId.isNotEmpty) {
       sessionId = responseSessionId;
@@ -136,13 +137,13 @@ class ApiClient {
       throw ApiException(response.body, statusCode: response.statusCode);
     }
     if (response.body.trim().isEmpty) {
-      return Future.value(null);
+      return null;
     }
     try {
       final decoded = jsonDecode(response.body);
-      return Future.value(unwrapData(decoded));
+      return unwrapData(decoded);
     } on FormatException {
-      return Future.value(response.body);
+      return response.body;
     }
   }
 
