@@ -1,15 +1,15 @@
 > 文档编号：KA-03-09
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/player_controller.dart（3 322 行 LF / 3 089 行非空，最大控制器）、lib/services/music_audio_handler.dart、lib/services/playback_loudness.dart、lib/services/playback_phase.dart、lib/services/playback_failure.dart、lib/services/transition_coordinator.dart、lib/services/volume_normalization_service.dart
-> 最近更新：2026-09-26
-> 变更触发条件：播放链路、状态字段、音质策略、会话持久化、无缝播放逻辑发生变化时
+> 关联代码：lib/controllers/player_controller.dart（3 322 行 LF / 3 101 行非空，最大控制器）、lib/services/music_audio_handler.dart、lib/services/playback_loudness.dart、lib/services/playback_phase.dart、lib/services/playback_failure.dart、lib/services/transition_coordinator.dart、lib/services/volume_normalization_service.dart
+> 最近更新：2026-09-26（流订阅与恢复路径勘误）
+> 变更触发条件：播放链路、状态字段、音质策略、会话持久化、预加载歌曲逻辑发生变化时
 
 # 控制器层 · PlayerController
 
 ## TL;DR
 
-`PlayerController` 是整个应用的核心，3 322 行（LF 含空行口径）、约 120 个成员，承担**音源解析、音质降级、无缝预载、歌词加载、音效应用、音量均衡、队列管理、会话持久化、播放统计、睡眠定时**十个关注点。它通过订阅 7 个 `just_audio` 流驱动状态，用 `_playRequestGeneration` 代数号解决并发竞态。**这是全项目最需要拆分、也最不能轻率改动的文件。**
+`PlayerController` 是整个应用的核心，3 322 行（LF 含空行口径）、约 120 个成员，承担**音源解析、音质降级、预加载歌曲、歌词加载、音效应用、音量均衡、队列管理、会话持久化、播放统计、睡眠定时**十个关注点。它通过订阅 7 个 `just_audio` 流驱动状态，用 `_playRequestGeneration` 代数号解决并发竞态。**这是全项目最需要拆分、也最不能轻率改动的文件。**
 
 ---
 
@@ -45,25 +45,27 @@
 | `volumeNormalizationRefLufs` | `double` | `-14.0` | 参考响度 |
 | `addListeningTimeEnabled` | `bool` | `true` | 听歌时长上报 |
 | `resumePlaybackEnabled` | `bool` | `true` | 接续播放 |
-| `gaplessPlaybackEnabled` | `bool` | `true` | 无缝播放 |
+| `gaplessPlaybackEnabled` | `bool` | `true` | 预加载歌曲（UI 开关名；代码标识符沿用 `gapless*`） |
 | `errorMessage` | `String?` | `null` | 最近一次播放错误 |
 | `sleepTimerRemaining` | `Duration?` | `null` | 睡眠定时剩余 |
 
 ---
 
-## 2. 订阅的 7 个音频流（构造函数内，`player_controller.dart:112-200`）
+## 2. 订阅的音频流（构造函数内，`player_controller.dart:175-234`）
 
 | 流 | 处理 |
 |---|---|
-| `positionStream` | 更新 `_positionBase`（非 seek 中）、检查播放完成、同步桌面歌词进度、触发无缝预载（剩余 ≤30s） |
-| `durationStream` | 更新 `duration` + `notifyListeners()` |
+| `positionStream` | 更新 `_positionBase`（非 seek 中）、记录进度刻度、同步桌面歌词进度、触发预加载歌曲预解析（剩余 ≤30s） |
+| `playbackEventStream`（`_onPlaybackEvent`） | **唯一的原生状态提交点**：校验代际/租约后更新 `duration` 与位置；`processingState == completed` 时调 `_handleCompleted(lease)` |
 | `playerStateStream` | 更新 `isPlaying`/`isBuffering`、启动响度窗口、同步听歌时长、恢复/暂停播放缓存、同步桌面歌词播放态 |
-| `processingStateStream`（`.distinct()`） | `completed` → `_handleCompleted()` |
 | `androidAudioSessionIdStream` | 更新 sessionId → 重新应用均衡器 / 低音增强 / 音量均衡 |
-| `currentIndexStream` | `_onPlaylistIndexChanged()` |
-| `errorStream` | 记录日志 → 若非准备中/非完成处理中，**自动重载当前曲恢复播放** |
+| `sequenceStateStream` | `_onPlaylistSequenceChanged(state)` |
+| `errorStream` | 记录日志、写 `errorMessage`；**不自动重播**（见下方约束） |
+| `interruptionEventStream` / `becomingNoisyEventStream` / `devicesChangedEventStream` | 由 `_setupAudioSessionListeners()` 订阅，处理打断、拔耳机、设备接入（`player_controller.dart:2392,2429,2433`） |
 
-> **性能约束**：位置高频更新走独立的 `positionListenable`，**不触发全局 `notifyListeners()`**（注释见 `player_controller.dart:134`）。修改时务必保持。
+> **性能约束**：位置高频更新走独立的 `positionListenable`，**不触发全局 `notifyListeners()`**（注释见 `player_controller.dart:185`）。修改时务必保持。
+>
+> ⚠️ **勘误（2026-09-26 实测）**：本节此前列出的 `durationStream`、`processingStateStream`、`currentIndexStream` **均不存在**——`just_audio` 的时长与处理状态由 `playbackEventStream` 的 `PlaybackEvent` 一次性给出（`duration` 与 `processingState` 都是该事件字段），播放列表索引由 `sequenceStateStream` 承载。此前描述的 `_onPlaylistIndexChanged()` 方法在 `lib/` 中**不存在**（grep 实测 0 命中），实际处理函数是 `_onPlaylistSequenceChanged(SequenceState)`（`player_controller.dart:1514`）。
 
 ---
 
@@ -109,13 +111,17 @@ lossless(FLAC) → high(320K) → standard(128K) → null（停止）
 
 ### 4.3 音质切换
 
-`setAudioQuality(quality, {reloadCurrent})`（`player_controller.dart:1419-1438`）：更新状态 → 清空预载的下一曲 → 持久化 `settings.audio_quality` → 可选重载当前曲。
+`setAudioQuality(quality, {reloadCurrent})`（`player_controller.dart:1419-1438`）：更新状态 → 清空预加载的下一曲 → 持久化 `settings.audio_quality` → 可选重载当前曲。
 
 ---
 
-## 5. 无缝播放（`_prepareNextSourceIfNeeded`，`player_controller.dart:1613`）
+## 5. 预加载歌曲（`_prepareNextSourceIfNeeded`，`player_controller.dart:1613`）
 
-> **语义边界（重要）**：这里的"无缝"指**预解析下一曲播放地址，消除切歌时的网络往返**，
+> **命名说明**：UI 开关名为「预加载歌曲」（`settings_page.dart:140`），代码标识符仍为
+> `gaplessPlaybackEnabled` / `settings.gapless_playback_enabled`。历史文档曾称「无缝播放」，
+> 该别称会夸大能力，现已统一为「预加载歌曲」。
+>
+> **语义边界（重要）**：这里的"预加载"指**预解析下一曲播放地址，消除切歌时的网络往返**，
 > **不承诺样本级音频接续**。预解析结果只是纯缓存（`_PreparedNextSource`），
 > **绝不追加到正在播放的音源列表**；真正换歌仍走"暂停 → `setAudioSources([单个音源])` → 播放"
 > （`lib/services/music_audio_handler.dart:72-93`）。样本级接续需要原生多子源边界交接，尚未实现。
@@ -187,13 +193,13 @@ lossless(FLAC) → high(320K) → standard(128K) → null（停止）
 | 机制 | 说明 | 位置 |
 |---|---|---|
 | 音频焦点 | `AudioFocusGate` 串行化请求；`_wasPlayingOnInterruptionBegin` 区分「被系统打断」与「用户手动暂停」 | `_reclaimAudioFocus`、`_setupAudioSessionListeners` |
-| 音量闪避 | 打断时 `_setDucked(true)` → 音量 × 0.5 | `_applyPlaybackVolume`，`player_controller.dart:240-241` |
-| 队列操作 | `addToQueue`（插到当前曲之后、去重）、`replaceQueue`（去重、保留当前曲）、`registerQueueExpansion`（版本校验） | `player_controller.dart:926-1008` |
-| 完成处理 | `_handleCompleted` + `_completionFallbackTimer` 兜底 | `player_controller.dart:1757+` |
+| 音量闪避 | 打断时 `_setDucked(true)` → 音量 × 0.5 | `_applyPlaybackVolume`，`player_controller.dart:265-274` |
+| 队列操作 | `addToQueue`（插到当前曲之后、去重）、`replaceQueue`（去重、保留当前曲）、`registerQueueExpansion`（版本校验） | `player_controller.dart:1317`、`:1359`、`:1393` |
+| 完成处理 | `_handleCompleted`（`player_controller.dart:2297`）。**没有位置兜底 Timer**：代码注释明确「Never skip the last 750/220ms by estimation」（`player_controller.dart:2364-2365`），即**不允许用估算提前判定播完**。此前文档提到的 `_completionFallbackTimer` 已于 2026-09-10 移除，`lib/` 中 0 命中 | `player_controller.dart:1609-1612`（唯一触发点） |
 | 播放缓存调度 | 30 秒稳定后缓存；暂停时挂起、恢复时继续 | `_schedulePlaybackCache`、`_pause/_resumePendingPlaybackCache` |
-| 听歌时长 | 每 30 分钟上报一次，每分钟检查 | `_listenTimeReportInterval`、`_listenTimeCheckInterval` |
-| 睡眠定时 | 支持「到时停止」与「播完当前曲停止」 | `setSleepTimer`、`setSleepTimerFinishSong` |
-| 桌面歌词 | 可见性、进度、播放态三路同步 | `_syncDesktopLyrics`、`_syncDesktopKaraokeProgress` |
+| 听歌时长 | 每 30 分钟上报一次，每分钟检查 | `player_controller.dart:116-117`、`:3128` |
+| 睡眠定时 | 支持「到时停止」与「播完当前曲停止」 | `player_controller.dart:2753`、`:2785` |
+| 桌面歌词 | 可见性、进度、播放态三路同步 | `_syncDesktopLyrics`（`:2591`）、`_syncDesktopLyricsVisibility`（`:2572`） |
 
 ---
 
@@ -202,9 +208,9 @@ lossless(FLAC) → high(320K) → standard(128K) → null（停止）
 1. **120+ 成员集中在一个类**：任何改动都可能引发播放回归，且无法单元测试（依赖 `just_audio` 与原生通道）。
 2. **大量 `unawaited`**：异常易被吞掉，排障依赖 `debugPrint` 日志。
 3. **音量均衡与用户音量耦合**：衰减路径直接 `audioPlayer.setVolume(gain × duck)`，用户调音量会被覆盖（`player_controller.dart:240-241`）。
-4. **`_playerErrorSub` 自动重播当前曲**：若错误是持续性的，可能形成重播循环（有 `_isHandlingPlayerError` 守卫，但只防单次重入）。
+4. **`errorStream` 不再自动重播当前曲**：实测处理函数只做 `_traceTransition('player_error')` + 写 `errorMessage` + `notifyListeners()`（`player_controller.dart:228-233`）。真正的恢复走 `_handleCompleted` → 失败分类 → `_recoverPreviousEntry()`（`player_controller.dart:1113`），即「回滚到上一条目」而不是「重播当前曲」。此前「自动重载当前曲形成重播循环」的描述已不成立。
 5. **元数据缓存窗口**依赖 `_retainMetadataWindow` 的三曲窗口，超出即淘汰；快速连续切歌时可能反复丢失。
-6. **无播放状态机**：`isPlaying/isBuffering/isPreparing/errorMessage` 是并列布尔，组合状态无法穷举，UI 需自行拼装。
+6. **无播放状态机**：`isPlaying/isBuffering/isPreparing/errorMessage` 是并列布尔，组合状态无法穷举，UI 需自行拼装。`lib/services/playback_phase.dart` 已抽出 `resolvePlaybackPhase()` 做优先级收敛（`player_controller.dart:344` 暴露 `playbackPhase`），但**底层布尔并列本身未消除**（见台账 TD-12）。
 
 ---
 

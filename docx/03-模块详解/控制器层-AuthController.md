@@ -3,8 +3,8 @@
 > 文档编号：KA-03-10
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/auth_controller.dart（516 行，主） + lib/ui/pages/login_page.dart（1177 行） + lib/services/music_api.dart + lib/core/api_client.dart + lib/services/cache_service.dart + lib/services/vip_background_task.dart + lib/models/music_models.dart + lib/main.dart
-> 最近更新：2026-09-09
+> 关联代码：lib/controllers/auth_controller.dart（603 行 LF / 541 行非空，主） + lib/ui/pages/login_page.dart（1257 行 LF / 1177 行非空） + lib/services/music_api.dart + lib/core/api_client.dart + lib/services/cache_service.dart + lib/services/vip_background_task.dart + lib/models/music_models.dart + lib/main.dart
+> 最近更新：2026-09-26（行数复核）
 > 变更触发条件：新增或修改登录方式、改动 session 持久化键、改动登录态字段或登出清理范围、改动 CacheService 用户缓存键前缀、改动二维码轮询策略时
 
 ---

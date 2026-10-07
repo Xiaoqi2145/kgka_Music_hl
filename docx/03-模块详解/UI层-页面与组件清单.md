@@ -3,31 +3,33 @@
 > 文档编号：KA-03-14
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/ui/pages/（20 个文件）、lib/ui/widgets/（14 个文件）、lib/ui/adaptive_layout.dart、lib/ui/app_theme.dart
-> 最近更新：2026-09-21
+> 关联代码：lib/ui/pages/（20 个文件）、lib/ui/widgets/（15 个文件）、lib/ui/adaptive_layout.dart、lib/ui/app_theme.dart
+> 最近更新：2026-09-26（行数与文件数实测复核）
 > 变更触发条件：新增/删除/重命名页面或组件、单个文件行数变化超过 30%、导航入口或出口变化、巨型文件拆分时
 
 ---
 
 ## 1. 一句话结论（TL;DR）
 
-UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的约 64.8%；其中 `player_page.dart`（3298 行）、`home_page.dart`（1712 行）、`playlist_detail_page.dart`（1651 行）三个文件合计 6661 行，**占 UI 层的 34.2%**，是架构解耦的首要目标。全部页面中仅 `SettingsPage` 与 `AudioInterruptionSettingsPage` 是 `StatelessWidget`，导航全部使用 `Navigator 1.0` 的 `MaterialPageRoute`，无命名路由。
+UI 层共 **37 个 Dart 文件 / 19 822 行**（非空口径），占 `lib/` 的约 59.0%；其中 `player_page.dart`（3298 行）、`home_page.dart`（1781 行）、`playlist_detail_page.dart`（1702 行）三个文件合计 6781 行，**占 UI 层的 34.2%**，是架构解耦的首要目标。全部页面中仅 `SettingsPage` 与 `AudioInterruptionSettingsPage` 是 `StatelessWidget`，导航全部使用 `Navigator 1.0` 的 `MaterialPageRoute`，无命名路由。
 
 > **行数口径**：本文档采用**非空行**口径（统计时排除纯空白行）。`../01-项目总览/目录结构与文件地图.md` 采用 **LF 含空行**口径，两者不可直接比较。`player_page.dart` 按非空口径为 3298 行，其 **LF 总行数为 3544 行**；§5 结构树中的「行区间」是文件真实行号，与本节口径无关。
+>
+> ⚠️ **2026-09-26 实测复核**：本节此前的「36 个文件 / 19471 行」已过期——`lib/ui/widgets/` 现为 **15 个文件**（新增 `listenable_selector.dart`），`home_page.dart`、`playlist_detail_page.dart`、`library_page.dart` 均已增长。**权威行数口径与命令见 `../06-质量保障/测试策略与现有用例.md` §0**。
 
 ---
 
 ## 2. 现状（统计概览）
 
-| 分组 | 文件数 | 行数 | 占比（占 UI 层） |
+| 分组 | 文件数 | 行数（非空） | 占比（占 UI 层） |
 |---|---|---|---|
-| `lib/ui/pages/` | 20 | 16481 | 84.6% |
-| `lib/ui/widgets/` | 14 | 2726 | 14.0% |
+| `lib/ui/pages/` | 20 | 16 722 | 84.4% |
+| `lib/ui/widgets/` | 15 | 2 836 | 14.3% |
 | `lib/ui/adaptive_layout.dart` | 1 | 76 | 0.4% |
-| `lib/ui/app_theme.dart` | 1 | 188 | 1.0% |
-| **合计** | **36** | **19471** | 100% |
+| `lib/ui/app_theme.dart` | 1 | 188 | 0.9% |
+| **合计** | **37** | **19 822** | 100% |
 
-三个巨型文件（`player_page.dart` 3298 + `home_page.dart` 1712 + `playlist_detail_page.dart` 1651 = 6661）单独占 UI 层的 34.2%。
+三个巨型文件（`player_page.dart` 3298 + `home_page.dart` 1781 + `playlist_detail_page.dart` 1702 = 6781）单独占 UI 层的 34.2%。
 
 ---
 
@@ -38,9 +40,9 @@ UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的�
 | 文件（`lib/ui/pages/`） | 行数 | 公开类 | 类型 | 主要职责 |
 |---|---|---|---|---|
 | `player_page.dart` | 3298 | `PlayerPage` | Stateful | 播放页：竖屏封面/歌词双页 + 横屏布局、逐字歌词、队列面板、歌词候选预览 |
-| `home_page.dart` | 1712 | `HomePage` | Stateful | 首页：推荐（每日推荐 + 精选歌单）与电台两个 Tab，含搜索入口 |
-| `playlist_detail_page.dart` | 1651 | `PlaylistDetailPage` | Stateful | 歌单/专辑详情：分页加载、搜索、排序、收藏/删除、后台队列扩展 |
-| `library_page.dart` | 1189 | `LibraryPage` | Stateful | 我的：账号行、快捷卡（我喜欢/云盘/已下载/本地/历史）、歌单三 Tab（创建/收藏/专辑）+ 多选删除 |
+| `home_page.dart` | 1781 | `HomePage` | Stateful | 首页：推荐（每日推荐 + 精选歌单）与电台两个 Tab，含搜索入口 |
+| `playlist_detail_page.dart` | 1702 | `PlaylistDetailPage` | Stateful | 歌单/专辑详情：分页加载、搜索、排序、收藏/删除、后台队列扩展 |
+| `library_page.dart` | 1310 | `LibraryPage` | Stateful | 我的：账号行、快捷卡（我喜欢/云盘/已下载/本地/历史）、歌单三 Tab（创建/收藏/专辑）+ 多选删除 |
 | `settings_page.dart` | 1179 | `SettingsPage` | **Stateless** | 设置总入口：账号/播放/本地/网络/缓存/个性化/应用七组，含缓存管理 BottomSheet |
 | `login_page.dart` | 1177 | `LoginPage` | Stateful | 登录：手机号验证码 + 扫码两个 Tab、多账号选择、API 地址设置 |
 | `search_page.dart` | 967 | `SearchPage` | Stateful | 搜索：酷狗单源、搜索联想、热搜榜、搜索历史 |
@@ -103,11 +105,12 @@ UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的�
 | `song_action_sheets.dart` | 315 | `SongSheetAction`、`showSongActionSheet()`、`showAddToPlaylistSheet()`、`addSongToQueueWithFeedback()` | 歌曲操作面板（宫格 + 列表两种形态）、添加到歌单、加入队列 | 首页、歌单详情、歌手详情、云盘、搜索、播放历史、播放页 |
 | `sleep_timer_sheet.dart` | 229 | `showSleepTimerSheet()` | 定时播放面板（剩余时间展示、预设时长芯片） | `player_page.dart:334` |
 | `toast.dart` | 213 | `Toast`、`ToastType` | 全局 Toast，挂在根 Navigator 的 Overlay，不依赖调用处 context | 全项目；`navigatorKey` 绑定在 `main.dart:142` |
-| `artwork.dart` | 156 | `Artwork` | 封面组件：磁盘缓存 → `Image.file`，含 Shimmer 占位与渐变兜底 | 几乎所有列表与详情页 |
+| `artwork.dart` | 193 | `Artwork`、`artworkDecodePixels()` | 封面组件：磁盘缓存 → `Image.file`，含 Shimmer 占位与渐变兜底；`artworkDecodePixels` 是**公开纯函数**（已被 `test/artwork_and_selector_test.dart` 覆盖） | 几乎所有列表与详情页 |
 | `playback_speed_sheet.dart` | 150 | `showPlaybackSpeedSheet()` | 倍速面板（0.5x ~ 3.0x，吸附步进） | `player_page.dart:299` |
 | `now_playing_badge.dart` | 99 | `NowPlayingBadge` | 正在播放的 3 柱跳动指示器（`CustomPainter`） | 本地音乐、歌单详情、歌手详情、云盘、播放历史、搜索 |
 | `audio_quality_sheet.dart` | 85 | `showAudioQualitySheet()` | 音质选择面板（标准/高品/无损） | `settings_page.dart:371`、`player_page.dart:400` |
-| `cached_artwork_image.dart` | 61 | `CachedArtworkImage`（`ImageProvider`） | 把 `ArtworkCacheService` 磁盘缓存包装成 `ImageProvider` | `player_page.dart` 的 `_ArtworkBackground` |
+| `listenable_selector.dart` | 68 | `ListenableSelector<T extends Listenable, S>` | 按派生值裁剪重建：selector 结果不变则不重建子树 | **`lib/` 中当前无使用点**（仅 `test/artwork_and_selector_test.dart` 引用），属「有测试、未接线」的组件 |
+| `cached_artwork_image.dart` | 66 | `CachedArtworkImage`（`ImageProvider`） | 把 `ArtworkCacheService` 磁盘缓存包装成 `ImageProvider` | `player_page.dart` 的 `_ArtworkBackground` |
 | `skeleton_box.dart` | 27 | `SkeletonBox`、`SkeletonBox.circle` | 骨架屏矩形/圆形占位块 | 首页、歌单详情、歌手详情、云盘 |
 | `preparing_indicator.dart` | 26 | `PreparingIndicator` | 音源解析/替换中的加载指示器（提交前的唯一中间态反馈） | `home_page.dart:949`、`playlist_detail_page.dart:1538`、`mini_player.dart:136` |
 | `music_formatters.dart` | 5 | `formatPlayCount(int?)` | 播放量格式化：`≥10000` 显示「x.x 万次播放」，null 显示「精选歌单」 | 首页、歌单详情 |
@@ -117,6 +120,8 @@ UI 层共 **36 个 Dart 文件 / 19471 行**（非空口径），占 `lib/` 的�
 ## 5. 设计说明 · 巨型文件内部结构与可拆分点
 
 > 本节「行区间」为文件真实行号（与 §2 的行数口径不同）。
+>
+> ⚠️ **行区间待重核（2026-09-26）**：`home_page.dart`（1819 → 1897 行）与 `playlist_detail_page.dart`（1747 → 1800 行）在本节锚点写入后**已增长**，因此 §5.2 / §5.3 中各私有类的「行区间」与「可拆分点」行号**尚未逐项复核**，可能整体偏移。按符号名（如 `_RadioSection`、`_SongRow`）定位比按行号可靠；拆分前请以当前文件实际内容为准。
 
 ### 5.1 `player_page.dart`（3298 行非空，文件真实行号 1-3544）
 
@@ -166,7 +171,7 @@ PlayerPage (:31)
 | `_playerMoreActions`（顶层函数，构造操作面板项） | 279-400 | 122 | `lib/ui/widgets/player/player_actions.dart` |
 | `_PlayerBody` 本体保留 | 383-673 | 291 | 仅保留竖/横屏分叉与页面状态 |
 
-### 5.2 `home_page.dart`（1712 行非空，文件真实行号 1-1819）
+### 5.2 `home_page.dart`（1781 行非空，文件真实行号 1-1897）
 
 ```
 HomePage (:21)
@@ -201,7 +206,7 @@ HomePage (:21)
 | `_HomeSongRow` | 888-1063 | 176 | 与 `playlist_detail_page._SongRow`、`cloud_drive_page._CloudSongRow`、`artist_detail_page._ArtistSongRow` 合并为公共歌曲行组件 |
 | 骨架屏与错误态 | 1690-1819 | 130 | 与各页骨架屏统一到 `lib/ui/widgets/skeletons/` |
 
-### 5.3 `playlist_detail_page.dart`（1651 行非空，文件真实行号 1-1747）
+### 5.3 `playlist_detail_page.dart`（1702 行非空，文件真实行号 1-1800）
 
 ```
 openPlaylistDetail (:27)   ← 竖屏 push / 横屏 showGeneralDialog 右面板

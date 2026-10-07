@@ -11,7 +11,7 @@
 
 ## 一句话结论（TL;DR）
 
-App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`；`ApiClient` 自动剥离响应体顶层 `data` 节点（`api_client.dart:160-168`），**业务成功与否只认 `status == 1`**（`music_api.dart:578-580`），而当前**只有登录链路**真正检查了这个判定。
+App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`；`ApiClient` 自动剥离响应体顶层 `data` 节点（`api_client.dart:153-161`），**业务成功与否只认 `status == 1`**（`music_api.dart:578-580`），而当前**只有登录链路**真正检查了这个判定。
 新增接口必须走本文 §10 的 8 步流程，且不得手改 `API-端点清单.md` / `API-Schema索引.md`（自动生成）。
 
 ---
@@ -23,8 +23,8 @@ App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`
 | OpenAPI 版本 | 3.1.1 | `api.json:2` |
 | 文档标题 / 版本 | `KuGou Music API` / `v1` | `api.json:3-7` |
 | OpenAPI `servers` | `https://localhost:7293/` | `api.json:8-12` |
-| 端点总数（method × path） | 149 | `API-端点清单.md:9` |
-| Schema 总数 | 111 | `API-Schema索引.md:4` |
+| 端点总数（method × path） | 149 | `API-端点清单.md` §统计（**该文件已过期，实测缺 1 条：`POST /playlist/external/parse`，见本文 §13**） |
+| Schema 总数 | 111 | `API-Schema索引.md`（**该文件已过期，实测缺 2 条：`MusicCommentItem`、`MusicCommentResponse`，见本文 §13**） |
 | 标签分组 | 19（Album / Artist / Captcha / Comment / Discovery / ExternalPlaylist / Fm / Login / Lyric / MediaCatalog / PlayList / Rank / Register / Report / Search / Song / User / Youth / ApplicationInfo） | `api.json` `tags` |
 | App 默认 base URL | `https://music.api.hoilai.cn` | `app_config.dart:10` |
 | 编译期覆盖变量 | `KA_MUSIC_API_BASE_URL`（`String.fromEnvironment`） | `app_config.dart:14-17` |
@@ -38,7 +38,7 @@ App 只走一条 HTTP 通道：`MusicApi` → `ApiClient` → `AppConfig.apiUri`
 
 ## 2. base URL 解析规则（`AppConfig.apiUri`）
 
-`app_config.dart:97-112` 是**唯一**的 URL 拼装入入口：
+`app_config.dart:100-115` 是**唯一**的 URL 拼装入入口：
 
 ```dart
 static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
@@ -70,17 +70,17 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 | 优先级 | 来源 | 说明 | 锚点 |
 |---|---|---|---|
-| 1（最高） | `_customBaseUrl`（运行时用户设置） | 非空即生效 | `app_config.dart:53` |
+| 1（最高） | `_customBaseUrl`（运行时用户设置） | 非空即生效 | `app_config.dart:56` |
 | 2 | `AppConfig.apiBaseUrl`（编译期） | `--dart-define=KA_MUSIC_API_BASE_URL=...` | `app_config.dart:14-17` |
 | 3（兜底） | `_defaultApiBaseUrl` | 常量默认值 | `app_config.dart:10` |
 
-自定义 base URL 的写入/清理规则（`app_config.dart:82-95`）：传入 `null`、空串、**等于编译期默认值**、或命中废弃域名列表时，一律清除持久化并回落默认值。
+自定义 base URL 的写入/清理规则（`app_config.dart:84-98`）：传入 `null`、空串、**等于编译期默认值**、或命中废弃域名列表时，一律清除持久化并回落默认值。
 
 ---
 
 ## 3. 统一响应解包与业务判定
 
-### 3.1 解包（`api_client.dart:160-168`）
+### 3.1 解包（`api_client.dart:153-161`）
 
 | 响应形态 | `unwrapData` 结果 |
 |---|---|
@@ -90,7 +90,7 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 因此 `MusicApi` 里 `asMap(await _client.get('/user/playlist', ...))` 拿到的**就是 `data` 节点**，字段直接读 `json['info']` / `json['userid']`（`music_api.dart:125-130`）。
 
-### 3.2 HTTP 层（`api_client.dart:138-155`）
+### 3.2 HTTP 层（`api_client.dart:131-148`）
 
 | 情况 | 行为 |
 |---|---|
@@ -125,18 +125,18 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 | 请求头 | 取值来源 | 何时出现 | 锚点 |
 |---|---|---|---|
-| `Accept` | 固定 `application/json` | 始终 | `api_client.dart:59` |
-| `Content-Type` | 固定 `application/json` | 始终（GET 也带） | `api_client.dart:60` |
-| `X-Kg-Session-Id` | 先由 `token` 写入 | `token != null` | `api_client.dart:63-66` |
-| `X-Kg-Session-Id` | 再由 `sessionId` **覆盖** | `sessionId != null` | `api_client.dart:70-72` |
-| `t1` | `t1` | `t1 != null` | `api_client.dart:67-69` |
-| `Authorization` | **已注释，未启用** | 永不 | `api_client.dart:64` |
+| `Accept` | 固定 `application/json` | 始终 | `api_client.dart:51` |
+| `Content-Type` | 固定 `application/json` | 始终（GET 也带） | `api_client.dart:52` |
+| `X-Kg-Session-Id` | 先由 `token` 写入 | `token != null` | `api_client.dart:55-58` |
+| `X-Kg-Session-Id` | 再由 `sessionId` **覆盖** | `sessionId != null` | `api_client.dart:62-64` |
+| `t1` | `t1` | `t1 != null` | `api_client.dart:59-61` |
+| `Authorization` | **已注释，未启用** | 永不 | `api_client.dart:56` |
 
 会话写回链路：
 
 | 环节 | 行为 | 锚点 |
 |---|---|---|
-| 响应头 `x-kg-session-id` | 自动保存到 `ApiClient.sessionId` | `api_client.dart:139-142` |
+| 响应头 `x-kg-session-id` | 自动保存到 `ApiClient.sessionId` | `api_client.dart:132-135` |
 | `MusicApi.setSession(null)` | 清空 `token` / `t1` / `sessionId` | `music_api.dart:21-25` |
 | `MusicApi.setSession(session)` | 写 `token` / `t1`；**`sessionId` 为空时不覆盖**（保留响应头里的值） | `music_api.dart:27-37` |
 | 登录成功返回 | `LoginSession.sessionId` 取 `_client.sessionId` | `music_api.dart:80-88`、`:91-100` |
@@ -147,23 +147,23 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 ## 5. 重试、超时与并发
 
-`ApiClient._sendWithRetry`（`api_client.dart:78-135`）：
+`ApiClient._sendWithRetry`（`api_client.dart:70-110`）：
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| `maxRetries` | 2（共最多 3 次尝试） | `api_client.dart:80` |
-| `allowRetry`（GET） | `true` | `get` 未传该参数，用默认值 |
-| `allowRetry`（POST） | **`false`** | `post({allowRetry = false})`（`api_client.dart:45`）→ **POST 默认不重试** |
-| 单次尝试超时 | 15 秒 | `api_client.dart:83` |
-| 总体 deadline | 45 秒 | `api_client.dart:84` |
-| 可重试状态码 | 500 / 502 / 503 / 504 | `api_client.dart:96-101` |
-| 退避基数 | `500ms × 2^attempt` | `api_client.dart:127` |
-| `Retry-After` | 秒 × 1000，clamp 到 0–15000ms | `api_client.dart:125-128` |
-| 抖动 | 随机 0–249ms | `api_client.dart:129` |
-| 触发重试的异常 | `TimeoutException`、`http.ClientException` | `api_client.dart:102-112` |
-| 直接抛出、不重试 | `FormatException` | `api_client.dart:113-114` |
-| 重试耗尽 | `throw ApiException('请求失败，已重试 2 次')` | `api_client.dart:117` |
-| deadline 用尽 | `throw TimeoutException('API request deadline exceeded')` | `api_client.dart:90`、`:133` |
+| `maxRetries` | 2（共最多 3 次尝试） | `api_client.dart:72` |
+| `allowRetry`（GET） | `true` | `get` 未传该参数，用默认值（`:27-31`） |
+| `allowRetry`（POST） | **`false`** | `post({allowRetry = false})`（`api_client.dart:37`）→ **POST 默认不重试** |
+| 单次尝试超时 | 15 秒 | `api_client.dart:75` |
+| 总体 deadline | 45 秒 | `api_client.dart:76` |
+| 可重试状态码 | 500 / 502 / 503 / 504 | `api_client.dart:88-93` |
+| 退避基数 | `500ms × 2^attempt` | `api_client.dart:118-120` |
+| `Retry-After` | 秒 × 1000，clamp 到 0–15000ms | `api_client.dart:117-120` |
+| 抖动 | 随机 0–249ms | `api_client.dart:121` |
+| 触发重试的异常 | `TimeoutException`、`http.ClientException` | `api_client.dart:99-104` |
+| 直接抛出、不重试 | `FormatException` | `api_client.dart:105-107` |
+| 重试耗尽 | `throw ApiException('请求失败，已重试 2 次')` | `api_client.dart:109` |
+| deadline 用尽 | `throw TimeoutException('API request deadline exceeded')` | `api_client.dart:82`、`:125` |
 
 > 幂等性约定：GET 默认可重试，POST 必须显式传 `allowRetry: true` 才会重试；当前 `MusicApi` **没有任何** POST 调用传了该参数。
 
@@ -173,7 +173,7 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 | 位置 | 字段 | 取值 | 含义 | 处理锚点 |
 |---|---|---|---|---|
-| HTTP | `statusCode` | 非 200–299 | 传输层失败，抛 `ApiException(statusCode)` | `api_client.dart:143-145` |
+| HTTP | `statusCode` | 非 200–299 | 传输层失败，抛 `ApiException(statusCode)` | `api_client.dart:136-138` |
 | 业务 | `status` | `1` | 成功（唯一判定条件） | `music_api.dart:578-580` |
 | 登录 | `errorCode` / `error_code` | `34175` + `accounts` 非空 | 同一手机号多账号，需用户选择 | `music_api.dart:582-590` |
 | 登录 | `requiresUserSelection` | `true` | 同上（新契约显式布尔，优先于错误码） | `api.json:8419-8421` |
@@ -192,19 +192,19 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 
 | 方法（锚点） | 端点 | 参数 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `userPlaylists` `music_api.dart:121` | `/user/playlist` | `page` / `pagesize` | 1 / 30 | 返回后重排：前 2 项固定，其余逆序（`_orderUserPlaylistsForDisplay`，`:869-876`） |
-| `recommendedPlaylists` `:186` | `/top/playlist` | `category_id` / `page` | 0 / 1 | **无 `pagesize`** |
-| `albumShop` `:208` | `/album/shop` | `page` / `pagesize` | 1 / 30 | 过滤 `mediaId > 0` |
-| `fmSongs` `:242` | `/fm/songs` | `fmid` / `type` / `offset` / `size` | −1 / 电台 `type` / 20 | `offset = -1` 表示「服务端决定起点」 |
-| `artistAudios` `:314` | `/artist/audios` | `id` / `page` / `pagesize` / `sort` | 1 / 30 / `hot` | `sort` 为字符串 |
-| `albumSongPage` `:346` | `/album/songs` | `id` / `page` / `pagesize` | 1 / 30 | 返回 `SongPage`（含 `rawItemCount`） |
-| `musicComments` `:388` | `/comment/music` | `mixsongid` / `page` / `pagesize` | 1 / 30 | |
-| `playlistSongPage` `:444` | `/playlist/track/all` | `id` / `page` / `pagesize` | 1 / 80 | |
-| `playlistSongs(fetchAll: true)` `:408` | `/playlist/track/all` | `page` / `pagesize` | 每页 **200** | 循环直到 `rawItemCount < 200` 或空页或 `shouldCancel()` 返回 true（`:427-440`） |
-| `cloudDrive` `:491` | `/user/cloud` | `page` / `pagesize` | 1 / 30 | |
-| `searchSongs` `:634` | `/search` | `keywords` / `page` / `pagesize` / `type` | 1 / 30 / `song` | |
-| `searchSuggest` `:622` | `/search/suggest` | `keywords` | — | 返回字符串列表，无分页 |
-| `searchHotKeywords` `:614` | `/search/hot` | — | — | 无分页 |
+| `userPlaylists` `music_api.dart:121` | `/user/playlist` | `page` / `pagesize` | 1 / 30 | 返回后重排：前 2 项固定，其余逆序（`_orderUserPlaylistsForDisplay`，`music_api.dart:816`） |
+| `recommendedPlaylists` `music_api.dart:186` | `/top/playlist` | `category_id` / `page` | 0 / 1 | **无 `pagesize`** |
+| `albumShop` `music_api.dart:208` | `/album/shop` | `page` / `pagesize` | 1 / 30 | 过滤 `mediaId > 0` |
+| `fmSongs` `music_api.dart:242` | `/fm/songs` | `fmid` / `type` / `offset` / `size` | −1 / 电台 `type` / 20 | `offset = -1` 表示「服务端决定起点」 |
+| `artistAudios` `music_api.dart:314` | `/artist/audios` | `id` / `page` / `pagesize` / `sort` | 1 / 30 / `hot` | `sort` 为字符串 |
+| `albumSongPage` `music_api.dart:346` | `/album/songs` | `id` / `page` / `pagesize` | 1 / 30 | 返回 `SongPage`（含 `rawItemCount`） |
+| `musicComments` `music_api.dart:388` | `/comment/music` | `mixsongid` / `page` / `pagesize` | 1 / 30 | |
+| `playlistSongs` `music_api.dart:408` | `/playlist/track/all` | `page` / `pagesize` | 每页 **200**（`fetchAll: true` 时） | 循环直到 `rawItemCount < 200` 或空页或 `shouldCancel()` 返回 true（`music_api.dart:427-440`） |
+| `playlistSongPage` `music_api.dart:444` | `/playlist/track/all` | `id` / `page` / `pagesize` | 1 / 80 | |
+| `cloudDrive` `music_api.dart:491` | `/user/cloud` | `page` / `pagesize` | 1 / 30 | |
+| `searchSongs` `music_api.dart:634` | `/search` | `keywords` / `page` / `pagesize` / `type` | 1 / 30 / `song` | |
+| `searchSuggest` `music_api.dart:622` | `/search/suggest` | `keywords` | — | 返回字符串列表，无分页 |
+| `searchHotKeywords` `music_api.dart:614` | `/search/hot` | — | — | 无分页 |
 
 **翻页终止判定**：仅 `playlistSongs(fetchAll: true)` 有自动翻页逻辑，用 `songPage.rawItemCount < perPage` 判断（`music_api.dart:438`）——注意它比较的是**原始条目数**而非解析后条数，因为解析会静默丢弃无效曲目。
 
@@ -254,11 +254,11 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | `searchHotKeywords` | `:614` | GET | `/search/hot` | `List<SearchHotCategory>` | |
 | `searchSuggest` | `:622` | GET | `/search/suggest` | `List<String>` | 取 `music[].keyword` |
 | `searchSongs` | `:634` | GET | `/search` | `List<Song>` | `type=song`；响应可能是数组 |
-| `lyrics` | `:722` | GET | `/search/lyric` + `/lyric` | `List<LyricLine>` | 最多试 8 个候选，取行数最多者 |
-| `searchLyricCandidates` | `:752` | GET | `/search/lyric` | `List<LyricCandidate>` | 递归收集 + `id:accessKey` 去重 |
-| `lyricsFromCandidate` | `:797` | GET | `/lyric` | `List<LyricLine>` | 先 `krc`，为空再 `lrc` |
-| `_lyricByFormat` | `:803` | GET | `/lyric` | `List<LyricLine>` | 私有；`decode: true` |
-| `parseLyrics`（顶层函数） | `:878` | — | — | `List<LyricLine>` | KRC/LRC 解析 + 翻译/音译合并 |
+| `lyrics` | `:669` | GET | `/search/lyric` + `/lyric` | `List<LyricLine>` | 最多试 8 个候选，取行数最多者 |
+| `searchLyricCandidates` | `:699` | GET | `/search/lyric` | `List<LyricCandidate>` | 递归收集 + `id:accessKey` 去重 |
+| `lyricsFromCandidate` | `:744` | GET | `/lyric` | `List<LyricLine>` | 先 `krc`，为空再 `lrc` |
+| `_lyricByFormat` | `:750` | GET | `/lyric` | `List<LyricLine>` | 私有；`decode: true` |
+| `parseLyrics`（顶层函数） | `:825` | — | — | `List<LyricLine>` | KRC/LRC 解析 + 翻译/音译合并 |
 
 ---
 
@@ -283,7 +283,7 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 | 3 | 在 `MusicApi` 新增方法：`Future<X> name(...)`，GET 用 `_client.get(path, query)`，POST 用 `_client.post(path, query:, body:)`；空值参数交给 `AppConfig.apiUri` 自动过滤 | 方法体不拼接 URL 字符串 |
 | 4 | 解包：`asMap(await ...)`；若响应可能是裸数组，按 `raw is List ? raw : asList(json['k'] ?? _firstListValue(json))` 兜底 | 兼容两种响应形态 |
 | 5 | 若需要判定业务失败，用 `_isSuccess(json)` 并 `throw ApiException('中文提示' + _failureSuffix(json))`（当前仅登录链路如此） | 明确错误文案 |
-| 6 | 若需要缓存，在对应 Controller 用 `CacheService.swr`（`cache_service.dart:208`），key 用 `cache_` 前缀（`cache_service.dart:47-53`），TTL 从 `AppConfig` 取 | 缓存 key 与 TTL 有据可查 |
+| 6 | 若需要缓存，在对应 Controller 用 `CacheService.swr`（`cache_service.dart:357`），key 用 `cache_` 前缀（`cache_service.dart:88-89` 的用户前缀表 + `:302` 等写入点），TTL 从 `AppConfig` 取 | 缓存 key 与 TTL 有据可查 |
 | 7 | 更新文档：本文 §8 对照表；若引入新字段/模型，同步 `数据模型参考.md`；端点清单/Schema 索引重新生成 | 文档与代码同提交 |
 | 8 | 验证：`flutter analyze` 通过；手工跑通登录态与匿名态各一次；无自动化用例时在 PR 描述写明验证步骤与真实响应片段 | 可复现的验证记录 |
 
@@ -294,16 +294,27 @@ static Uri apiUri(String path, [Map<String, Object?> query = const {}]) {
 ## 11. 约束与坑
 
 1. **除登录外没有业务失败判定**。`_isSuccess` 只在 `sendLoginCode` / `loginWithPhone` 里被调用（`music_api.dart:44`、`:77`）；其它接口即使返回 `status != 1` 也会被当作成功解析，UI 只能看到空列表。新增接口若依赖失败提示，必须显式加判定。
-2. **POST 默认不重试**（`api_client.dart:45`）。写操作（建歌单、加曲、删曲）网络抖动即失败，需调用方自行重试。
-3. **空值参数被静默丢弃**（`app_config.dart:107-109`）。`songUrl` 的 `album_id` / `album_audio_id` 为 null 时不会出现在请求里（`music_api.dart:470-476`），可能影响后端选源；不要误以为「传了 null」等价于「显式传空」。
-4. **`unwrapData` 会剥离 `data`**（`api_client.dart:160-168`）。若某端点返回 `{"data": null, ...}`，会拿到整个 Map 而非 null，字段读取会全部落空——排查时先打印原始响应。
-5. **非 JSON 响应被当成字符串返回**（`api_client.dart:149-154`）。网关返回 HTML 错误页时 `asMap` 得到 `{}`，表现为静默空数据。
-7. **两个参数未在契约中声明**：`searchLyricCandidates` 发送 `keyword` 与 `duration`（`music_api.dart:757-758`），而 `api.json` 的 `/search/lyric` 只声明 `hash` / `album_audio_id` / `keywords` / `man`（`api.json:2183-2215`）。属历史兼容写法，改动前需抓包确认。
-8. **加曲 body 与 schema 不一致**：`_songAddPayload` 发 `{name, hash, albumId, mixSongId}`（`music_api.dart:569-576`），而 `AddSongItem` 声明的是 `{hash, fileid, name}`（`api.json:6143-6164`）；`albumId` / `mixSongId` 未声明，`fileid` 未发送。
-9. **`Content-Type: application/json` 对 GET 也发送**（`api_client.dart:60`）。若后续接入第三方 CDN，需确认其容忍带 body 类型头的 GET。
-10. **登录态依赖响应头**：`sessionId` 只能从 `x-kg-session-id` 响应头获得（`api_client.dart:139-142`）；一旦被代理剥离，`/user/detail`、`/user/playlist` 将拿不到数据。
-11. **契约不稳定信号**：多个方法对同一响应做了多键兜底（`searchSongs` 的 `songs`/`song`/`lists`，`albumSongPage` 的 `songs`/`data`/`info`/`_firstListValue`），说明后端返回形态历史上有变动；新增接口不要假设单一形态。
-12. **`api.json` 的 `servers` 与 App 默认地址不同**（`api.json:8-12` 为 `https://localhost:7293/`），不要把 `servers` 当作生产地址。
+2. **POST 默认不重试**（`api_client.dart:37`）。写操作（建歌单、加曲、删曲）网络抖动即失败，需调用方自行重试。
+3. **空值参数被静默丢弃**（`app_config.dart:110-112`）。`songUrl` 的 `album_id` / `album_audio_id` 为 null 时不会出现在请求里（`music_api.dart:465-477`），可能影响后端选源；不要误以为「传了 null」等价于「显式传空」。
+4. **`unwrapData` 会剥离 `data`**（`api_client.dart:153-161`）。若某端点返回 `{"data": null, ...}`，会拿到整个 Map 而非 null，字段读取会全部落空——排查时先打印原始响应。
+5. **非 JSON 响应被当成字符串返回**（`api_client.dart:142-147`）。网关返回 HTML 错误页时 `asMap` 得到 `{}`，表现为静默空数据。
+6. **两个参数未在契约中声明**：`searchLyricCandidates` 发送 `keyword` 与 `duration`（`music_api.dart:703-705`），而 `api.json` 的 `/search/lyric` 只声明 `hash` / `album_audio_id` / `keywords` / `man`。属历史兼容写法，改动前需抓包确认。
+7. **加曲 body 与 schema 不一致**：`_songAddPayload` 发 `{name, hash, albumId, mixSongId}`（`music_api.dart:569-577`），而 `AddSongItem` 声明的是 `{hash, fileid, name}`；`albumId` / `mixSongId` 未声明，`fileid` 未发送。
+8. **`Content-Type: application/json` 对 GET 也发送**（`api_client.dart:52`）。若后续接入第三方 CDN，需确认其容忍带 body 类型头的 GET。
+9. **登录态依赖响应头**：`sessionId` 只能从 `x-kg-session-id` 响应头获得（`api_client.dart:132-135`）；一旦被代理剥离，`/user/detail`、`/user/playlist` 将拿不到数据。
+10. **契约不稳定信号**：多个方法对同一响应做了多键兜底（`searchSongs` 的 `songs`/`song`/`lists`，`albumSongPage` 的 `songs`/`data`/`info`/`_firstListValue`），说明后端返回形态历史上有变动；新增接口不要假设单一形态。
+11. **`api.json` 的 `servers` 与 App 默认地址不同**（`api.json:8-12` 为 `https://localhost:7293/`），不要把 `servers` 当作生产地址。
+
+### 11.1 自动生成文档已过期（本轮实测）
+
+用 `node docx/tools/gen-api-docs.js` 重新生成后与仓库内文件比对，**两份自动生成文档均落后于 `api.json`**（按规范不允许手改，故此处只登记差异，由生成脚本统一刷新）：
+
+| 文档 | 仓库现状 | `api.json` 实际 | 差异 |
+|---|---|---|---|
+| `API-端点清单.md` | 148 行端点 | 149 | 缺 `POST /playlist/external/parse`（ExternalPlaylist 标签，1 条） |
+| `API-Schema索引.md` | 109 行 schema | 111 | 缺 `MusicCommentItem`（17 属性）、`MusicCommentResponse`（15 属性） |
+
+> `api.json` 实测：149 paths / 149 operations / 111 schemas，与本文 §1 的「149 端点 / 111 schema」一致；**过期的是生成物，不是计数**。
 
 ---
 

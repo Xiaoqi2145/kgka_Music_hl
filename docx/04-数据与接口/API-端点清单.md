@@ -90,6 +90,7 @@
 
 | Method | Path | 说明 | 参数 |
 |---|---|---|---|
+| POST | `/playlist/external/parse` | 解析网易云 / QQ 音乐歌单分享链接，返回歌单名和歌曲名称列表。 | - |
 
 ### Fm（4）
 
@@ -332,6 +333,7 @@
 | `/playlist/del` | POST | PlayList | 取消收藏 / 删除歌单。 |
 | `/playlist/detail` | GET | PlayList | 获取歌单详情。 |
 | `/playlist/effect` | GET | PlayList | 音效歌单。 |
+| `/playlist/external/parse` | POST | ExternalPlaylist | 解析网易云 / QQ 音乐歌单分享链接，返回歌单名和歌曲名称列表。 |
 | `/playlist/similar` | GET | PlayList | 相似歌单。 |
 | `/playlist/tags` | GET | PlayList | 获取歌单标签分类。 |
 | `/playlist/track/all` | GET | PlayList | 获取歌单全部歌曲。 |

@@ -3,8 +3,8 @@
 > 文档编号：KA-03-13
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/local_music_controller.dart（105 行，主） + lib/ui/pages/local_songs_page.dart + lib/ui/pages/settings_page.dart + lib/ui/pages/library_page.dart + lib/controllers/player_controller.dart + lib/models/music_models.dart + lib/main.dart
-> 最近更新：2026-09-09
+> 关联代码：lib/controllers/local_music_controller.dart（128 行 LF / 114 行非空，主） + lib/ui/pages/local_songs_page.dart + lib/ui/pages/settings_page.dart + lib/ui/pages/library_page.dart + lib/controllers/player_controller.dart + lib/models/music_models.dart + lib/main.dart
+> 最近更新：2026-09-26（行数复核）
 > 变更触发条件：改动扫描目录规则、增删支持的文件类型、改动文件名解析规则、改动 settings.local_music_dir 键、把元数据读取从文件名切换到标签库时
 
 ---

@@ -3,15 +3,15 @@
 > 文档编号：KA-03-02
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/services/music_api.dart（1626 非空行 / 1762 总行，主） + lib/core/api_client.dart、lib/models/music_models.dart、lib/models/app_version.dart、lib/controllers/auth_controller.dart、lib/controllers/player_controller.dart
-> 最近更新：2026-09-08
+> 关联代码：lib/services/music_api.dart（1709 行 LF / 1577 行非空，主） + lib/core/api_client.dart、lib/models/music_models.dart、lib/models/app_version.dart、lib/controllers/auth_controller.dart、lib/controllers/player_controller.dart
+> 最近更新：2026-09-26（行数复核）
 > 变更触发条件：新增/删除后端端点、改动请求参数或返回模型、新增音源（跨平台）、改动登录流程或歌词解析策略时
 
 ---
 
 ## 1. 一句话结论（TL;DR）
 
-所有写操作走 `ApiClient.post`（不可重试），所有读取走 `ApiClient.get`（可重试 2 次）；`api.json` **未声明任何 securitySchemes**，因此「是否需登录」只能按端点语义与调用时机推断，标注为待核实。
+所有写操作走 `ApiClient.post`（不可重试），所有读取走 `ApiClient.get`（可重试 2 次）；`api.json` **未声明任何 securitySchemes**，因此「是否需登录」只能按端点语义与调用时机推断，标注为待核实。**MusicApi 只服务酷狗一个网络源**——`SongSource` 仅有 `kugou` 与 `local`（本地文件），不存在第二个网络平台（见 §3.10 勘误）。
 
 ---
 
@@ -21,10 +21,12 @@
 
 | 区段 | 行号 | 内容 |
 |---|---|---|
-| `MusicApi` 类 | `lib/services/music_api.dart:10-867` | 45 个公开方法 + 1 个 getter（`clientSessionId`）+ 6 个私有辅助 |
-| `_orderUserPlaylistsForDisplay` | `lib/services/music_api.dart:869-876` | 顶层函数，用户歌单展示排序 |
-| `parseLyrics` | `lib/services/music_api.dart:878-903` | **顶层公开函数**，KRC/LRC 解析入口（被 `player_controller` 与 `test/lyric_metadata_test.dart` 使用） |
-| 歌词解析私有实现 | `lib/services/music_api.dart:905-1762` | 元数据行识别、标题卡识别、翻译/音译轨对齐、调试日志 |
+| `MusicApi` 类 | `lib/services/music_api.dart:10-815` | 公开方法 + 1 个 getter（`clientSessionId`）+ 私有辅助 |
+| `_orderUserPlaylistsForDisplay` | `lib/services/music_api.dart:816-823` | 顶层函数，用户歌单展示排序 |
+| `parseLyrics` | `lib/services/music_api.dart:825-851` | **顶层公开函数**，KRC/LRC 解析入口（被 `player_controller` 与 `test/lyric_metadata_test.dart` 使用） |
+| 歌词解析私有实现 | `lib/services/music_api.dart:853-1709` | 元数据行识别、标题卡识别、翻译/音译轨对齐、调试日志 |
+
+> 行号按 2026-09-26 实测的 1709 行版本核对；此前记录的 `10-867 / 869-876 / 878-903 / 905-1762` 对应 1762 行旧版本，已整体前移。
 
 ### 2.2 依赖与装配
 
@@ -189,25 +191,29 @@
 | 歌词格式降级 | `krc` 无内容则取 `lrc` | `797-801` |
 | 歌词行数最优 | 候选中取解析行数最多的 | `741-749` |
 
-### 3.10 跨平台搜索差异与音源切换
+### 3.10 音源范围（已收窄为单一平台）
 
+> ⚠️ **勘误（2026-09-26 实测）**：本节此前名为「跨平台搜索差异与音源切换」，用三列表格对比「酷狗源」与「其他平台源」（`ApiClient.getRaw`、`limit`/`offset` 分页、无 `volume` 数据、隐藏收藏入口等）。**该功能已不存在**：
+>
+> - `SongSource` 枚举现在**只有两个值**：`kugou`（默认）与 `local`（本地文件），见 `lib/models/music_models.dart:415-421`。**没有第二个网络平台。**
+> - `ApiClient.getRaw` 方法不存在（见 `核心层-ApiClient.md` 勘误）。
+> - `lib/ui/pages/search_page.dart` 中**没有平台切换状态**（无 `_SearchPlatform`、无平台选择 UI）。
+>
+> 因此 MusicApi 的所有方法**只服务酷狗一个网络源**。代码中残留的 `song.source != SongSource.kugou` 判断现在只用于**排除本地曲目**，而非区分网络平台：
+
+| 判断点 | 现状语义 | 锚点 |
 |---|---|---|
-| 客户端 | `ApiClient.get`（带鉴权头） | `ApiClient.getRaw`（**不带任何鉴权头**） |
-| 请求次数 | 1 次 | 2 次（先取 id 列表，再批量取详情） |
-| 分页参数 | `page` / `pagesize` | `limit` / `offset` |
-| 响度/音量均衡 | 有 `volume` 数据 | 无（`_hydrateLocalLoudnessOnce` 直接 return，`player_controller.dart:790-792`） |
-| 收藏/歌单写入 | 支持 | 不支持（UI 隐藏操作，`lib/ui/pages/search_page.dart:833`） |
-| 歌手页 | 支持 | 不支持（`search_page.dart:171-174` 提示「其他平台歌曲暂不支持查看歌手」） |
-| 评论/歌词 | 支持 | 歌词不支持（`player_page.dart:569` 判定非酷狗源） |
+| 歌手页入口 | `song.source != SongSource.kugou` → 提示「其他平台歌曲暂不支持查看歌手」；实际拦下的是**本地曲目** | `lib/ui/pages/search_page.dart:155-158`、`lib/ui/pages/player_page.dart:576` |
+| 评论入口 | 非酷狗源不支持评论（同上，拦本地曲目） | `lib/ui/pages/player_page.dart:3483` |
+| 播放页「外部源」标记 | `song.source == SongSource.local` 时按外部源处理 | `lib/ui/pages/search_page.dart:753` |
 
-音源切换逻辑（`lib/ui/pages/search_page.dart`）：
+搜索页的实际状态字段（无平台维度）：
 
-| 项 | 事实 | 锚点 |
-|---|---|---|
-| 默认平台 | `_platform = _SearchPlatform.kugou` | `48` |
-| 切换行为 | 若已搜索过则用当前关键词自动重搜 | `156-164` |
-| 热词/建议 | 始终走酷狗端点，与平台选择无关 | `73`、`111` |
-| 搜索历史 | `SearchHistoryService` 本地存储，两平台共用 | `89`、`132` |
+| 项 | 事实 |
+|---|---|
+| 搜索入口 | `_search(keywords)` 固定调 `api.searchSongs(...)` |
+| 热词 / 建议 | 固定走酷狗端点 |
+| 搜索历史 | `SearchHistoryService` 本地存储 |
 
 ### 3.11 谁在缓存 MusicApi 的结果
 

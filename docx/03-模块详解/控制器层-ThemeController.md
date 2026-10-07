@@ -3,8 +3,8 @@
 > 文档编号：KA-03-12
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/theme_controller.dart（179 行，主） + lib/main.dart + lib/ui/app_theme.dart + lib/ui/adaptive_layout.dart + lib/ui/pages/personalization_settings_page.dart + lib/ui/pages/settings_page.dart + lib/ui/pages/player_page.dart
-> 最近更新：2026-09-09
+> 关联代码：lib/controllers/theme_controller.dart（207 行 LF / 183 行非空，主） + lib/main.dart + lib/ui/app_theme.dart + lib/ui/adaptive_layout.dart + lib/ui/pages/personalization_settings_page.dart + lib/ui/pages/settings_page.dart + lib/ui/pages/player_page.dart
+> 最近更新：2026-09-26（行数复核）
 > 变更触发条件：新增/删除预设色、改动 theme.* 设置键、改动背景图存储位置或透明度范围、改动屏幕方向策略、改动 AppTheme 与 ThemeController 的入参契约时
 
 ---

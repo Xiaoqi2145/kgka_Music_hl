@@ -2,7 +2,7 @@
 > 级别：L1 📌
 > 状态：现行
 > 关联代码：android/app/src/main/kotlin/com/hoilai/mm/music/MainActivity.kt（515 行）、LyricsOverlayService.kt（500 行）、KaraokeTextView.kt（143 行）、android/app/src/main/AndroidManifest.xml、android/app/src/main/res/xml/update_file_paths.xml、android/app/src/main/res/layout/overlay_lyrics.xml、android/app/src/main/res/drawable/overlay_background.xml、lib/services/audio_effects_service.dart、lib/services/desktop_lyrics_service.dart、lib/services/app_update_service.dart、lib/services/volume_normalization_service.dart、lib/ui/pages/app_shell.dart、lib/ui/pages/player_page.dart、lib/controllers/player_controller.dart
-> 最近更新：2026-09-08
+> 最近更新：2026-09-26
 > 变更触发条件：新增/删除自建 MethodChannel 或通道方法、改动 MainActivity / LyricsOverlayService / KaraokeTextView、改动 AndroidManifest 的组件声明、改动 audio_effects 的参数范围或默认值时，必须同步更新本文
 
 # Android 原生集成
@@ -181,9 +181,9 @@ Dart 侧解析：`EqualizerConfig.fromMap`（`audio_effects_service.dart:44-59`�
 
 | 回调方法 | 参数 | 触发点 | Kotlin 实现 | Dart 处理 |
 |---|---|---|---|---|
-| `onVisibilityChanged` | `visible`、`userClosed` | 悬浮窗显示/隐藏 | `MainActivity.kt:45-64`（接收 `ACTION_VISIBILITY_CHANGED` 广播） | `desktop_lyrics_service.dart:83-95` → `PlayerController._handleDesktopLyricsVisibility:2262-2274` |
+| `onVisibilityChanged` | `visible`、`userClosed` | 悬浮窗显示/隐藏 | `MainActivity.kt:45-64`（接收 `ACTION_VISIBILITY_CHANGED` 广播） | `desktop_lyrics_service.dart:83-95` → `PlayerController._handleDesktopLyricsVisibility`（接线在 `player_controller.dart:174`，实现在 `:2726`） |
 
-用户从悬浮窗点「关闭」时，Dart 侧把 `settings.desktop_lyrics_enabled` 写回 `false`（`player_controller.dart:2266-2273`）。
+用户从悬浮窗点「关闭」时，Dart 侧把 `settings.desktop_lyrics_enabled` 写回 `false`（`player_controller.dart:2726+`）。
 
 ### 6.3 Dart 侧封装与容错
 
@@ -192,10 +192,10 @@ Dart 侧解析：`EqualizerConfig.fromMap`（`audio_effects_service.dart:44-59`�
 | 平台判定 | 仅 Android（`!kIsWeb && defaultTargetPlatform == TargetPlatform.android`） | `desktop_lyrics_service.dart:72-74` |
 | `show` 失败 | 捕获 `PlatformException` / `MissingPluginException` 返回 `false` | `desktop_lyrics_service.dart:117-130` |
 | 其余方法失败 | 仅吞 `MissingPluginException`，静默忽略 | `desktop_lyrics_service.dart:108-115,132-202` |
-| 显示条件 | `desktopLyricsEnabled && currentSong != null && (!_isAppForeground || _desktopLyricsPreviewVisible)` | `player_controller.dart:2102-2106` |
-| 权限缺失 | 开关自动回滚为 `false` 并触发系统授权页 | `player_controller.dart:2084-2092` |
-| 设置持久化 | `settings.desktop_lyrics_settings` 存 JSON，启动时回灌原生 | `player_controller.dart:2222-2233,2542-2554` |
-| 歌词进度 | 有词级数据与无词级数据走同一 `updateKaraokeProgress`，行时长缺省时按「下一行时间差」或「曲尾」估算 | `player_controller.dart:2157-2220` |
+| 显示条件 | `desktopLyricsEnabled && currentSong != null && (!_isAppForeground \|\| _desktopLyricsPreviewVisible)`（`_shouldShowDesktopLyrics` getter） | `player_controller.dart:2566-2570` |
+| 权限缺失 | 开关自动回滚为 `false` 并触发系统授权页 | `player_controller.dart:2548-2556` |
+| 设置持久化 | `settings.desktop_lyrics_settings` 存 JSON（键 `player_controller.dart:108`），写入 `:2690-2696`，启动时回灌 `:3026-3033` | `player_controller.dart:108`、`:2690-2696`、`:3026-3033` |
+| 歌词进度 | 有词级数据与无词级数据走同一 `updateKaraokeProgress`，行时长缺省时按「下一行时间差」或「曲尾」估算（`_estimatedLineDuration`） | `player_controller.dart:2635-2661`、`:2663+` |
 
 ---
 

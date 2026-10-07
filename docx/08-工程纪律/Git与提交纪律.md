@@ -2,38 +2,42 @@
 > 级别：L4 ⚖️
 > 状态：现行
 > 关联代码：仓库级（.gitignore、.gitattributes、pubspec.yaml、android/app/build.gradle.kts）
-> 最近更新：2026-09-08
+> 最近更新：2026-10-07
 > 变更触发条件：引入 CI、引入 PR 强制检查、调整分支模型、仓库迁移或历史重写、新增二进制资源类型
 
 # Git 与提交纪律
 
 ## TL;DR
 
-1. 提交粒度 = **一个提交只做一件事**；格式 = **`type(scope): subject`**，type 从 12 个取值中选，冒号必须半角。
-2. 现状是**中英混用**（137 条中 87 条含中文、50 条纯英文、67 条用全角冒号、3 条 `fixs:`、1 条 `flx:`），本文件给出统一规则：**type/scope 英文小写，subject 与正文用中文**。
-3. 提交前必须跑通 4 条命令（见 §8），并确认没有 `build/`、`.dart_tool/`、`local.properties`、签名文件入库。
+1. 提交粒度 = **一个提交只做一件事**；格式 = **`type(scope): subject`**，type 从 §3.1 的 12 个取值中选，冒号必须半角。
+2. 现状是**中英混用**（143 条提交中 93 条含中文、50 条纯英文、67 条用全角冒号、3 条 `fixs:`、1 条 `flx:`），本文件给出统一规则：**type/scope 英文小写，subject 与正文用中文**。
+3. 提交前必须跑通 §8 的 6 条命令，并确认没有 `build/`、`.dart_tool/`、`local.properties`、签名文件入库。
 
 ---
 
-## 1. 现状（事实）
+## 1. 现状（提交历史的唯一权威统计）
+
+> 本节是 `docx/` 内**提交历史与远程**指标的唯一来源；`09-模板/提交信息模板.md` 不再复制该表（历史上两处各写一份并已漂移）。统计口径：`2026-10-07` 实测。
 
 | 项 | 实测 | 命令/锚点 |
 |---|---|---|
-| 提交总数 | 137 | `git rev-list --count HEAD`（2026-09-25 实测） |
-| merge 提交 | 14 | `git log --merges` |
-| 含中文 subject | 87 | `git log --format='%s'` |
+| 提交总数 | 143 | `git rev-list --count HEAD` |
+| merge 提交 / 非 merge | 14 / 129 | `git log --merges` |
+| 含中文 subject | 93 | `git log --format='%s'` |
 | 纯英文 subject | 50 | 同上 |
 | 使用全角冒号「：」 | 67 | 同上 |
-| 使用半角冒号「:」 | 54 | 同上 |
+| 使用半角冒号「:」 | 47 | 同上 |
 | 类型拼写错误 | `fixs:` 3 条、`flx:` 1 条 | `e4c6a3a`、`f2598ae`、`01b303b`、`91d0b1b` |
-| 非约定 type | `publish` 8、`add` 5、`remove` 4 | `git log` 统计 |
-| 无 type 前缀 | 18 条（如 `增加接续播放功能`、`Update README.md`） | 同上 |
-| 单提交文件数 | 中位数 3；最大 130 个文件（`b815758 add：init`） | `git show --stat`（实时统计） |
+| 非约定 type | `publish` 8、`add` 5、`remove` 4、`fixs` 3、`flx` 1 | `git log` 统计 |
+| 无 type 前缀 | 4 条（`增加接续播放功能`、`Add lyric candidate preview page…`、`Enhance music playback and user interface`、`Update README.md`） | 同上 |
+| 单提交文件数 | 中位数 3；最大 130 个文件（`b815758 add：init`） | `git show --stat` |
 | 分支 | `master` 为主，另有未合并的 `test/mpv-focus-recovery` | `git branch -a` |
 | 远程 | `origin`（SSH）、`upstream`（HTTPS） | `git remote -v` |
 | 标签 | `v1.6.0`、`v2.0.5`、`v2.3.0`、`v2.5.0` | `git tag` |
 | 行尾/大文件属性 | `.gitattributes` 由 UGit 生成，仅对 `*.png/*.jar/*.pbxproj/*.ico/*.metadata` 启用 LFS | `.gitattributes:1-6` |
 | 忽略规则 | `build/`、`.dart_tool/`、`.flutter-plugins-dependencies`、`coverage/` 已忽略 | `.gitignore:29-36` |
+
+> 上述数字会随每次提交变化。**引用前请先重跑命令**；本表的用途是支撑 §2~§4 的规则判定，不是给其他文档抄写的模板。
 
 ---
 
@@ -68,22 +72,22 @@
 > **本表的权威定义在 `09-模板/提交信息模板.md` §3.2**（含「何时用 / 何时不用」）。
 > 两处曾各写一份且取值数不一致（本节 10 个、模板 12 个），已按模板口径统一为 12 个。
 
-| type | 含义 | 典型场景 | 历史出现次数（2026-09-25） |
+| type | 含义 | 典型场景 | 历史出现次数（2026-10-07 实测） |
 |---|---|---|---|
-| `feat` | 新功能 | 新增扫码登录、接续播放 | 52 |
+| `feat` | 新功能 | 新增扫码登录、接续播放 | 53 |
 | `fix` | 缺陷修复 | 修复歌词错位、空指针 | 39 |
 | `refactor` | 重构（行为不变） | 播放器 UI 状态重构 | 2 |
-| `perf` | 性能优化 | 背景图延迟、长列表虚拟化 | 0 |
+| `perf` | 性能优化 | 背景图延迟、长列表虚拟化 | 3 |
 | `test` | 测试相关 | 新增 LRU 淘汰单测 | 0 |
-| `docs` | 文档 | 更新 `docx/`、`update.md` | 2 |
+| `docs` | 文档 | 更新 `docx/`、`update.md` | 4 |
 | `build` | 构建/打包 | 签名配置、ABI | 0 |
 | `ci` | CI 与门禁脚本 | `scripts/*.ps1`、校验脚本 | 0 |
 | `style` | 格式（不影响行为） | `dart format` 结果 | 0 |
-| `chore` | 杂项（不含上述） | 清理无效文件、发版 | 3（历史用 `remove:` 4 次） |
+| `chore` | 杂项（不含上述） | 清理无效文件、发版 | 3 |
 | `revert` | 回滚 | 回滚某次提交 | 0 |
 | `deps` | 依赖升降级 | 仅改版本号、无代码适配 | 0 |
 
-> 历史遗留的 `add`（5）、`remove`（4）、`publish`（8）**不再使用**：`add` → `feat`，`remove` → `chore`/`refactor`，`publish` → `chore(release):`。
+> 历史遗留的 `add`（5）、`remove`（4）、`publish`（8）、`fixs`（3）、`flx`（1）**不再使用**：`add` → `feat`，`remove` → `chore`/`refactor`，`publish` → `chore(release):`，`fixs`/`flx` → `fix`。
 
 ### 3.2 scope 取值
 
@@ -133,7 +137,7 @@ refactor(storage)!: 迁移播放缓存目录到 ApplicationSupport
 
 BREAKING CHANGE: 播放缓存目录由 getTemporaryDirectory() 迁移到
 getApplicationSupportDirectory()，首次启动执行一次性搬移；回滚需删除新目录。
-影响：已下载音频与播放缓存路径变化（cache_service.dart:35、download_service.dart:63）。
+影响：已下载音频与播放缓存路径变化（`lib/services/cache_service.dart:55-56`、`lib/services/download_service.dart:63-64`）。
 Refs: TD-02 / T-M3-05
 ~~~
 
@@ -209,35 +213,28 @@ Refs: TD-02 / T-M3-05
 
 ## 11. 好提交与坏提交实例
 
-### 11.1 10 条好提交（均为真实历史）
+### 11.1 好提交（均为真实历史，节选）
 
-| # | 提交 | 为什么好 |
-|---|---|---|
-| 1 | `c086bfa feat: add configurable artwork cache limit` | type 正确、单一目的、描述具体 |
-| 2 | `4fb3418 fix: bound loudness metadata cache lifetime` | 一句话说清修复范围 |
-| 3 | `09af05e feat: cache artwork for offline playback backgrounds` | 说清用户价值 |
-| 4 | `21a788c fix: stabilize cached track loudness normalization` | 聚焦单一缺陷 |
-| 5 | `04bb5d0 fix: respect lyric text scaling in karaoke painter` | 明确受影响组件 |
-| 6 | `720133f fix: keep lyrics synchronized while scrubbing` | 描述现象而非笼统「修复歌词」 |
-| 7 | `8431943 fix: migrate stale API certificate domain` | 说明迁移动作 |
-| 8 | `e773882 feat(lyrics): 支持更换歌词版本并过滤署名元数据` | scope 用法正确（唯一一条规范 scope） |
-| 9 | `2af0187 fix: 修复歌单详情页与云盘页顶栏滚动时内容穿透重叠` | 半角冒号 + 现象具体 |
-| 10 | `ba0dc11 fix: 修复 PlayerPage dispose 时 context 失效导致的空指针异常` | 含根因（context 失效） |
+| 提交 | 为什么好 |
+|---|---|
+| `c086bfa feat: add configurable artwork cache limit` | type 正确、单一目的、描述具体 |
+| `4fb3418 fix: bound loudness metadata cache lifetime` | 一句话说清修复范围 |
+| `720133f fix: keep lyrics synchronized while scrubbing` | 描述现象而非笼统「修复歌词」 |
+| `e773882 feat(lyrics): 支持更换歌词版本并过滤署名元数据` | scope 用法正确 |
+| `ba0dc11 fix: 修复 PlayerPage dispose 时 context 失效导致的空指针异常` | 含根因（context 失效） |
 
-### 11.2 10 条坏提交（均为真实历史）
+### 11.2 坏提交与改写（均为真实历史）
 
 | # | 提交 | 问题 | 应改为 |
 |---|---|---|---|
 | 1 | `e4c6a3a fixs:歌单缩略图载入` | type 拼写错误 + 冒号后无空格 | `fix(cache): 修复歌单缩略图加载失败` |
-| 2 | `f2598ae fixs:歌词阻塞` | 同上 + 描述不完整 | `fix(lyrics): 修复歌词加载阻塞 UI` |
-| 3 | `91d0b1b flx：修复桌面歌词的一些问题` | type 拼错 + 全角冒号 + 「一些」模糊 | `fix(desktop): 修复桌面歌词窗口关闭后残留` |
-| 4 | `4e5a98a 增加接续播放功能` | 无 type、无冒号 | `feat(player): 新增接续播放` |
-| 5 | `b56039e feat：合并2.2内容` | 全角冒号 + 目的不明（「合并内容」不是目的） | 拆成多个 `feat/fix` 提交 |
-| 6 | `23bfcf2 feat：播放页面背景动态效果` | 全角冒号 | `feat(ui): 播放页背景新增动态效果` |
-| 7 | `980155d publish：2.1.0` | 非约定 type + 全角冒号 | `chore(release): v2.1.0` |
-| 8 | `7c83a79 remove：移除无效UI按钮` | 非约定 type | `chore(ui): 移除无效按钮` |
-| 9 | `bc1d451 Enhance music playback and user interface` | 纯英文且笼统，无可核对范围 | 按模块拆分为 2~3 条 `fix/feat` |
-| 10 | `c59ef26`（含 5 个 `feat：`） | 一次提交混 5 件事，无法回滚 | 拆成 5 个提交 |
+| 2 | `91d0b1b flx：修复桌面歌词的一些问题` | type 拼错 + 全角冒号 + 「一些」模糊 | `fix(desktop): 修复桌面歌词窗口关闭后残留` |
+| 3 | `4e5a98a 增加接续播放功能` | 无 type、无冒号 | `feat(player): 新增接续播放` |
+| 4 | `b56039e feat：合并2.2内容` | 全角冒号 + 目的不明（「合并内容」不是目的） | 拆成多个 `feat/fix` 提交 |
+| 5 | `980155d publish：2.1.0` | 非约定 type + 全角冒号 | `chore(release): v2.1.0` |
+| 6 | `7c83a79 remove：移除无效UI按钮` | 非约定 type | `chore(ui): 移除无效按钮` |
+| 7 | `bc1d451 Enhance music playback and user interface` | 纯英文且笼统，无可核对范围 | 按模块拆分为 2~3 条 `fix/feat` |
+| 8 | `c59ef26`（含 5 个 `feat：`） | 一次提交混 5 件事，无法回滚 | 拆成 5 个提交 |
 
 ---
 
@@ -245,13 +242,14 @@ Refs: TD-02 / T-M3-05
 
 | # | 约束/坑 | 事实 |
 |---|---|---|
-| 1 | 历史 67 条全角冒号、4 条 type 拼写错误 | 不重写历史，仅约束新增 |
+| 1 | 历史 67 条全角冒号、4 条 type 拼写错误（`fixs` 3 / `flx` 1） | 不重写历史，仅约束新增 |
 | 2 | `buildKey.keystore` 已入库 | 仅改 `.gitignore` 无效，需 `git rm --cached`（TD-31） |
 | 3 | 无 CI，提交信息合规靠自检 | 见 §8 |
 | 4 | PowerShell 下 `flutter test` 退出码不可信 | 以 stdout 判定 |
 | 5 | LFS 生效情况未验证 | 见 §7「待核实」 |
 | 6 | `publish` 等历史 type 无对应现代取值 | 已在 §3.1 给出映射 |
 | 7 | 临时脚本（如分析用的 `.js`/`.ps1`）容易残留在工作区 | 提交前用 `git status --porcelain` 核对并清理 |
+| 8 | §1 的统计数字每次提交后即过期 | 本表是提交历史的唯一权威来源；引用前重跑命令，不要把它抄进其他文档 |
 
 ---
 

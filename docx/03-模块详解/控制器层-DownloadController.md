@@ -1,8 +1,8 @@
 > 文档编号：KA-03-11
 > 级别：L2 📖
 > 状态：现行
-> 关联代码：lib/controllers/download_controller.dart（500 行）、lib/services/download_service.dart（356 行）
-> 最近更新：2026-09-08
+> 关联代码：lib/controllers/download_controller.dart（648 行 LF / 593 行非空）、lib/services/download_service.dart（448 行 LF / 410 行非空）
+> 最近更新：2026-09-26（行数复核）
 > 变更触发条件：下载状态模型、索引持久化格式、并发编排、播放缓存策略变化时
 
 # 控制器层 · DownloadController
@@ -130,7 +130,7 @@
 |---|---|
 | 播放前查本地源 | `PlayerController.playSong` → `downloadController.localSourceFor(song, quality)` |
 | 本地文件加载失败 | `PlayerController` → `downloadController.deletePlayCache(song, quality)` → 回退网络 |
-| 无缝预载 | `_prepareNextSourceIfNeeded` → `localSourceFor` 命中则跳过网络解析 |
+| 预加载歌曲 | `_prepareNextSourceIfNeeded` → `localSourceFor` 命中则跳过网络解析 |
 | 响度元数据回写 | `_hydrateLocalLoudness` → `downloadController.updateLocalLoudness` |
 | 播放缓存调度 | `PlayerController._schedulePlaybackCache` → `cacheForPlayback` |
 
