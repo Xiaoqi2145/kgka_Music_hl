@@ -37,6 +37,7 @@ class _PreparedNextSource {
     required this.url,
     required this.quality,
     this.loudness,
+    this.isLocal = false,
   });
 
   final Song song;
@@ -48,6 +49,43 @@ class _PreparedNextSource {
   final String url;
   final AudioQuality quality;
   final LoudnessData? loudness;
+
+  /// 地址来自本地文件（已下载 / 播放缓存 / 本地音乐）而非网络。
+  /// 决定 [PlayerController._resolveSource] 是否把它当网络地址再次缓存。
+  final bool isLocal;
+}
+
+/// 已追加为原生第二子源、等待过界的下一曲。
+///
+/// 与 [_PreparedNextSource] 的区别：后者是纯缓存（不碰播放器），本类代表
+/// **已经改动原生播放列表**的状态，因此必须在任何失效路径上撤销。
+class _ArmedNextSource {
+  const _ArmedNextSource({
+    required this.song,
+    required this.songKey,
+    required this.ownerEntryId,
+    required this.queueRevision,
+    required this.requestRevision,
+    required this.requestedQuality,
+    required this.quality,
+    required this.url,
+    this.loudness,
+    this.isLocal = false,
+  });
+
+  final Song song;
+  final String songKey;
+  final int ownerEntryId;
+  final int queueRevision;
+  final int requestRevision;
+  final AudioQuality requestedQuality;
+  final AudioQuality quality;
+  final String url;
+  final LoudnessData? loudness;
+
+  /// 地址来自本地文件（已下载 / 播放缓存 / 本地音乐）而非网络。
+  /// 提交时用它保护 LRU 不删掉正在播放的缓存文件。
+  final bool isLocal;
 }
 
 /// 一次点击解析出的播放源。resolve 阶段只解析，绝不触碰播放器。
@@ -173,14 +211,32 @@ class PlayerController extends ChangeNotifier {
     };
     _desktopLyrics.setVisibilityChangedHandler(_handleDesktopLyricsVisibility);
     _positionSub = audioPlayer.positionStream.listen((value) {
-      if (!_isSeeking && !isPreparing && _ownsLoadedSource) {
+      if (!_isSeeking && !isPreparing && _ownsPlaybackWindow) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
       _noteProgressTick(value);
       _maybeSyncDesktopLyricFromPosition();
       // 预加载歌曲：临近结束（≤30s）时后台预解析下一曲播放地址。
-      if (isPlaying && !_isSeeking && !isPreparing && _ownsLoadedSource) {
-        unawaited(_prepareNextSourceIfNeeded());
+      // 宽判据：武装后原生是两子源，严格单子源判据会让整个窗口停摆。
+      if (isPlaying && !_isSeeking && !isPreparing && _ownsPlaybackWindow) {
+        unawaited(
+          _prepareNextSourceIfNeeded().then(
+            (_) => _armNextSourceIfNeeded(),
+          ),
+        );
+      }
+      // 兜底：just_audio 在 seek 窗口内会丢弃**所有**位置不连续事件（含真实
+      // 过界），若边界事件被吞掉，这里按原生事实补一次提交，避免永久停在
+      // 两子源、且已播完的 A 一直不被摘除。
+      // 此时用 sequenceState 是安全的：事件虽被吞，但 currentIndex 仍会经
+      // playbackEventStream 的另一个订阅（just_audio.dart:324）更新到位。
+      if (_armedNext != null && !_isSeeking && !isPreparing) {
+        final sequence = audioPlayer.sequenceState;
+        if (sequence.sequence.length == 2 &&
+            sequence.currentIndex == 1 &&
+            identical(sequence.currentSource?.tag, _armedNext!.song)) {
+          unawaited(_onNativeBoundary(null));
+        }
       }
       // 位置高频更新通过 positionListenable 发送，避免触发全局 ChangeNotifier。
     });
@@ -193,7 +249,7 @@ class PlayerController extends ChangeNotifier {
       isBuffering =
           value.processingState == ProcessingState.loading ||
           value.processingState == ProcessingState.buffering;
-      if (!_isSeeking && !isPreparing && _ownsLoadedSource) {
+      if (!_isSeeking && !isPreparing && _ownsPlaybackWindow) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
       if (!isPreparing &&
@@ -225,11 +281,20 @@ class PlayerController extends ChangeNotifier {
     _playlistSequenceSub = audioPlayer.sequenceStateStream.listen((state) {
       unawaited(_onPlaylistSequenceChanged(state));
     });
+    // 常驻订阅：positionDiscontinuityStream 用 pairwise() 比较，订阅过晚会
+    // 丢掉用于配对的第一个事件，导致第一次过界检测不到。
+    _boundarySub = _audioHandler.boundaryStream.listen((event) {
+      unawaited(_onNativeBoundary(event));
+    });
     _playerErrorSub = audioPlayer.errorStream.listen((error) {
       if (_disposed || isPreparing) return;
-      _traceTransition('player_error', detail: 'code=${error.code}');
+      _traceTransition(
+        'player_error',
+        detail: 'code=${error.code} index=${error.index}',
+      );
       errorMessage = '播放失败（${error.code}），请重试';
       notifyListeners();
+      unawaited(_recoverFromPlaybackError(error));
     });
     unawaited(_setupAudioSessionListeners());
   }
@@ -293,9 +358,63 @@ class PlayerController extends ChangeNotifier {
   bool _preparingNextSource = false;
   int _prepareNextSerial = 0;
 
-  /// 预解析失败后的冷却期，避免在 30 秒窗口内每个 position 刻度都重试。
+  /// 预解析失败后的冷却期，**按下一曲 key 记录**，避免在 30 秒窗口内每个
+  /// position 刻度都重试同一首已确认失败的曲目。
+  ///
+  /// 按 key 而非全局：`_clearPreparedNext()` 有约 12 个调用点（切播放模式、
+  /// 刷新队列、换音质、关开关……），全局冷却会被这些**与失败曲目无关**的
+  /// 操作清空，使下一个刻度立刻重试同一首失败曲。
+  ///
   /// 用单调时钟计时：系统时间被调整不应改变退避时长。
-  Duration _prepareNextCooldownUntil = Duration.zero;
+  final Map<String, Duration> _prepareNextCooldownUntil = {};
+
+  // ===== 无缝播放（原生边界交接） =====
+  static const _realGaplessSettingKey =
+      'settings.real_gapless_playback_enabled';
+
+  /// 真正的无缝播放开关。**默认关闭**：它把下一曲追加为原生第二子源，
+  /// 行为面比「预加载歌曲」大得多，需要实机验收后才应默认开启。
+  ///
+  /// 门禁：仅在 [gaplessPlaybackEnabled]（预加载歌曲）开启时才能生效——
+  /// 没有预解析结果就没有可追加的地址。见 [realGaplessActive]。
+  bool realGaplessPlaybackEnabled = false;
+
+  /// 已武装（已追加为第二子源）的下一曲。一次性令牌，兼作幂等锁。
+  _ArmedNextSource? _armedNext;
+
+  /// 过界处理在途。**必须有这个独立标志**：`_armedNext` 在 `_onNativeBoundary`
+  /// 里会在第一个 await 之前就被置空，此时若另一条路径（事件 + positionStream
+  /// 兜底可能同时触发）再进来，`_armedNext == null` 会被误判为「未认领的过界」，
+  /// 进而 `_dropArmedNext()` 移除 index 1——那正是**正在播放的 B**。
+  bool _handlingBoundary = false;
+
+  /// 武装调用在途（`addAudioSource` 是异步的）。
+  bool _armingNextSource = false;
+
+  /// 武装完成的单调时间戳；用于度量「武装 → 原生过界」的间隔。
+  int? _armedAtUs;
+
+  /// 收到原生过界事件的单调时间戳；用于度量 Dart 侧提交+摘除的耗时。
+  int? _boundaryAtUs;
+
+  /// 武装失败后的冷却，按曲目 key 记录，避免每个刻度重试注定失败的追加。
+  final Map<String, Duration> _armNextCooldownUntil = {};
+
+  /// 原生过界事件订阅。必须常驻：该流用 `pairwise()` 比较，订阅过晚会
+  /// 丢掉用于配对的第一个事件。
+  StreamSubscription<PositionDiscontinuity>? _boundarySub;
+
+  /// 无缝播放当前是否**实际生效**（开关 + 预加载 + 平台 + 单曲循环门禁）。
+  ///
+  /// 平台门禁：原生自动过渡在 Android（ExoPlayer）已核实；Darwin 的
+  /// `concatenatingInsertAll` / `concatenatingRemoveRange` 在 just_audio 源码中
+  /// 标注 `// Untested`，故未实测平台不武装。
+  bool get realGaplessActive =>
+      realGaplessPlaybackEnabled &&
+      gaplessPlaybackEnabled &&
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      playbackMode != PlaybackMode.singleLoop;
 
   final _transitions = TransitionCoordinator();
   int? get currentEntryId => _transitions.committedEntry?.id;
@@ -305,9 +424,27 @@ class PlayerController extends ChangeNotifier {
   /// diagnostics. The loudness window must always report the same value.
   @visibleForTesting
   int get leaseGenerationForTest => _transitions.generation;
+
+  /// 已排入播放缓存的歌曲（30 秒延迟**之前**的待定态）。仅用于测试断言
+  /// 「过界提交后缓存确实被排入」，不参与任何播放决策。
+  @visibleForTesting
+  Song? get pendingPlayCacheSongForTest => _pendingPlayCacheSong;
+
+  /// 排入播放缓存时使用的地址；用于断言本地候选不会被当成网络地址。
+  @visibleForTesting
+  String? get pendingPlayCacheUrlForTest => _pendingPlayCacheUrl;
   StreamSubscription<SequenceState>? _playlistSequenceSub;
   IndexedAudioSource? _activePlaylistSource;
   int _playlistLoadRevision = 0;
+
+  /// 已提交音源的本地文件路径；网络音源为 null。
+  ///
+  /// 用途：播放器报错时判断「当前这条是不是本地文件」，从而走
+  /// 作废本地音源→改走网络的恢复（与 [_playSong] 的替换失败回退同一套）。
+  String? _committedLocalPath;
+
+  /// 正在恢复的曲目 key，防止同一条错误反复触发重载。
+  String? _recoveringErrorFor;
   Future<void> _sourceLoadChain = Future<void>.value();
   int _committedQueueIndex = -1;
   DateTime? _lastMediaEventTime;
@@ -709,6 +846,7 @@ class PlayerController extends ChangeNotifier {
     String reason = 'explicit_load',
     bool preserveProgress = false,
     AudioQuality? quality,
+    bool forceNetwork = false,
   }) async {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
@@ -781,7 +919,8 @@ class PlayerController extends ChangeNotifier {
         for (final item in qualities) (quality: item, prepared: false),
       ];
       Object? lastError;
-      var forceNetwork = false;
+      // 本地音源损坏时置位，下一轮解析跳过本地、直接走网络。
+      var skipLocalSource = forceNetwork;
       var replaced = false;
       _ResolvedSource? resolved;
       for (final plan in plans) {
@@ -791,7 +930,7 @@ class PlayerController extends ChangeNotifier {
             song,
             prepared: plan.prepared ? prepared : null,
             quality: plan.quality,
-            forceNetwork: forceNetwork,
+            forceNetwork: skipLocalSource,
             alive: alive,
           );
         } catch (error) {
@@ -841,7 +980,7 @@ class PlayerController extends ChangeNotifier {
               song,
               resolved.quality,
             );
-            forceNetwork = true;
+            skipLocalSource = true;
           }
           if (!alive('replace_retry')) return;
         }
@@ -886,6 +1025,7 @@ class PlayerController extends ChangeNotifier {
       downloadController?.setActivePlaybackPath(
         committed.isLocal ? committed.url : null,
       );
+      _committedLocalPath = committed.isLocal ? committed.url : null;
       isPreparing = false;
       _preparingSongKey = null;
       notifyListeners();
@@ -963,7 +1103,12 @@ class PlayerController extends ChangeNotifier {
     } else {
       playbackCommits++;
     }
-    if (reason == 'native_completed') autoAdvanceCommits++;
+    // 两种自动续播都算：显式重载（native_completed）与原生边界交接
+    // （native_auto_advance）。否则「自动续播成功率」会在无缝播放开启后
+    // 把成功的交接算成失败。
+    if (reason == 'native_completed' || reason == 'native_auto_advance') {
+      autoAdvanceCommits++;
+    }
     _traceTransition(
       'committed',
       detail:
@@ -1035,7 +1180,10 @@ class PlayerController extends ChangeNotifier {
         url: prepared.url,
         quality: prepared.quality,
         loudness: prepared.loudness,
-        networkUrl: prepared.url,
+        // 本地候选不得当作网络地址：否则提交后会再次进入播放缓存，
+        // 把本地文件路径交给下载器。
+        networkUrl: prepared.isLocal ? null : prepared.url,
+        isLocal: prepared.isLocal,
       );
     }
     checkStage();
@@ -1415,6 +1563,12 @@ class PlayerController extends ChangeNotifier {
     String url, {
     LoudnessData? loudness,
   }) {
+    // 先取消旧计时器：本方法现在有两个调用点（`_playSong` 提交与
+    // `_onNativeBoundary` 过界提交）。短曲目（<30s）会在这首歌的计时器
+    // 尚未触发时就被过界提交覆盖，若只覆盖字段而不取消，旧计时器仍会触发
+    // 并把 `_playCacheDelayTimer` 置空——此后 `_cancelPendingPlaybackCache` /
+    // `_pausePendingPlaybackCache` 再也无法取消新计时器。
+    _playCacheDelayTimer?.cancel();
     _pendingPlayCacheSong = song;
     _pendingPlayCacheQuality = quality;
     _pendingPlayCacheUrl = url;
@@ -1485,6 +1639,12 @@ class PlayerController extends ChangeNotifier {
     _audioHandler.invalidatePendingPlay();
     isPreparing = false;
     _preparingSongKey = null;
+    // seek / 换音质会作废当前导航：已追加的第二子源必须撤销。
+    // just_audio 在 seek 期间会丢弃**所有**位置不连续事件（含真实过界），
+    // 保留武装只会留下一个永远不会被认领、也永远不会被摘除的子源。
+    if (_armedNext != null) {
+      unawaited(_dropArmedNext());
+    }
   }
 
   /// 队列被显式改动后只作废"目标歌曲已不在队列中"的在途意图：
@@ -1506,13 +1666,41 @@ class PlayerController extends ChangeNotifier {
     _preparingNextSource = false;
     _preparedNext = null;
     _transitions.invalidateWork();
-    _prepareNextCooldownUntil = Duration.zero;
+    // 只清理已过期的冷却条目：失败冷却按下一曲 key 记录，不得被本方法
+    // （切模式/刷新队列/换音质/关开关等无关操作都会调用它）整体清空，
+    // 否则下一个刻度会立刻重试同一首已确认失败的曲目。
+    _pruneExpiredPrepareCooldowns();
+    // 预解析候选作废时，已追加的原生子源必须一并撤销，否则会残留第二
+    // 子源（切模式/换队列/换音质/手动切歌等路径都会走到这里）。
+    // 幂等且带长度守卫，因此即使与随后的 setAudioSources 竞争也安全。
+    if (_armedNext != null) {
+      unawaited(_dropArmedNext());
+    }
+  }
+
+  /// 丢弃已过期的冷却条目，避免 map 随播放过的曲目无界增长。
+  void _pruneExpiredPrepareCooldowns() {
+    final now = _transitionClock.elapsed;
+    if (_prepareNextCooldownUntil.isNotEmpty) {
+      _prepareNextCooldownUntil.removeWhere((_, until) => now >= until);
+    }
+    if (_armNextCooldownUntil.isNotEmpty) {
+      _armNextCooldownUntil.removeWhere((_, until) => now >= until);
+    }
   }
 
   // In stable mode structure is diagnostic data, NEVER a media transition.
   // Existing multi-child lists are rebuilt only at an explicit load boundary.
   Future<void> _onPlaylistSequenceChanged(SequenceState state) async {
     if (_disposed) return;
+    // 子源泄漏是这套机制最危险的失效：长度只允许是 1 或 2（武装窗口）。
+    // 单独打一条显眼日志，便于实机长稳测试直接 grep。
+    if (state.sequence.length > 2) {
+      debugPrint(
+        '[KA Music][gapless] SUBSOURCE_LEAK length=${state.sequence.length} '
+        'armed=${_armedNext?.songKey} index=${state.currentIndex}',
+      );
+    }
     _traceTransition(
       'playlist_structure_changed',
       detail:
@@ -1555,6 +1743,7 @@ class PlayerController extends ChangeNotifier {
       '[KA Music][transition] event=$event entry=$currentEntryId '
       'serial=$_loadSerial quality=${audioQuality.apiValue} '
       'candidate=${_preparedNext?.songKey} owner=${_preparedNext?.ownerEntryId} '
+      'armed=${_armedNext?.songKey} '
       'queue=$_queueRevision load=$_playlistLoadRevision seek=${_transitions.seekRevision} '
       'request=${_transitions.requestRevision} generation=${_transitions.generation} '
       'progressRevision=$progressRevision '
@@ -1590,11 +1779,14 @@ class PlayerController extends ChangeNotifier {
     // just_audio exposes no native entry ID. With one controlled source, accept
     // only the live playback snapshot for the acknowledged load, never a queued
     // old stream notification or a mixed structural/index snapshot.
+    //
+    // 武装窗口内原生是两子源，故用宽判据；但 index 仍要求 0——过界后的
+    // index==1 快照由 _onNativeBoundary 处理，不从这里提交。
     if (_disposed ||
         isPreparing ||
         _isSeeking ||
         _isScrubbing ||
-        !_ownsLoadedSource ||
+        !_ownsPlaybackWindow ||
         !identical(event, audioPlayer.playbackEvent) ||
         event.currentIndex != 0) {
       return;
@@ -1608,8 +1800,92 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     if (event.processingState == ProcessingState.completed &&
         audioPlayer.processingState == ProcessingState.completed) {
+      if (_armedNext != null) {
+        // 武装了但原生**没有**发生过界（index 仍为 0，例如平台不支持自动过渡
+        // 或追加的子源加载失败）：撤销武装并回落到显式的「播完」路径。
+        // 若直接 return，会永久停在两子源——既不提交，也不再续播。
+        unawaited(_fallbackCompletedWhileArmed(lease));
+        return;
+      }
       unawaited(_handleCompleted(lease));
     }
+  }
+
+  /// 已武装却收到 index==0 的播完事件：撤销武装后走正常自动续播。
+  Future<void> _fallbackCompletedWhileArmed(TransitionLease? lease) async {
+    _traceTransition('boundary_missing_at_completion');
+    await _dropArmedNext();
+    if (_disposed) return;
+    await _handleCompleted(lease);
+  }
+
+  /// 原生播放错误后的恢复。
+  ///
+  /// **为什么必须有**：本地候选（已下载 / 播放缓存 / 本地音乐）现在也会武装。
+  /// 若该文件在武装后、过界前被清理或损坏，ExoPlayer 准备失败会把原生状态
+  /// 推到 `idle`，于是 [_onPlaybackEvent] 里那条 `completed` 兜底永远不会命中，
+  /// `_armedNext` 一直非空——它同时挡住 `_armNextSourceIfNeeded` 与
+  /// `_prepareNextSourceIfNeeded`，表现为**永久卡死**：不续播、不重新武装，
+  /// UI 还停在上一首。
+  ///
+  /// 两种时序都要覆盖：
+  /// 1. 过界前第二子源准备失败（错误属于 index 1 的已武装候选）；
+  /// 2. 过界已提交、但提交的本地文件随后加载/解码失败。
+  Future<void> _recoverFromPlaybackError(PlayerException error) async {
+    if (_disposed || _handlingBoundary) return;
+    final armed = _armedNext;
+    if (armed != null) {
+      // 时序 1：撤销武装令牌（否则它永久挡住后续预解析与重新武装），
+      // 作废损坏的本地候选，并清掉预解析让下一轮按网络重新解析。
+      await _dropArmedNext();
+      if (_disposed) return;
+      if (armed.isLocal) {
+        try {
+          await downloadController?.invalidateLocalSource(
+            armed.song,
+            armed.quality,
+          );
+        } catch (_) {}
+      }
+      _clearPreparedNext();
+      _prepareNextCooldownUntil.remove(armed.songKey);
+      if (_disposed) return;
+      _traceTransition(
+        'error_recover',
+        detail: 'stage=armed song=${armed.songKey} local=${armed.isLocal} '
+            'code=${error.code}',
+      );
+      // 原生因错误停摆时按「下一曲」显式续播；若上一首仍在正常播放，
+      // 只撤销候选即可，交给正常过界路径处理。
+      if (!audioPlayer.playing) {
+        await next();
+      }
+      return;
+    }
+    // 时序 2：已提交的就是本地文件，作废后走网络重载。
+    final song = currentSong;
+    final localPath = _committedLocalPath;
+    if (song == null || localPath == null) return;
+    // 同一首歌只自动恢复一次：避免损坏文件把「重载→报错」打成死循环。
+    final key = _songKey(song);
+    if (_recoveringErrorFor == key) return;
+    _recoveringErrorFor = key;
+    _traceTransition(
+      'error_recover',
+      detail: 'stage=committed song=$key local=$localPath code=${error.code}',
+    );
+    try {
+      await downloadController?.invalidateLocalSource(song, audioQuality);
+    } catch (_) {}
+    if (_disposed) return;
+    await _playSong(
+      song,
+      queue: queue,
+      queueIndex: currentIndex,
+      reason: 'error_recover',
+      preserveProgress: true,
+      forceNetwork: true,
+    );
   }
 
   /// 预加载歌曲：剩余时长进入 30 秒窗口后，后台解析下一曲的播放地址，
@@ -1623,9 +1899,6 @@ class PlayerController extends ChangeNotifier {
         !isPlaying ||
         isPreparing ||
         currentSong == null) {
-      return;
-    }
-    if (_transitionClock.elapsed < _prepareNextCooldownUntil) {
       return;
     }
     if (duration <= Duration.zero) {
@@ -1646,13 +1919,21 @@ class PlayerController extends ChangeNotifier {
     }
     final queueRevision = _queueRevision;
     final requestedQuality = audioQuality;
+    var nextKey = '';
     try {
       final next = await _nextSong();
       if (serial != _prepareNextSerial || next == null || currentSong == null) {
         return;
       }
-      final nextKey = _songKey(next);
+      nextKey = _songKey(next);
       if (nextKey == _songKey(currentSong!)) {
+        return;
+      }
+      // 冷却按**下一曲 key** 判定：与失败曲目无关的操作（切播放模式、刷新
+      // 队列、换音质、关开关）不得清空它，否则下一个刻度会立刻重试同一首
+      // 已确认失败的曲目。
+      final cooldownUntil = _prepareNextCooldownUntil[nextKey];
+      if (cooldownUntil != null && _transitionClock.elapsed < cooldownUntil) {
         return;
       }
       _metadataNext = next;
@@ -1680,28 +1961,33 @@ class PlayerController extends ChangeNotifier {
         }
       }
       if (!gaplessPlaybackEnabled) return;
-      // 本地文件/播放缓存命中的歌加载本身已近乎无缝，无需预解析网络地址。
-      if (next.source == SongSource.local) {
-        return;
-      }
       final quality = audioQuality;
-      final local = downloadController?.localSourceFor(next, quality);
-      if (local != null) {
-        // Cached audio still needs metadata prefetch for older cache indexes.
-        _restoreLocalLoudness(next, quality, local.loudness);
-        return;
-      }
-
+      // 本地文件与播放缓存同样必须产出候选：`_armNextSourceIfNeeded` 的首个
+      // 门槛就是 `_preparedNext != null`，早期在这里静默 `return` 会让「下一曲
+      // 已缓存」这一**最常见**的情况永不武装——而每首歌播满 30 秒就会被
+      // `_schedulePlaybackCache` 自动写进播放缓存，重复听的歌单几乎首首命中。
+      // 实机症状：零 `prefetch_ready` / 零 `armed_next`，过界全走显式重载。
       String url;
       LoudnessData? loudness;
-      if (next.isCloudDrive) {
+      final local = next.source == SongSource.local
+          ? null
+          : downloadController?.localSourceFor(next, quality);
+      if (next.source == SongSource.local) {
+        // 本地音乐：路径即地址，不经过网络，也没有可预取的响度。
+        url = next.id;
+      } else if (local != null) {
+        // Cached audio still needs metadata prefetch for older cache indexes.
+        _restoreLocalLoudness(next, quality, local.loudness);
+        url = local.path;
+        loudness = local.loudness;
+      } else if (next.isCloudDrive) {
         final playUrl = await _api.cloudSongUrl(next);
-        if (playUrl.url.isEmpty) return;
+        if (playUrl.url.isEmpty) throw const _PrefetchUnavailable();
         url = playUrl.url;
         loudness = playUrl.loudness;
       } else {
         final playUrl = await _api.songUrl(next, quality: quality);
-        if (playUrl.url.isEmpty) return;
+        if (playUrl.url.isEmpty) throw const _PrefetchUnavailable();
         url = playUrl.url;
         loudness = playUrl.loudness;
       }
@@ -1725,12 +2011,17 @@ class PlayerController extends ChangeNotifier {
         url: url,
         quality: quality,
         loudness: loudness,
+        isLocal: next.source == SongSource.local || local != null,
       );
-      _traceTransition('prefetch_ready');
+      _traceTransition(
+        'prefetch_ready',
+        detail: 'next=$nextKey local=${next.source == SongSource.local || local != null}',
+      );
     } catch (_) {
-      // 预解析失败：冷却 15 秒后重试，避免窗口内每个刻度都重试。
-      if (serial == _prepareNextSerial) {
-        _prepareNextCooldownUntil =
+      // 预解析失败：对该**下一曲**冷却 15 秒后重试，避免窗口内每个刻度都重试。
+      // 按 key 记录：与失败曲目无关的操作不得清空它。
+      if (serial == _prepareNextSerial && nextKey.isNotEmpty) {
+        _prepareNextCooldownUntil[nextKey] =
             _transitionClock.elapsed + const Duration(seconds: 15);
       }
     } finally {
@@ -1753,6 +2044,263 @@ class PlayerController extends ChangeNotifier {
             prepared.requestedQuality == audioQuality
         ? prepared
         : null;
+  }
+
+  // ===== 无缝播放（原生边界交接） =====
+
+  /// 把已预解析的下一曲追加为原生第二子源。
+  ///
+  /// **武装不提交**：不得改动 `currentSong` / `lyrics` / 媒体通知 / 历史 /
+  /// 统计 / 响度代次——与 [_PreparedNextSource] 的「纯缓存」语义一致，
+  /// 提交只由原生过界事件触发（见 [_onNativeBoundary]）。
+  Future<void> _armNextSourceIfNeeded() async {
+    if (_disposed ||
+        !realGaplessActive ||
+        _armedNext != null ||
+        _armingNextSource ||
+        !isPlaying ||
+        isPreparing ||
+        _isSeeking ||
+        _isScrubbing ||
+        !_ownsLoadedSource) {
+      return;
+    }
+    final prepared = _preparedNext;
+    if (prepared == null) return;
+    // **必须在武装前重新校验时间窗口**。`_preparedNext` 是纯缓存，seek 回中段
+    // 后它仍然有效（seek 只清 `_armedNext`，不清候选），而窗口判定只存在于
+    // `_prepareNextSourceIfNeeded`。若这里不复查，seek 回开头后下一个刻度就会
+    // 立刻重新武装，违反「武装只在 remaining ∈ [3s, 30s] 内发生」这条不变量，
+    // 并让下一曲在离结尾还有几分钟时就被追加。
+    if (duration <= Duration.zero) return;
+    final remaining = duration - position;
+    if (remaining > const Duration(seconds: 30) ||
+        remaining < const Duration(seconds: 3)) {
+      return;
+    }
+    // 预解析结果只在原生仍是单子源、且仍属于已提交条目时可追加。
+    if (prepared.ownerEntryId != currentEntryId ||
+        prepared.queueRevision != _queueRevision ||
+        prepared.requestRevision != _prepareNextSerial ||
+        prepared.requestedQuality != audioQuality) {
+      return;
+    }
+    final ownerEntryId = prepared.ownerEntryId;
+    // 武装失败冷却：与预解析失败同一套思路，避免每个 position 刻度都重试
+    // 一次注定失败的 addAudioSource。按曲目 key 记录。
+    final armCooldownUntil = _armNextCooldownUntil[prepared.songKey];
+    if (armCooldownUntil != null &&
+        _transitionClock.elapsed < armCooldownUntil) {
+      return;
+    }
+    _armingNextSource = true;
+    try {
+      await _audioHandler.armNextSource(
+        song: prepared.song,
+        url: prepared.url,
+      );
+    } catch (error) {
+      // 追加失败：保持单子源，静默降级（下一次过界走正常解析路径）。
+      _traceTransition('arm_failed', detail: 'error=$error');
+      _armNextCooldownUntil[prepared.songKey] =
+          _transitionClock.elapsed + const Duration(seconds: 15);
+      return;
+    } finally {
+      _armingNextSource = false;
+    }
+    if (_disposed ||
+        !realGaplessActive ||
+        ownerEntryId != currentEntryId ||
+        prepared.queueRevision != _queueRevision ||
+        prepared.requestRevision != _prepareNextSerial ||
+        prepared.requestedQuality != audioQuality) {
+      // 武装期间前置失效：立即撤销，避免残留第二子源。
+      unawaited(_dropArmedNext());
+      return;
+    }
+    _armedNext = _ArmedNextSource(
+      song: prepared.song,
+      songKey: prepared.songKey,
+      ownerEntryId: ownerEntryId,
+      queueRevision: prepared.queueRevision,
+      requestRevision: prepared.requestRevision,
+      requestedQuality: prepared.requestedQuality,
+      quality: prepared.quality,
+      url: prepared.url,
+      loudness: prepared.loudness,
+      isLocal: prepared.isLocal,
+    );
+    _armedAtUs = _transitionClock.elapsedMicroseconds;
+    // 武装即保护：本地候选要等最多 30 秒才过界，而 `_schedulePlaybackCache`
+    // 在**当前曲**的 t=30s 会调 `_prunePlayCache`。若当前曲来自网络，
+    // `_activePlayCachePath` 为 null，被武装的下一曲文件就成了合法的 LRU
+    // 淘汰对象——淘汰后过界时文件已不存在，正是「本地候选损坏」的输入。
+    if (prepared.isLocal) {
+      downloadController?.setArmedNextPath(prepared.url);
+    }
+    _traceTransition('armed_next', detail: 'next=${prepared.songKey}');
+    notifyListeners();
+  }
+
+  /// 撤销武装：移除第二子源并清空令牌。
+  ///
+  /// 幂等且可重入：多处失效路径都会调用它。
+  Future<void> _dropArmedNext() async {
+    // 过界处理在途时不得摘除：此时 index 1 是**正在播放的 B**，不是待撤销的
+    // 候选。真正的摘除由 [promoteArmedNext] 在提交之后完成。
+    if (_handlingBoundary) return;
+    _armedNext = null;
+    downloadController?.setArmedNextPath(null);
+    try {
+      await _audioHandler.dropArmedNext();
+    } catch (error) {
+      _traceTransition('drop_armed_failed', detail: 'error=$error');
+    }
+  }
+
+  /// 原生过界：A 播完、原生已在音频线程内无缝切到已武装的 B。
+  ///
+  /// 这是**唯一的无缝提交点**，复用 [_commitPlayback] 以保持一致。
+  /// 顺序不可颠倒：必须先提交，再移除 index 0（见 [promoteArmedNext]）。
+  ///
+  /// **判据必须用 [PositionDiscontinuity.event]，不能用 `sequenceState`。**
+  /// 实测（Android 14 / ExoPlayer）：`positionDiscontinuityStream` 与
+  /// `sequenceStateStream` 都挂在 `playbackEventStream` 上，但不连续性的监听
+  /// 先注册（just_audio.dart:287 vs :324），因此事件到达时
+  /// `sequenceState.currentIndex` **仍是旧值 0**。早期版本据此判定
+  /// `index != 1` 而拒绝了一次合法过界，退化成显式重载（实测
+  /// `boundary_rejected len=2 index=0` → 143ms 的可听间隙）。
+  /// [discontinuity] 为 null 表示由 positionStream 兜底触发（事件被 seek 窗口
+  /// 吞掉），此时只能读 `sequenceState`。
+  Future<void> _onNativeBoundary(PositionDiscontinuity? discontinuity) async {
+    if (_disposed || _handlingBoundary) return;
+    final armed = _armedNext;
+    // 幂等：一次性令牌。同一次过渡可能被重复投递。
+    if (armed == null) {
+      if (discontinuity != null) {
+        await _rejectUnownedBoundary(discontinuity);
+      }
+      return;
+    }
+    final sequence = audioPlayer.sequenceState;
+    // 事件优先（实时值）；兜底路径读 sequenceState。
+    final newIndex =
+        discontinuity?.event.currentIndex ?? sequence.currentIndex;
+    final newSource = (newIndex != null &&
+            newIndex >= 0 &&
+            newIndex < sequence.sequence.length)
+        ? sequence.sequence[newIndex]
+        : null;
+    if (sequence.sequence.length != 2 ||
+        newIndex != 1 ||
+        !identical(newSource?.tag, armed.song) ||
+        armed.ownerEntryId != currentEntryId) {
+      _traceTransition(
+        'boundary_rejected',
+        detail:
+            'len=${sequence.sequence.length} index=$newIndex '
+            'seqIndex=${sequence.currentIndex}',
+      );
+      await _dropArmedNext();
+      return;
+    }
+    _handlingBoundary = true;
+    _armedNext = null;
+    // 过界时刻：原生已在音频线程内完成交接，这里只度量 Dart 侧提交+摘除。
+    _boundaryAtUs = _transitionClock.elapsedMicroseconds;
+    _cancelAutomaticResume();
+    // 过界已由原生完成，之前的候选与序列都已失效：清掉，避免提交后
+    // _preparedNext != null 卡住后续预解析（_prepareNextSourceIfNeeded 的
+    // 首个门槛就是 _preparedNext == null）。
+    _clearPreparedNext();
+    try {
+      _commitPlayback(
+        armed.song,
+        armed.quality,
+        armed.loudness,
+        reason: 'native_auto_advance',
+      );
+      // 提交之后才摘除已播完的首个子源，回到单子源。
+      final promoted = await _audioHandler.promoteArmedNext();
+      if (_disposed) return;
+      _activePlaylistSource = promoted;
+      // 本地候选（已下载 / 播放缓存 / 本地音乐）提交后必须保护它不被 LRU 删掉：
+      // 此时 `_schedulePlaybackCache` 不会介入（没有网络地址），若不显式登记，
+      // 正在播放的文件会被当作普通缓存条目清理。
+      downloadController?.setActivePlaybackPath(armed.isLocal ? armed.url : null);
+      downloadController?.setArmedNextPath(null);
+      _committedLocalPath = armed.isLocal ? armed.url : null;
+      // 过界提交不走 `_playSong`，必须在这里补齐它在提交后的两项动作：
+      // 网络音源排入播放缓存、本地音源补齐响度元数据。缺了这一步，
+      // 开启无缝播放后**只靠自动续播**的长听时段不会再往播放缓存写任何东西
+      // （显式加载仍会写），缓存停止增长——而缓存命中与否正是
+      // `_prepareNextSourceIfNeeded` 本地分支的输入。
+      // 实机证据：显式加载的那首在 play_cache_index 里，随后两首
+      // `native_auto_advance` 提交的曲目都不在。
+      if (armed.isLocal) {
+        _restoreLocalLoudness(armed.song, armed.quality, armed.loudness);
+      } else {
+        _schedulePlaybackCache(
+          armed.song,
+          armed.quality,
+          armed.url,
+          loudness: armed.loudness,
+        );
+      }
+      unawaited(_applyVolumeNormalization(reason: 'native_boundary'));
+      // 无缝程度的关键数字：armedLeadMs 是「武装 → 过界」的提前量（越大说明
+      // 下一曲准备得越早）；boundaryHandleMs 是 Dart 侧提交+摘除耗时。
+      // 声学接缝仍需 AudioTrack 时间戳，这两个数字只证明状态机没有拖后腿。
+      final nowUs = _transitionClock.elapsedMicroseconds;
+      final armedAt = _armedAtUs;
+      final boundaryAt = _boundaryAtUs;
+      _traceTransition(
+        'native_auto_advance',
+        detail:
+            'song=${armed.songKey} '
+            'armedLeadMs=${armedAt == null ? -1 : (boundaryAt! - armedAt) ~/ 1000} '
+            'boundaryHandleMs=${boundaryAt == null ? -1 : (nowUs - boundaryAt) ~/ 1000}',
+      );
+      notifyListeners();
+    } catch (error) {
+      // 提交后摘除失败：播放器状态已前进，只报诊断，不打断播放。
+      _traceTransition('native_auto_advance_failed', detail: 'error=$error');
+    } finally {
+      _handlingBoundary = false;
+    }
+  }
+
+  /// 过界事件到达但没有武装令牌：不得让未经认领的音源继续播下去。
+  ///
+  /// 只有在「确实存在第二子源」时才清理，其余情况（例如我们自己的 seek/
+  /// 替换引发的噪声）一律忽略。索引以事件自带的快照为准，原因同
+  /// [_onNativeBoundary]。
+  Future<void> _rejectUnownedBoundary(PositionDiscontinuity discontinuity) async {
+    final sequence = audioPlayer.sequenceState;
+    if (sequence.sequence.length != 2) return;
+    if (discontinuity.event.currentIndex != 1) return;
+    _traceTransition('boundary_unclaimed', detail: 'dropping stray second source');
+    await _dropArmedNext();
+  }
+
+  /// 武装窗口的宽判据：单子源，或「已武装的两子源窗口」。
+  ///
+  /// 严格单子源的 [_ownsLoadedSource] 在武装后为 false，若直接复用会让
+  /// positionStream / playbackEventStream 的更新整体停摆，表现为进度条与
+  /// 桌面歌词在长达 30 秒的窗口内**冻结**。
+  bool get _ownsPlaybackWindow {
+    final sequence = audioPlayer.sequenceState;
+    final active = _activePlaylistSource;
+    if (active == null) return false;
+    if (sequence.sequence.length == 1) {
+      return identical(sequence.currentSource, active);
+    }
+    if (sequence.sequence.length == 2 && _armedNext != null) {
+      // 过界前 currentSource 仍是 A；过界后是 B（提交由边界事件负责）。
+      return identical(sequence.currentSource, active) ||
+          sequence.currentIndex == 1;
+    }
+    return false;
   }
 
   // ===== 播放会话持久化 =====
@@ -1893,8 +2441,23 @@ class PlayerController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_gaplessPlaybackSettingKey, enabled);
     if (!enabled) {
-      // 丢弃已预解析的下一曲与在途解析。
+      // 丢弃已预解析的下一曲与在途解析；无缝播放依赖预解析结果，一并解除武装。
       _clearPreparedNext();
+    }
+    notifyListeners();
+  }
+
+  /// 开关真正的无缝播放（原生边界交接）。
+  ///
+  /// 门禁：**仅在「预加载歌曲」开启时才有意义**——没有预解析地址就没有可
+  /// 追加的子源。关闭时立即解除武装，避免残留第二子源。
+  Future<void> setRealGaplessPlaybackEnabled(bool enabled) async {
+    if (realGaplessPlaybackEnabled == enabled) return;
+    realGaplessPlaybackEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_realGaplessSettingKey, enabled);
+    if (!enabled || !gaplessPlaybackEnabled) {
+      await _dropArmedNext();
     }
     notifyListeners();
   }
@@ -2990,6 +3553,8 @@ class PlayerController extends ChangeNotifier {
         prefs.getBool(_resumePlaybackSettingKey) ?? resumePlaybackEnabled;
     gaplessPlaybackEnabled =
         prefs.getBool(_gaplessPlaybackSettingKey) ?? gaplessPlaybackEnabled;
+    realGaplessPlaybackEnabled =
+        prefs.getBool(_realGaplessSettingKey) ?? realGaplessPlaybackEnabled;
     playbackSpeed = prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
     desktopLyricsEnabled =
         prefs.getBool(_desktopLyricsEnabledSettingKey) ?? desktopLyricsEnabled;
@@ -3253,6 +3818,7 @@ class PlayerController extends ChangeNotifier {
     _becomingNoisySub?.cancel();
     _devicesChangedSub?.cancel();
     _playlistSequenceSub?.cancel();
+    _boundarySub?.cancel();
     _playerErrorSub?.cancel();
     unawaited(_volNormService.dispose());
     unawaited(
@@ -3319,4 +3885,15 @@ class PlayerController extends ChangeNotifier {
             .round()],
     ];
   }
+}
+
+/// 预解析下一曲时后端没有返回可用地址。
+///
+/// 必须走异常而不是 `return`：预解析的失败冷却只在 `catch` 里设置，
+/// 直接 `return` 会让窗口内的每个 position 刻度都重新发起一次网络请求。
+class _PrefetchUnavailable implements Exception {
+  const _PrefetchUnavailable();
+
+  @override
+  String toString() => '预解析没有可播放地址';
 }

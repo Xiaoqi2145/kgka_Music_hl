@@ -97,6 +97,10 @@ class DownloadController extends ChangeNotifier {
   final Map<String, DownloadEntry> _downloads = {}; // key = hash
   final Map<String, PlayCacheEntry> _playCache = {}; // key = hash_quality
   String? _activePlayCachePath;
+
+  /// 已武装、等待原生过界的下一曲缓存文件；与 [_activePlayCachePath]
+  /// 同时受保护，二者互不覆盖。
+  String? _armedNextCachePath;
   bool _initialized = false;
   Future<void>? _initializing;
   Timer? _playCachePersistTimer;
@@ -300,11 +304,20 @@ class DownloadController extends ChangeNotifier {
 
   /// Mark the source currently committed by the player so LRU never deletes it.
   void setActivePlaybackPath(String? path) {
-    _activePlayCachePath =
-        path != null && _playCache.values.any((entry) => entry.filePath == path)
-        ? path
-        : null;
+    _activePlayCachePath = _protectedPath(path);
   }
+
+  /// Mark the **armed next** source so LRU never deletes it while it waits for
+  /// the native boundary (up to 30s). Must not evict the currently playing
+  /// source's protection, so it is tracked separately.
+  void setArmedNextPath(String? path) {
+    _armedNextCachePath = _protectedPath(path);
+  }
+
+  String? _protectedPath(String? path) =>
+      path != null && _playCache.values.any((entry) => entry.filePath == path)
+      ? path
+      : null;
 
   /// 返回本地音频及其持久化响度元数据，优先级与 [localPathFor] 一致。
   ({String path, LoudnessData? loudness})? localSourceFor(
@@ -624,7 +637,11 @@ class DownloadController extends ChangeNotifier {
             .toList()
           ..sort((a, b) => a.cachedAt.compareTo(b.cachedAt));
 
-    final protected = <String>{...excludePaths, ?_activePlayCachePath};
+    final protected = <String>{
+      ...excludePaths,
+      ?_activePlayCachePath,
+      ?_armedNextCachePath,
+    };
     final removed = await _service.prunePlayCache(
       entries,
       excludePaths: protected,

@@ -144,6 +144,19 @@ class SettingsPage extends StatelessWidget {
                       ),
                       _SettingsDivider(),
                       _SettingsSwitchTile(
+                        icon: Icons.swap_horiz_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '无缝播放',
+                        subtitle: player.gaplessPlaybackEnabled
+                            ? '在原生播放器内衔接下一曲，消除切歌间隙（仅 Android）'
+                            : '需先开启「预加载歌曲」',
+                        value: player.realGaplessPlaybackEnabled,
+                        // 门禁：没有预解析地址就没有可衔接的下一曲。
+                        enabled: player.gaplessPlaybackEnabled,
+                        onChanged: player.setRealGaplessPlaybackEnabled,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
                         icon: Icons.volume_up_rounded,
                         iconColor: colorScheme.primary,
                         title: '音量均衡',
@@ -763,6 +776,7 @@ class _SettingsSwitchTile extends StatelessWidget {
     required this.onChanged,
     this.iconColor,
     this.subtitle,
+    this.enabled = true,
   });
 
   final IconData icon;
@@ -772,46 +786,55 @@ class _SettingsSwitchTile extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
+  /// false 时置灰且不可操作（用于「依赖前置开关」的选项）。
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 32,
-            child: Icon(
-              icon,
-              size: 22,
-              color: iconColor ?? colorScheme.primary,
+    return Opacity(
+      opacity: enabled ? 1 : .5,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 32,
+              child: Icon(
+                icon,
+                size: 22,
+                color: iconColor ?? colorScheme.primary,
+              ),
             ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 2),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    subtitle!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
+                    title,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-          Switch(value: value, onChanged: onChanged),
-        ],
+            Switch(
+              value: value,
+              onChanged: enabled ? onChanged : null,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 
 import '../models/music_models.dart';
 import 'audio_focus_gate.dart';
+import 'playlist_mutation_serializer.dart';
 
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
@@ -60,6 +61,23 @@ class MusicAudioHandler extends BaseAudioHandler
     onPlaybackIntent = null;
   }
 
+  /// 播放列表变更串行链。
+  ///
+  /// **为什么必须有**：`dropArmedNext` / `promoteArmedNext` 的长度守卫读的是
+  /// `sequenceState`，而 just_audio 的 `removeAt` 只在**自己的**锁内做
+  /// `children.removeAt(index)`。若这两步之间有一次 `loadSong` →
+  /// `setAudioSources([单个])` 抢先完成，`removeAt(0)` 就会作用在**刚加载的
+  /// 唯一音源**上，把播放列表清空——比残留第三子源更严重：控制器随后
+  /// `_activePlaylistSource = promoted`，`_ownsLoadedSource` 与
+  /// `_ownsPlaybackWindow` 将永远为 false，进度条与歌词冻结到下一次加载。
+  ///
+  /// 这里把「检查长度 + 移除」整体放进同一条链，使其对其它变更原子。
+  /// 逻辑本身在 [PlaylistMutationSerializer] 中，便于单测覆盖。
+  final _playlistMutations = PlaylistMutationSerializer();
+
+  Future<T> _serializePlaylist<T>(Future<T> Function() action) =>
+      _playlistMutations.run(action);
+
   AudioSource _audioSourceFor(Song song, String url) {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       return AudioSource.uri(Uri.parse(url), tag: song);
@@ -85,16 +103,84 @@ class MusicAudioHandler extends BaseAudioHandler
     await pauseForInterruption();
     // Stable mode: replace at the paused load boundary, never mutate a live
     // playlist. Media metadata is published by the controller's commit only.
-    await audioPlayer.setAudioSources(
-      [_audioSourceFor(song, url)],
-      // initialPosition 由加载本身完成定位，省掉一次额外的播放器往返。
-      initialPosition: start > Duration.zero ? start : null,
+    // 串行化：与 drop/promote 的长度守卫+移除构成原子区，避免把刚加载的
+    // 唯一音源误删（见 _serializePlaylist）。
+    await _serializePlaylist(
+      () => audioPlayer.setAudioSources(
+        [_audioSourceFor(song, url)],
+        // initialPosition 由加载本身完成定位，省掉一次额外的播放器往返。
+        initialPosition: start > Duration.zero ? start : null,
+      ),
     );
   }
 
   /// Only the controller commit publishes the current media identity.
   void setCurrentMediaItem(Song song) {
     mediaItem.add(_mediaItemFor(song));
+  }
+
+  // ===== 无缝播放（原生边界交接） =====
+  //
+  // 与「预加载歌曲」的分工：预加载只解析 URL（纯缓存），这里把已解析的下一曲
+  // 追加为**第二个原生子源**，由原生播放器在音频线程内完成过界，从而省掉
+  // 「pause → setAudioSources([单个]) → play」这一必然产生可听间隙的替换。
+  //
+  // 注意：`useLazyPreparation` 保持 just_audio 默认值 `true`（构造期参数，
+  // 见 `AudioPlayer` 构造）。默认值下平台**被允许**推迟准备追加的子源，
+  // 因此「追加」不保证下一曲已预缓冲；接缝是否真无缝必须实机测量
+  // （`AudioTrack` start/stop 时间戳）。本层只保证状态机正确、不产生子源泄漏。
+
+  /// 原生过界信号。只转发 [PositionDiscontinuityReason.autoAdvance]：
+  /// `seek` 由 just_audio 在每次 seek 时直接发出，与本功能无关。
+  ///
+  /// 该流是 `PublishSubject(sync: true)` 且内部用 `pairwise()` 比较，
+  /// **第一个事件会被吞掉**，订阅必须尽早建立并常驻。
+  Stream<PositionDiscontinuity> get boundaryStream =>
+      audioPlayer.positionDiscontinuityStream.where(
+        (event) => event.reason == PositionDiscontinuityReason.autoAdvance,
+      );
+
+  /// 把 [song] 追加为第二个子源（武装）。不提交任何业务状态。
+  ///
+  /// 仅允许在单子源时调用：`addAudioSource` 无去重、无重复防护，重复调用
+  /// 会产生第 3 个子源。
+  Future<void> armNextSource({required Song song, required String url}) async {
+    await _serializePlaylist(() async {
+      if (audioPlayer.sequenceState.sequence.length != 1) {
+        throw StateError('armNextSource 要求当前为单子源');
+      }
+      await audioPlayer.addAudioSource(_audioSourceFor(song, url));
+    });
+  }
+
+  /// 解除武装：移除已追加的第二个子源。
+  ///
+  /// 只在恰好 2 个子源时移除 index 1；其余情况视为无武装并静默返回，
+  /// 绝不误删正在播放的唯一音源。
+  Future<void> dropArmedNext() async {
+    await _serializePlaylist(() async {
+      if (audioPlayer.sequenceState.sequence.length != 2) return;
+      await audioPlayer.removeAudioSourceAt(1);
+    });
+  }
+
+  /// 过界后提升：移除 index 0（已播完的上一曲），回到单子源。
+  ///
+  /// 返回移除后的当前原生音源，供控制器重建 `_activePlaylistSource`。
+  ///
+  /// **必须在边界事件处理之后调用**：`removeAt` 会先广播缩短后的 sequence
+  /// 再调原生（`just_audio.dart:3094-3100`），提前移除会让晚到的边界事件
+  /// 因 `currentIndex` 越界而解析出 null 源、被静默丢弃。
+  ///
+  /// 长度检查与移除必须同处 [_serializePlaylist] 内：否则一次并发的
+  /// `setAudioSources` 会让 `removeAt(0)` 删掉刚加载的唯一音源，把播放列表
+  /// 清空（比残留第三子源更严重，见 [_serializePlaylist]）。
+  Future<IndexedAudioSource?> promoteArmedNext() async {
+    return _serializePlaylist(() async {
+      if (audioPlayer.sequenceState.sequence.length != 2) return null;
+      await audioPlayer.removeAudioSourceAt(0);
+      return audioPlayer.sequenceState.currentSource;
+    });
   }
 
   @override
