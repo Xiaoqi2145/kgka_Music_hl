@@ -1700,6 +1700,38 @@ void main() {
     },
   );
 
+  test(
+    'repeated errors on the same song do not loop the recovery',
+    () async {
+      await setup();
+      final downloads = _CachedDownloadController(api, {'B'});
+      controller.downloadController = downloads;
+      await controller.setVolumeNormalizationEnabled(false);
+      handler.failLocalLoads = true;
+      await arm();
+      // 第一次错误：恢复（作废本地 → 网络重载）。
+      handler.audioPlayer.emitNative(ProcessingState.idle);
+      handler.audioPlayer.playing = false;
+      handler.audioPlayer.errors.add(PlayerException(2, 'prepare failed', 1));
+      await drain();
+      final afterFirst = handler.replacements;
+      expect(downloads.invalidated, contains('B'));
+      // 同一首歌再次报错：不得再触发一次恢复，否则「重载→失败→重载」死循环。
+      for (var i = 0; i < 3; i++) {
+        handler.audioPlayer.emitNative(ProcessingState.idle);
+        handler.audioPlayer.errors.add(
+          PlayerException(2, 'still failing', 0),
+        );
+        await drain();
+      }
+      expect(
+        handler.replacements,
+        afterFirst,
+        reason: '同一首歌不得反复自动恢复（防止重载死循环）',
+      );
+    },
+  );
+
   test('a local-source song is armed from its own path', () async {
     await setup();
     // 本地音乐（SongSource.local）路径即地址：既不请求网络，也不查播放缓存。

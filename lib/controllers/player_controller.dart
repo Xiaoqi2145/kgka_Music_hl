@@ -1075,6 +1075,13 @@ class PlayerController extends ChangeNotifier {
     Duration start = Duration.zero,
   }) {
     _transitions.commit(_playlistLoadRevision);
+    // 错误恢复的「同一首歌只自动恢复一次」标记：仅在播放实例换成**别的**
+    // 歌曲时清除。恢复本身会重载同一首歌，标记必须保留，否则
+    // 「重载 → 仍失败 → 再恢复」会变成死循环；而用户切到别的歌后再回来，
+    // 应当重新获得一次自动恢复机会。
+    if (_recoveringErrorFor != null && _recoveringErrorFor != _songKey(song)) {
+      _recoveringErrorFor = null;
+    }
     currentSong = song;
     _lastCommittedSong = song;
     _selectNormalizationSource(song, quality, force: true);
