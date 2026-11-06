@@ -13,6 +13,7 @@ class SongSheetAction {
     required this.icon,
     required this.title,
     this.subtitle,
+    this.subtitleBuilder,
     this.danger = false,
     this.isGrid = false,
     required this.onTap,
@@ -21,6 +22,7 @@ class SongSheetAction {
   final IconData icon;
   final String title;
   final String? subtitle;
+  final WidgetBuilder? subtitleBuilder;
   final bool danger;
   final bool isGrid;
   final FutureOr<void> Function() onTap;
@@ -189,7 +191,9 @@ class _GridItem extends StatelessWidget {
               fontSize: 12,
             ),
           ),
-          if (action.subtitle != null)
+          if (action.subtitleBuilder != null)
+            action.subtitleBuilder!(context)
+          else if (action.subtitle != null)
             Text(
               action.subtitle!,
               maxLines: 1,
@@ -319,7 +323,9 @@ class _SongActionTile extends StatelessWidget {
     return ListTile(
       leading: Icon(action.icon, color: color),
       title: Text(action.title, style: TextStyle(color: color)),
-      subtitle: action.subtitle == null ? null : Text(action.subtitle!),
+      subtitle:
+          action.subtitleBuilder?.call(context) ??
+          (action.subtitle == null ? null : Text(action.subtitle!)),
       onTap: () {
         Navigator.of(context).pop();
         Future<void>.delayed(

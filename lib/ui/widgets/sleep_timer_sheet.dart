@@ -26,35 +26,8 @@ class _SleepTimerSheet extends StatefulWidget {
 }
 
 class _SleepTimerSheetState extends State<_SleepTimerSheet> {
-  bool _finishSong = false;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.player.addListener(_onPlayerUpdate);
-    _finishSong =
-        widget.player.isSleepFinishCurrentSong ||
-        widget.player.sleepFinishCurrentSongOption;
-  }
-
-  @override
-  void dispose() {
-    widget.player.removeListener(_onPlayerUpdate);
-    super.dispose();
-  }
-
-  void _onPlayerUpdate() {
-    if (mounted) {
-      setState(() {
-        _finishSong =
-            widget.player.isSleepFinishCurrentSong ||
-            widget.player.sleepFinishCurrentSongOption;
-      });
-    }
-  }
-
   void _setTimer(Duration duration) {
-    if (_finishSong) {
+    if (widget.player.sleepTimerUiListenable.value.sheetSelection) {
       widget.player.setSleepTimerFinishSong(duration);
     } else {
       widget.player.setSleepTimer(duration);
@@ -66,112 +39,115 @@ class _SleepTimerSheetState extends State<_SleepTimerSheet> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final player = widget.player;
-    final isActive =
-        player.isSleepTimerActive || player.isSleepFinishCurrentSong;
-
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return ValueListenableBuilder<SleepTimerUiState>(
+      valueListenable: player.sleepTimerUiListenable,
+      builder: (context, sleepTimer, _) {
+        final finishSong = sleepTimer.sheetSelection;
+        final isActive = sleepTimer.active;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.bedtime_rounded, color: colorScheme.primary),
-                const SizedBox(width: 10),
-                Text(
-                  '定时播放',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                Row(
+                  children: [
+                    Icon(Icons.bedtime_rounded, color: colorScheme.primary),
+                    const SizedBox(width: 10),
+                    Text(
+                      '定时播放',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const Spacer(),
+                    if (isActive)
+                      TextButton(
+                        onPressed: () {
+                          player.cancelSleepTimer();
+                          Navigator.of(context).pop();
+                        },
+                        child: const Text('关闭定时'),
+                      ),
+                  ],
                 ),
-                const Spacer(),
-                if (isActive)
-                  TextButton(
-                    onPressed: () {
-                      player.cancelSleepTimer();
-                      Navigator.of(context).pop();
+                if (isActive) ...[
+                  const SizedBox(height: 8),
+                  _ActiveTimerDisplay(state: sleepTimer),
+                ],
+                const SizedBox(height: 16),
+                // Finish song toggle
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: SwitchListTile(
+                    value: finishSong,
+                    onChanged: (v) {
+                      widget.player.updateSleepTimerOption(v);
                     },
-                    child: const Text('关闭定时'),
+                    title: const Text('播完当前歌曲再停止'),
+                    subtitle: const Text('定时结束后，等当前歌曲播放完毕再暂停'),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 2,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
-              ],
-            ),
-            if (isActive) ...[
-              const SizedBox(height: 8),
-              _ActiveTimerDisplay(player: player),
-            ],
-            const SizedBox(height: 16),
-            // Finish song toggle
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainer,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: SwitchListTile(
-                value: _finishSong,
-                onChanged: (v) {
-                  setState(() => _finishSong = v);
-                  widget.player.updateSleepTimerOption(v);
-                },
-                title: const Text('播完当前歌曲再停止'),
-                subtitle: const Text('定时结束后，等当前歌曲播放完毕再暂停'),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 2,
                 ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            // Time presets
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _TimerChip(
-                  label: '15 分钟',
-                  onTap: () => _setTimer(const Duration(minutes: 15)),
-                ),
-                _TimerChip(
-                  label: '30 分钟',
-                  onTap: () => _setTimer(const Duration(minutes: 30)),
-                ),
-                _TimerChip(
-                  label: '45 分钟',
-                  onTap: () => _setTimer(const Duration(minutes: 45)),
-                ),
-                _TimerChip(
-                  label: '60 分钟',
-                  onTap: () => _setTimer(const Duration(minutes: 60)),
-                ),
-                _TimerChip(
-                  label: '90 分钟',
-                  onTap: () => _setTimer(const Duration(minutes: 90)),
+                const SizedBox(height: 16),
+                // Time presets
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    _TimerChip(
+                      label: '15 分钟',
+                      onTap: () => _setTimer(const Duration(minutes: 15)),
+                    ),
+                    _TimerChip(
+                      label: '30 分钟',
+                      onTap: () => _setTimer(const Duration(minutes: 30)),
+                    ),
+                    _TimerChip(
+                      label: '45 分钟',
+                      onTap: () => _setTimer(const Duration(minutes: 45)),
+                    ),
+                    _TimerChip(
+                      label: '60 分钟',
+                      onTap: () => _setTimer(const Duration(minutes: 60)),
+                    ),
+                    _TimerChip(
+                      label: '90 分钟',
+                      onTap: () => _setTimer(const Duration(minutes: 90)),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
 
 class _ActiveTimerDisplay extends StatelessWidget {
-  const _ActiveTimerDisplay({required this.player});
+  const _ActiveTimerDisplay({required this.state});
 
-  final PlayerController player;
+  final SleepTimerUiState state;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final remaining = player.sleepTimerRemaining;
+    final remaining = state.remaining;
 
     String text;
-    if (player.isSleepFinishCurrentSong) {
+    if (state.finishCurrentSong) {
       if (remaining != null && remaining > Duration.zero) {
         final m = remaining.inMinutes;
         final s = remaining.inSeconds.remainder(60);

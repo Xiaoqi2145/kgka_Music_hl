@@ -25,7 +25,43 @@ import '../services/transition_coordinator.dart';
 import '../services/volume_normalization_service.dart';
 import 'download_controller.dart';
 
-/// 纯缓存候选；永不追加到正在播放的音源列表。
+/// 睡眠定时器的 UI 状态切片，避免每秒倒计时通知整个播放器。
+class SleepTimerUiState {
+  const SleepTimerUiState({
+    this.remaining,
+    this.finishCurrentSong = false,
+    this.finishOption = false,
+    this.sheetFinishSong = false,
+  });
+
+  final Duration? remaining;
+  final bool finishCurrentSong;
+  final bool finishOption;
+  final bool sheetFinishSong;
+
+  bool get active =>
+      (remaining != null && remaining! > Duration.zero) || finishCurrentSong;
+  bool get finishSongSelected => finishCurrentSong || finishOption;
+  bool get sheetSelection =>
+      finishSongSelected || (!active && sheetFinishSong);
+
+  @override
+  bool operator ==(Object other) =>
+      other is SleepTimerUiState &&
+      other.remaining == remaining &&
+      other.finishCurrentSong == finishCurrentSong &&
+      other.finishOption == finishOption &&
+      other.sheetFinishSong == sheetFinishSong;
+
+  @override
+  int get hashCode => Object.hash(
+    remaining,
+    finishCurrentSong,
+    finishOption,
+    sheetFinishSong,
+  );
+}
+
 class _PreparedNextSource {
   const _PreparedNextSource({
     required this.song,
@@ -520,10 +556,15 @@ class PlayerController extends ChangeNotifier {
       VolumeNormalizationService();
   Timer? _autoResumeTimer;
   Duration? sleepTimerRemaining;
+  final ValueNotifier<Duration?> sleepTimerRemainingListenable =
+      ValueNotifier<Duration?>(null);
+  final ValueNotifier<SleepTimerUiState> sleepTimerUiListenable =
+      ValueNotifier<SleepTimerUiState>(const SleepTimerUiState());
   Timer? _sleepTimer;
   DateTime? _sleepTimerEnd;
   bool _sleepFinishCurrentSong = false;
   bool _sleepFinishCurrentSongOption = false;
+  bool _sleepTimerSheetFinishSong = false;
   String? errorMessage;
   int seekRevision = 0;
   int? _androidAudioSessionId;
@@ -2885,6 +2926,7 @@ class PlayerController extends ChangeNotifier {
         _sleepFinishCurrentSongOption = false;
         sleepTimerRemaining = null;
         notifyListeners();
+        _setSleepTimerUiState();
         unawaited(_audioHandler.pause());
         return;
       }
@@ -3319,13 +3361,36 @@ class PlayerController extends ChangeNotifier {
   bool get isSleepFinishCurrentSong => _sleepFinishCurrentSong;
   bool get sleepFinishCurrentSongOption => _sleepFinishCurrentSongOption;
 
+  void _setSleepTimerUiState() {
+    final next = SleepTimerUiState(
+      remaining: sleepTimerRemaining,
+      finishCurrentSong: _sleepFinishCurrentSong,
+      finishOption: _sleepFinishCurrentSongOption,
+      sheetFinishSong: _sleepTimerSheetFinishSong,
+    );
+    if (sleepTimerRemainingListenable.value != sleepTimerRemaining) {
+      sleepTimerRemainingListenable.value = sleepTimerRemaining;
+    }
+    if (sleepTimerUiListenable.value != next) {
+      sleepTimerUiListenable.value = next;
+    }
+  }
+
+  void _cancelSleepTimerTicker() {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepTimerEnd = null;
+  }
+
   /// Set a sleep timer that pauses playback immediately or after current song finishes when it expires.
   void setSleepTimer(Duration duration, {bool finishCurrentSong = false}) {
+    _cancelSleepTimerTicker();
     _sleepFinishCurrentSongOption = finishCurrentSong;
+    _sleepTimerSheetFinishSong = finishCurrentSong;
     _sleepFinishCurrentSong = false;
-    _sleepTimer?.cancel();
     _sleepTimerEnd = DateTime.now().add(duration);
     sleepTimerRemaining = duration;
+    _setSleepTimerUiState();
     notifyListeners();
 
     _sleepTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -3334,19 +3399,18 @@ class PlayerController extends ChangeNotifier {
       final remaining = end.difference(DateTime.now());
       if (remaining <= Duration.zero) {
         if (_sleepFinishCurrentSongOption) {
-          _sleepTimer?.cancel();
-          _sleepTimer = null;
-          _sleepTimerEnd = null;
+          _cancelSleepTimerTicker();
           _sleepFinishCurrentSong = true;
           // 丢弃预载的下一曲，让当前曲自然播完并触发完成暂停逻辑。
           _clearPreparedNext();
           notifyListeners();
+          _setSleepTimerUiState();
         } else {
           _executeSleepTimer();
         }
       } else {
         sleepTimerRemaining = remaining;
-        notifyListeners();
+        _setSleepTimerUiState();
       }
     });
   }
@@ -3358,37 +3422,45 @@ class PlayerController extends ChangeNotifier {
 
   /// Update the sleep timer finish song option dynamically.
   void updateSleepTimerOption(bool finishCurrentSong) {
-    if (_sleepTimer != null || _sleepFinishCurrentSong) {
+    _sleepTimerSheetFinishSong = finishCurrentSong;
+    if (_sleepTimer == null && !_sleepFinishCurrentSong) {
+      _setSleepTimerUiState();
+      return;
+    }
+    if (_sleepFinishCurrentSong) {
       _sleepFinishCurrentSongOption = finishCurrentSong;
-      // If the timer has already expired and is waiting for song to finish,
-      // and they turn it OFF, we should stop immediately.
-      if (!finishCurrentSong && _sleepFinishCurrentSong) {
+      if (!finishCurrentSong) {
         _executeSleepTimer();
       } else {
         notifyListeners();
+        _setSleepTimerUiState();
       }
+      return;
     }
+    _sleepFinishCurrentSongOption = finishCurrentSong;
+    notifyListeners();
+    _setSleepTimerUiState();
   }
 
   void cancelSleepTimer() {
-    _sleepTimer?.cancel();
-    _sleepTimer = null;
-    _sleepTimerEnd = null;
+    _cancelSleepTimerTicker();
     _sleepFinishCurrentSong = false;
     _sleepFinishCurrentSongOption = false;
+    _sleepTimerSheetFinishSong = false;
     sleepTimerRemaining = null;
     notifyListeners();
+    _setSleepTimerUiState();
   }
 
   void _executeSleepTimer() {
     _cancelAutomaticResume();
-    _sleepTimer?.cancel();
-    _sleepTimer = null;
-    _sleepTimerEnd = null;
+    _cancelSleepTimerTicker();
     _sleepFinishCurrentSong = false;
     _sleepFinishCurrentSongOption = false;
+    _sleepTimerSheetFinishSong = false;
     sleepTimerRemaining = null;
     notifyListeners();
+    _setSleepTimerUiState();
     unawaited(_audioHandler.pause());
   }
 
@@ -3847,6 +3919,8 @@ class PlayerController extends ChangeNotifier {
     _audioHandler.detachTransportControls();
     _desktopLyrics.setVisibilityChangedHandler(null);
     positionListenable.dispose();
+    sleepTimerRemainingListenable.dispose();
+    sleepTimerUiListenable.dispose();
     unawaited(_audioHandler.close());
     unawaited(_desktopLyrics.hide());
     super.dispose();

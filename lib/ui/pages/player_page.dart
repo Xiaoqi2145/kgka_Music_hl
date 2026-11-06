@@ -289,11 +289,13 @@ List<SongSheetAction> _playerMoreActions({
     required IconData icon,
     required String title,
     String? subtitle,
+    WidgetBuilder? subtitleBuilder,
     required VoidCallback onTap,
   }) => SongSheetAction(
     icon: icon,
     title: title,
     subtitle: subtitle,
+    subtitleBuilder: subtitleBuilder,
     isGrid: isGrid,
     onTap: onTap,
   );
@@ -331,13 +333,25 @@ List<SongSheetAction> _playerMoreActions({
     action(
       icon: Icons.bedtime_rounded,
       title: isGrid ? '定时' : '定时播放',
-      subtitle: isGrid
+      subtitleBuilder: isGrid
           ? null
-          : player.isSleepTimerActive
-          ? '剩余 ${_formatSleepRemaining(player.sleepTimerRemaining)}'
-          : player.isSleepFinishCurrentSong
-          ? '播完歌曲后停止'
-          : null,
+          : (context) => ValueListenableBuilder<SleepTimerUiState>(
+            valueListenable: player.sleepTimerUiListenable,
+            builder: (context, state, _) {
+              final subtitle = state.finishCurrentSong
+                  ? '播完歌曲后停止'
+                  : state.active
+                  ? '剩余 ${_formatSleepRemaining(state.remaining)}'
+                  : null;
+              return subtitle == null
+                  ? const SizedBox.shrink()
+                  : Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  );
+            },
+          ),
       onTap: () => showSleepTimerSheet(context: context, player: player),
     ),
     if (player.isDesktopLyricsSupported) ...[
