@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
@@ -10,6 +12,31 @@ import 'playlist_mutation_serializer.dart';
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
   static const _queueWindowRadius = 25;
+  static const _bufferPublishStep = Duration(seconds: 30);
+  static const _playControls = <MediaControl>[
+    MediaControl.skipToPrevious,
+    MediaControl.pause,
+    MediaControl.skipToNext,
+  ];
+  static const _pauseControls = <MediaControl>[
+    MediaControl.skipToPrevious,
+    MediaControl.play,
+    MediaControl.skipToNext,
+  ];
+  static const _systemActions = <MediaAction>{
+    MediaAction.seek,
+    MediaAction.seekBackward,
+    MediaAction.seekForward,
+  };
+  static const _compactActionIndices = <int>[0, 1, 2];
+  static const _nativeProcessingStates =
+      <ProcessingState, AudioProcessingState>{
+        ProcessingState.idle: AudioProcessingState.idle,
+        ProcessingState.loading: AudioProcessingState.loading,
+        ProcessingState.buffering: AudioProcessingState.buffering,
+        ProcessingState.ready: AudioProcessingState.ready,
+        ProcessingState.completed: AudioProcessingState.completed,
+      };
 
   MusicAudioHandler({AudioPlayer? audioPlayer})
     : audioPlayer =
@@ -18,13 +45,23 @@ class MusicAudioHandler extends BaseAudioHandler
             handleInterruptions: false,
             handleAudioSessionActivation: false,
           ) {
-    // PlayerEvent keeps playing and processingState in the same snapshot.
-    // playbackEventStream omits changes that only update playing (for example,
-    // native player-data messages), leaving the media session out of sync.
-    this.audioPlayer.playerEventStream
-        .map(_playbackStateForEvent)
-        .pipe(playbackState);
+    // PlayerEvent keeps playing and processingState in the same snapshot, but
+    // native position/buffer polling must not wake the media session.
+    _lastSpeed = this.audioPlayer.speed;
+    _playerEventSub = this.audioPlayer.playerEventStream.listen(
+      _publishPlaybackState,
+    );
+    _speedSub = this.audioPlayer.speedStream.listen(_publishSpeedChange);
+    _discontinuitySub = this.audioPlayer.positionDiscontinuityStream
+        .where(
+          (event) => event.reason != PositionDiscontinuityReason.autoAdvance,
+        )
+        .listen(_publishSeekChange);
   }
+
+  late final StreamSubscription<PlayerEvent> _playerEventSub;
+  late final StreamSubscription<double> _speedSub;
+  late final StreamSubscription<PositionDiscontinuity> _discontinuitySub;
 
   // 关闭 just_audio 内置打断处理：其暂停/恢复/降音音量策略与
   // PlayerController 的打断设置（阻止打断/自动恢复）相互冲突，
@@ -194,6 +231,126 @@ class MusicAudioHandler extends BaseAudioHandler
     this.queue.add(queue);
   }
 
+  bool _lastPlaying = false;
+  AudioProcessingState _lastProcessingState = AudioProcessingState.idle;
+  int _lastBufferBucket = 0;
+  double _lastSpeed = 1;
+  DateTime _lastPositionTime = DateTime.fromMillisecondsSinceEpoch(0);
+  Duration _lastPosition = Duration.zero;
+  PlaybackState? _lastPublished;
+
+  PlaybackState _playbackState(
+    bool playing,
+    AudioProcessingState processingState,
+    Duration updatePosition,
+    DateTime updateTime,
+    int bufferBucket,
+    double speed,
+  ) {
+    return PlaybackState(
+      controls: playing ? _playControls : _pauseControls,
+      systemActions: _systemActions,
+      androidCompactActionIndices: _compactActionIndices,
+      processingState: processingState,
+      playing: playing,
+      updatePosition: updatePosition,
+      bufferedPosition: Duration(
+        seconds: bufferBucket * _bufferPublishStep.inSeconds,
+      ),
+      speed: speed,
+      updateTime: updateTime,
+      queueIndex: _queueIndex,
+    );
+  }
+
+  void _publishIfChanged(PlaybackState next) {
+    if (next == _lastPublished) return;
+    _lastPublished = next;
+    playbackState.add(next);
+  }
+
+  void _publishQueueIndexChange() {
+    if (_lastPublished == null) return;
+    _publishIfChanged(
+      _playbackState(
+        _lastPlaying,
+        _lastProcessingState,
+        _lastPosition,
+        _lastPositionTime,
+        _lastBufferBucket,
+        _lastSpeed,
+      ),
+    );
+  }
+
+  void _publishSpeedChange(double speed) {
+    if (_lastPublished == null || speed == _lastSpeed) return;
+    _lastSpeed = speed;
+    _lastPosition = audioPlayer.position;
+    _lastPositionTime = DateTime.now();
+    _publishIfChanged(
+      _playbackState(
+        _lastPlaying,
+        _lastProcessingState,
+        _lastPosition,
+        _lastPositionTime,
+        _lastBufferBucket,
+        speed,
+      ),
+    );
+  }
+
+  void _publishSeekChange(PositionDiscontinuity event) {
+    _lastPosition = event.event.updatePosition;
+    _lastPositionTime = event.event.updateTime;
+    if (_lastPublished == null) return;
+    _publishIfChanged(
+      _playbackState(
+        _lastPlaying,
+        _lastProcessingState,
+        _lastPosition,
+        _lastPositionTime,
+        _lastBufferBucket,
+        _lastSpeed,
+      ),
+    );
+  }
+
+  void _publishPlaybackState(PlayerEvent event) {
+    final nativeState = event.playbackEvent.processingState;
+    // idle tears down audio_service's media session and notification. A play
+    // request can precede native loading/recovery; keep the service alive
+    // until the player actually pauses or stops.
+    final processingState = nativeState == ProcessingState.idle && event.playing
+        ? AudioProcessingState.loading
+        : _nativeProcessingStates[nativeState]!;
+    final bufferBucket =
+        event.playbackEvent.bufferedPosition.inSeconds ~/
+        _bufferPublishStep.inSeconds;
+    final continuous =
+        processingState == AudioProcessingState.ready &&
+        _lastProcessingState == AudioProcessingState.ready &&
+        _lastPublished != null;
+    if (!continuous) {
+      _lastPosition = event.playbackEvent.updatePosition;
+      _lastPositionTime = event.playbackEvent.updateTime;
+    }
+    _lastPlaying = event.playing;
+    _lastProcessingState = processingState;
+    _lastBufferBucket = bufferBucket;
+    _lastSpeed = audioPlayer.speed;
+    _publishIfChanged(
+      _playbackState(
+        event.playing,
+        processingState,
+        _lastPosition,
+        _lastPositionTime,
+        bufferBucket,
+        _lastSpeed,
+      ),
+    );
+  }
+
   Future<void> setSongQueue({
     required List<Song> queueSongs,
     required int queueIndex,
@@ -202,6 +359,7 @@ class MusicAudioHandler extends BaseAudioHandler
     final window = _windowedQueue(queueSongs, queueIndex);
     _queueIndex = window.index;
     queue.add(window.songs.map(_mediaItemFor).toList(growable: false));
+    _publishQueueIndexChange();
     if (currentSong != null) {
       mediaItem.add(_mediaItemFor(currentSong));
     }
@@ -216,6 +374,7 @@ class MusicAudioHandler extends BaseAudioHandler
     final window = _windowedQueue(queueSongs, queueIndex);
     _queueIndex = window.index;
     queue.add(window.songs.map(_mediaItemFor).toList(growable: false));
+    _publishQueueIndexChange();
     if (currentSong != null) {
       mediaItem.add(_mediaItemFor(currentSong));
     }
@@ -297,11 +456,15 @@ class MusicAudioHandler extends BaseAudioHandler
     invalidatePendingPlay();
     final generation = _transportGeneration;
     await audioPlayer.stop();
+    _publishPlaybackState(audioPlayer.playerEvent);
     if (generation == _transportGeneration) await _releaseFocus();
   }
 
   Future<void> close() async {
     invalidatePendingPlay();
+    await _playerEventSub.cancel();
+    await _speedSub.cancel();
+    await _discontinuitySub.cancel();
     await audioPlayer.dispose();
     await _releaseFocus();
   }
@@ -326,40 +489,6 @@ class MusicAudioHandler extends BaseAudioHandler
       duration: song.duration,
       artUri: song.coverUrl == null ? null : Uri.tryParse(song.coverUrl!),
       extras: {'hash': song.hash, 'songId': song.id},
-    );
-  }
-
-  PlaybackState _playbackStateForEvent(PlayerEvent event) {
-    final nativeState = event.playbackEvent.processingState;
-    return PlaybackState(
-      controls: [
-        MediaControl.skipToPrevious,
-        if (event.playing) MediaControl.pause else MediaControl.play,
-        MediaControl.skipToNext,
-      ],
-      systemActions: const {
-        MediaAction.seek,
-        MediaAction.seekBackward,
-        MediaAction.seekForward,
-      },
-      androidCompactActionIndices: const [0, 1, 2],
-      // idle tears down audio_service's media session and notification. A play
-      // request can precede native loading/recovery; keep the service alive
-      // until the player actually pauses or stops.
-      processingState: nativeState == ProcessingState.idle && event.playing
-          ? AudioProcessingState.loading
-          : const {
-              ProcessingState.idle: AudioProcessingState.idle,
-              ProcessingState.loading: AudioProcessingState.loading,
-              ProcessingState.buffering: AudioProcessingState.buffering,
-              ProcessingState.ready: AudioProcessingState.ready,
-              ProcessingState.completed: AudioProcessingState.completed,
-            }[nativeState]!,
-      playing: event.playing,
-      updatePosition: audioPlayer.position,
-      bufferedPosition: event.playbackEvent.bufferedPosition,
-      speed: audioPlayer.speed,
-      queueIndex: _queueIndex,
     );
   }
 }

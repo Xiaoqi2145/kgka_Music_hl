@@ -7,10 +7,19 @@ import 'package:kgka_music_hl/services/music_audio_handler.dart';
 
 class _Player implements AudioPlayer {
   final events = StreamController<PlayerEvent>.broadcast(sync: true);
+  final speeds = StreamController<double>.broadcast(sync: true);
+  final discontinuities = StreamController<PositionDiscontinuity>.broadcast(
+    sync: true,
+  );
   PlayerEvent _event = PlayerEvent();
 
   @override
   Stream<PlayerEvent> get playerEventStream => events.stream;
+  @override
+  Stream<double> get speedStream => speeds.stream;
+  @override
+  Stream<PositionDiscontinuity> get positionDiscontinuityStream =>
+      discontinuities.stream;
 
   // Match just_audio: a playing-only event does not reach this stream.
   @override
@@ -26,14 +35,26 @@ class _Player implements AudioPlayer {
   @override
   Duration get bufferedPosition => _event.playbackEvent.bufferedPosition;
   @override
-  double get speed => 1;
+  double speed = 1;
 
-  void emit({required bool playing, ProcessingState? state}) {
+  @override
+  PlayerEvent get playerEvent => _event;
+
+  void emit({
+    required bool playing,
+    ProcessingState? state,
+    Duration? position,
+    Duration? bufferedPosition,
+    DateTime? updateTime,
+  }) {
     _event = PlayerEvent(
       playing: playing,
-      playbackEvent: state == null
-          ? _event.playbackEvent
-          : PlaybackEvent(processingState: state),
+      playbackEvent: _event.playbackEvent.copyWith(
+        processingState: state,
+        updatePosition: position,
+        bufferedPosition: bufferedPosition,
+        updateTime: updateTime,
+      ),
     );
     events.add(_event);
   }
@@ -41,6 +62,9 @@ class _Player implements AudioPlayer {
   @override
   Future<void> stop() async =>
       emit(playing: false, state: ProcessingState.idle);
+
+  @override
+  Future<void> dispose() async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -65,7 +89,10 @@ void main() {
 
   tearDown(() async {
     await subscription.cancel();
+    await handler.close();
     await player.events.close();
+    await player.speeds.close();
+    await player.discontinuities.close();
     await drain();
   });
 
@@ -149,5 +176,95 @@ void main() {
       handler.playbackState.value.processingState,
       AudioProcessingState.completed,
     );
+  });
+
+  test(
+    'native position and buffer polling do not republish media state',
+    () async {
+      final start = DateTime(2026, 1, 1, 12);
+      player.emit(
+        playing: true,
+        state: ProcessingState.ready,
+        position: Duration.zero,
+        bufferedPosition: Duration.zero,
+        updateTime: start,
+      );
+      await drain();
+      states.clear();
+
+      for (var second = 1; second <= 12; second++) {
+        player.emit(
+          playing: true,
+          state: ProcessingState.ready,
+          position: Duration(seconds: second),
+          bufferedPosition: Duration(seconds: second + 1),
+          updateTime: start.add(Duration(seconds: second)),
+        );
+      }
+      await drain();
+
+      expect(states, isEmpty);
+      expect(handler.playbackState.value.updatePosition, Duration.zero);
+      expect(handler.playbackState.value.updateTime, start);
+
+      player.emit(
+        playing: true,
+        state: ProcessingState.buffering,
+        position: const Duration(seconds: 13),
+        bufferedPosition: const Duration(seconds: 20),
+        updateTime: start.add(const Duration(seconds: 13)),
+      );
+      await drain();
+      expect(states, hasLength(1));
+      expect(
+        handler.playbackState.value.processingState,
+        AudioProcessingState.buffering,
+      );
+      expect(
+        handler.playbackState.value.updatePosition,
+        const Duration(seconds: 13),
+      );
+    },
+  );
+
+  test('seek and speed changes publish a new position baseline', () async {
+    final start = DateTime(2026, 1, 1, 12);
+    player.emit(
+      playing: true,
+      state: ProcessingState.ready,
+      position: Duration.zero,
+      updateTime: start,
+    );
+    await drain();
+    states.clear();
+
+    final seeked = PlaybackEvent(
+      processingState: ProcessingState.ready,
+      updatePosition: const Duration(seconds: 42),
+      updateTime: start.add(const Duration(seconds: 1)),
+    );
+    player.discontinuities.add(
+      PositionDiscontinuity(
+        PositionDiscontinuityReason.seek,
+        PlaybackEvent(
+          processingState: ProcessingState.ready,
+          updatePosition: Duration.zero,
+          updateTime: start,
+        ),
+        seeked,
+      ),
+    );
+    await drain();
+    expect(states, hasLength(1));
+    expect(
+      handler.playbackState.value.updatePosition,
+      const Duration(seconds: 42),
+    );
+
+    player.speed = 1.5;
+    player.speeds.add(1.5);
+    await drain();
+    expect(states, hasLength(2));
+    expect(handler.playbackState.value.speed, 1.5);
   });
 }
