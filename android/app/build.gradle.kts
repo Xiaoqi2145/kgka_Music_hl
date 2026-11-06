@@ -10,6 +10,24 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    val targetPlatforms = project.properties
+        .entries
+        .firstOrNull { it.key.equals("target-platform", ignoreCase = true) }
+        ?.value
+        ?.toString()
+        .orEmpty()
+        ?.split(",")
+        ?.map { it.trim() }
+        .orEmpty()
+
+    if (targetPlatforms == listOf("android-arm64")) {
+        packaging {
+            jniLibs {
+                excludes += listOf("lib/armeabi-v7a/**", "lib/x86_64/**")
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
