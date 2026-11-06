@@ -123,10 +123,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     _scheduleKeepScreenSync();
     return TickerMode(
-      enabled: _appResumed && routeCurrent,
+      // The navigator mutes routes covered by an opaque page. A popup only
+      // changes isCurrent; the player remains visible beneath its barrier.
+      enabled: _appResumed,
       child: AnimatedBuilder(
         animation: widget.player,
         builder: (context, _) {
