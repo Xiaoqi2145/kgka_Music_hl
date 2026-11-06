@@ -11,8 +11,17 @@ class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
   static const _queueWindowRadius = 25;
 
-  MusicAudioHandler() {
-    audioPlayer.playbackEventStream
+  MusicAudioHandler({AudioPlayer? audioPlayer})
+    : audioPlayer =
+          audioPlayer ??
+          AudioPlayer(
+            handleInterruptions: false,
+            handleAudioSessionActivation: false,
+          ) {
+    // PlayerEvent keeps playing and processingState in the same snapshot.
+    // playbackEventStream omits changes that only update playing (for example,
+    // native player-data messages), leaving the media session out of sync.
+    this.audioPlayer.playerEventStream
         .map(_playbackStateForEvent)
         .pipe(playbackState);
   }
@@ -21,10 +30,7 @@ class MusicAudioHandler extends BaseAudioHandler
   // PlayerController 的打断设置（阻止打断/自动恢复）相互冲突，
   // 改由控制器在 interruptionEventStream 中统一实现完整策略。
   // 激活也由服务统一管理，不能依赖 just_audio.play 的 playing 短路入口。
-  final AudioPlayer audioPlayer = AudioPlayer(
-    handleInterruptions: false,
-    handleAudioSessionActivation: false,
-  );
+  final AudioPlayer audioPlayer;
   final AudioFocusGate _focus = AudioFocusGate(
     resetBeforeAcquire:
         !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
@@ -323,11 +329,12 @@ class MusicAudioHandler extends BaseAudioHandler
     );
   }
 
-  PlaybackState _playbackStateForEvent(PlaybackEvent event) {
+  PlaybackState _playbackStateForEvent(PlayerEvent event) {
+    final nativeState = event.playbackEvent.processingState;
     return PlaybackState(
       controls: [
         MediaControl.skipToPrevious,
-        if (audioPlayer.playing) MediaControl.pause else MediaControl.play,
+        if (event.playing) MediaControl.pause else MediaControl.play,
         MediaControl.skipToNext,
       ],
       systemActions: const {
@@ -336,16 +343,21 @@ class MusicAudioHandler extends BaseAudioHandler
         MediaAction.seekForward,
       },
       androidCompactActionIndices: const [0, 1, 2],
-      processingState: const {
-        ProcessingState.idle: AudioProcessingState.idle,
-        ProcessingState.loading: AudioProcessingState.loading,
-        ProcessingState.buffering: AudioProcessingState.buffering,
-        ProcessingState.ready: AudioProcessingState.ready,
-        ProcessingState.completed: AudioProcessingState.completed,
-      }[audioPlayer.processingState]!,
-      playing: audioPlayer.playing,
+      // idle tears down audio_service's media session and notification. A play
+      // request can precede native loading/recovery; keep the service alive
+      // until the player actually pauses or stops.
+      processingState: nativeState == ProcessingState.idle && event.playing
+          ? AudioProcessingState.loading
+          : const {
+              ProcessingState.idle: AudioProcessingState.idle,
+              ProcessingState.loading: AudioProcessingState.loading,
+              ProcessingState.buffering: AudioProcessingState.buffering,
+              ProcessingState.ready: AudioProcessingState.ready,
+              ProcessingState.completed: AudioProcessingState.completed,
+            }[nativeState]!,
+      playing: event.playing,
       updatePosition: audioPlayer.position,
-      bufferedPosition: audioPlayer.bufferedPosition,
+      bufferedPosition: event.playbackEvent.bufferedPosition,
       speed: audioPlayer.speed,
       queueIndex: _queueIndex,
     );
