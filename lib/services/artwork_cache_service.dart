@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -29,15 +30,44 @@ class ArtworkCacheEntry {
 /// avoid waking the network once per list tile.
 ///
 /// 缓存总量受 [maxCacheBytes] 约束（默认 512MB，可在设置中调整），
-/// 超出后按最后访问时间淘汰最旧的文件。
+/// 超出后按内存记录的最近访问时间淘汰最旧的文件。
+///
+/// 访问序只保存在内存中：进程重启后初始化时用文件 mtime 作为初始 LRU，
+/// 后续命中不再写盘；失败 URL 在短 TTL 内不会重复发起连接。
 class ArtworkCacheService {
-  ArtworkCacheService._();
+  ArtworkCacheService._({
+    Directory? directory,
+    DateTime Function()? now,
+    Duration? failureRetryAfter,
+    int? maxCacheBytesForTest,
+  }) : _directory = directory,
+       _now = now ?? DateTime.now,
+       _failureRetryAfter = failureRetryAfter ?? const Duration(minutes: 1),
+       _maxCacheBytesForTest = maxCacheBytesForTest;
 
   static final ArtworkCacheService instance = ArtworkCacheService._();
 
+  @visibleForTesting
+  factory ArtworkCacheService.forTest({
+    required Directory directory,
+    DateTime Function()? now,
+    Duration? failureRetryAfter,
+    int? maxCacheBytes,
+  }) => ArtworkCacheService._(
+    directory: directory,
+    now: now,
+    failureRetryAfter: failureRetryAfter,
+    maxCacheBytesForTest: maxCacheBytes,
+  );
+
   static const _maxBytesKey = 'settings.artwork_cache_max_bytes';
 
+  final DateTime Function() _now;
+  final Duration _failureRetryAfter;
+  final int? _maxCacheBytesForTest;
   final Map<String, Future<File?>> _pending = <String, Future<File?>>{};
+  final Map<String, DateTime> _accessTimes = <String, DateTime>{};
+  final Map<String, DateTime> _failedAt = <String, DateTime>{};
   Directory? _directory;
   Future<void>? _loading;
   Future<void>? _pruning;
@@ -65,6 +95,9 @@ class ArtworkCacheService {
     return File('${directory.path}/$key.img');
   }
 
+  @visibleForTesting
+  Future<File> fileFor(String url) => _fileFor(url);
+
   /// 加载上限设置并扫描一次缓存目录。
   ///
   /// 之后 [getCacheSize] / [getCacheCount] 直接读内存计数，不再遍历目录。
@@ -86,16 +119,20 @@ class ArtworkCacheService {
 
   Future<void> _loadState() async {
     final prefs = await SharedPreferences.getInstance();
-    maxCacheBytes = _normalizeMaxBytes(
-      prefs.getInt(_maxBytesKey) ?? maxCacheBytes,
-    );
+    maxCacheBytes =
+        _maxCacheBytesForTest ??
+        _normalizeMaxBytes(prefs.getInt(_maxBytesKey) ?? maxCacheBytes);
     final directory = await _getDirectory();
+    _accessTimes.clear();
+    _failedAt.clear();
     var total = 0;
     var count = 0;
     await for (final entity in directory.list()) {
       if (entity is! File) continue;
       if (entity.path.endsWith('.img')) {
-        total += await entity.length();
+        final size = await entity.length();
+        _accessTimes[entity.path] = await entity.lastModified();
+        total += size;
         count++;
       } else if (entity.path.endsWith('.part')) {
         try {
@@ -117,16 +154,28 @@ class ArtworkCacheService {
     AppConfig.maxArtworkCacheMaxBytes,
   );
 
+  bool _failureIsCached(String url) {
+    final failedAt = _failedAt[url];
+    if (failedAt == null) return false;
+    if (_now().difference(failedAt) < _failureRetryAfter) return true;
+    _failedAt.remove(url);
+    return false;
+  }
+
+  void _recordAccess(String path) {
+    _accessTimes[path] = _now();
+  }
+
   Future<File?> load(String url) {
+    if (_failureIsCached(url)) return Future<File?>.value();
     final existing = _pending[url];
     if (existing != null) return existing;
     final future = _loadTracked(url);
     _pending[url] = future;
     unawaited(
-      future.then<void>(
-        (_) => _pending.remove(url),
-        onError: (Object _, StackTrace _) => _pending.remove(url),
-      ),
+      future.whenComplete(() {
+        if (identical(_pending[url], future)) _pending.remove(url);
+      }),
     );
     return future;
   }
@@ -134,28 +183,37 @@ class ArtworkCacheService {
   Future<File?> _loadTracked(String url) async {
     try {
       await _ensureLoaded();
+      if (_failureIsCached(url)) return null;
       final file = await _fileFor(url);
       if (await file.exists() && await file.length() > 0) {
-        // 命中缓存：刷新访问时间作为 LRU 依据。
-        unawaited(_touch(file));
+        // LRU 访问序只留在内存；命中路径不再写文件 mtime。
+        _recordAccess(file.path);
         return file;
       }
       final downloaded = await _download(file, url);
-      if (downloaded == null) return null;
+      if (downloaded == null) {
+        _failedAt[url] = _now();
+        return null;
+      }
+      _failedAt.remove(url);
+      _recordAccess(downloaded.path);
       _totalBytes += await downloaded.length();
       _entryCount++;
       await _enforceLimit();
       return await downloaded.exists() ? downloaded : null;
     } catch (_) {
       // 缓存读写异常不应影响界面渲染，降级为占位图。
+      _failedAt[url] = _now();
       return null;
     }
   }
 
   Future<void> invalidate(String url) async {
     try {
+      _failedAt.remove(url);
       await _ensureLoaded();
       final file = await _fileFor(url);
+      _accessTimes.remove(file.path);
       if (!await file.exists()) return;
       final size = await file.length();
       await file.delete();
@@ -163,14 +221,6 @@ class ArtworkCacheService {
       _entryCount = _entryCount > 0 ? _entryCount - 1 : 0;
     } catch (_) {
       // Cache invalidation is best-effort; callers can still show a fallback.
-    }
-  }
-
-  Future<void> _touch(File file) async {
-    try {
-      await file.setLastModified(DateTime.now());
-    } catch (_) {
-      // 访问时间刷新失败不影响读取。
     }
   }
 
@@ -200,6 +250,8 @@ class ArtworkCacheService {
   Future<void> clearCache() async {
     await _ensureLoaded();
     final directory = await _getDirectory();
+    _accessTimes.clear();
+    _failedAt.clear();
     var removedCount = 0;
     var removedBytes = 0;
     await for (final entity in directory.list()) {
@@ -242,17 +294,20 @@ class ArtworkCacheService {
   }
 
   Future<void> _prune() async {
-    final directory = await _getDirectory();
     final entries = <ArtworkCacheEntry>[];
-    await for (final entity in directory.list()) {
-      if (entity is! File || !entity.path.endsWith('.img')) continue;
+    for (final path in _accessTimes.keys.toList(growable: false)) {
+      final file = File(path);
+      if (!await file.exists()) {
+        _accessTimes.remove(path);
+        continue;
+      }
       try {
-        final size = await entity.length();
+        final size = await file.length();
         entries.add(
           ArtworkCacheEntry(
-            path: entity.path,
+            path: file.path,
             size: size,
-            accessedAt: await entity.lastModified(),
+            accessedAt: _accessTimes[path]!,
           ),
         );
       } catch (_) {
@@ -266,6 +321,7 @@ class ArtworkCacheService {
     for (final entry in evictions) {
       try {
         await File(entry.path).delete();
+        _accessTimes.remove(entry.path);
         removedCount++;
         removedBytes += entry.size;
       } catch (_) {
@@ -278,7 +334,7 @@ class ArtworkCacheService {
     _entryCount = _entryCount > removedCount ? _entryCount - removedCount : 0;
   }
 
-  /// 按最后访问时间升序挑选需要淘汰的条目，直到剩余总量不超过 [maxBytes]。
+  /// 按最近访问时间升序挑选需要淘汰的条目，直到剩余总量不超过 [maxBytes]。
   ///
   /// 纯函数，便于单元测试。
   static List<ArtworkCacheEntry> selectLruEvictions(
