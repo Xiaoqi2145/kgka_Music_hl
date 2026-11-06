@@ -18,6 +18,7 @@ import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/artwork.dart';
 import '../widgets/cached_artwork_image.dart';
+import '../widgets/play_queue_sheet.dart';
 import '../widgets/playback_speed_sheet.dart';
 import '../widgets/sleep_timer_sheet.dart';
 import '../widgets/song_action_sheets.dart';
@@ -141,139 +142,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             auth: widget.auth,
             song: song,
             onClose: () => Navigator.of(context).pop(),
-            onQueue: () => _showQueue(context),
+            onQueue: () => showPlayQueueSheet(context, widget.player),
           );
         },
       ),
     );
-  }
-
-  void _showQueue(BuildContext context) {
-    Widget queueList(BuildContext sheetContext, {VoidCallback? dismiss}) {
-      return AnimatedBuilder(
-        animation: widget.player,
-        builder: (context, _) => ListView.builder(
-          itemCount: widget.player.queue.length,
-          itemBuilder: (context, index) {
-            final song = widget.player.queue[index];
-            final active = widget.player.currentSong?.hash == song.hash;
-            return ListTile(
-              selected: active,
-              leading: SizedBox(
-                width: 76,
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 24,
-                      child: Text(
-                        '${index + 1}',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: active
-                                  ? Theme.of(context).colorScheme.primary
-                                  : Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w800,
-                            ),
-                      ),
-                    ),
-                    Artwork(url: song.coverUrl, size: 44),
-                  ],
-                ),
-              ),
-              title: Text(
-                song.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                song.artist,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onTap: () {
-                if (dismiss != null) {
-                  dismiss();
-                } else {
-                  Navigator.of(sheetContext).pop();
-                }
-                widget.player.playSong(song, queue: widget.player.queue);
-              },
-            );
-          },
-        ),
-      );
-    }
-
-    final size = MediaQuery.sizeOf(context);
-    final isLandscape = size.width > size.height;
-    if (!isLandscape) {
-      showModalBottomSheet<void>(
-        context: context,
-        showDragHandle: true,
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        builder: (sheetContext) => queueList(sheetContext),
-      );
-      return;
-    }
-
-    final drawerWidth = (size.width * .38).clamp(320.0, 560.0);
-    late final OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (overlayContext) => Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTap: entry.remove,
-              child: ColoredBox(color: Colors.black54),
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Material(
-              color: Theme.of(overlayContext).colorScheme.surface,
-              // 横屏播放列表贴合屏幕右侧，不额外保留圆角。
-              clipBehavior: Clip.antiAlias,
-              child: SizedBox(
-                width: drawerWidth,
-                height: double.infinity,
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 18, 12, 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '播放列表  ${widget.player.queue.length}',
-                              style: Theme.of(overlayContext)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(fontWeight: FontWeight.w900),
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: '关闭',
-                            onPressed: entry.remove,
-                            icon: const Icon(Icons.close_rounded),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: queueList(overlayContext, dismiss: entry.remove),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    Overlay.of(context).insert(entry);
   }
 }
 
