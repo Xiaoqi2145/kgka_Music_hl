@@ -573,9 +573,20 @@ class _LibraryPageState extends State<LibraryPage>
               itemBuilder: (context, index) {
                 final isFirst = index == 0;
                 final isLast = index == sorted.length - 1;
+                // Sliver 逐行绘制底色时，必须把底色和内容一起裁圆；
+                // 只裁 _PlaylistRow 会让首尾的方形 ColoredBox 露出来。
+                final radius = BorderRadius.only(
+                  topLeft: isFirst ? const Radius.circular(14) : Radius.zero,
+                  topRight: isFirst ? const Radius.circular(14) : Radius.zero,
+                  bottomLeft: isLast ? const Radius.circular(14) : Radius.zero,
+                  bottomRight: isLast ? const Radius.circular(14) : Radius.zero,
+                );
                 return _fadeIn(
-                  ColoredBox(
-                    color: colorScheme.surfaceContainer,
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainer,
+                      borderRadius: radius,
+                    ),
                     child: _PlaylistRow(
                       playlist: sorted[index],
                       selected:
@@ -585,22 +596,7 @@ class _LibraryPageState extends State<LibraryPage>
                           ? () => _toggleSelected(index)
                           : () => _openPlaylist(sorted[index]),
                       onLongPress: () => _enterMultiSelect(index),
-                      // 整块列表原本是一个圆角卡片的外壳；拆成 sliver 后由首尾行
-                      // 分别承担上下圆角，视觉与原来一致。
-                      borderRadius: BorderRadius.only(
-                        topLeft: isFirst
-                            ? const Radius.circular(14)
-                            : Radius.zero,
-                        topRight: isFirst
-                            ? const Radius.circular(14)
-                            : Radius.zero,
-                        bottomLeft: isLast
-                            ? const Radius.circular(14)
-                            : Radius.zero,
-                        bottomRight: isLast
-                            ? const Radius.circular(14)
-                            : Radius.zero,
-                      ),
+                      borderRadius: radius,
                     ),
                   ),
                   listOpacity,
