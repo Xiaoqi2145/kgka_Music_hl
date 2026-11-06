@@ -330,10 +330,24 @@ class MusicAudioHandler extends BaseAudioHandler
     final continuous =
         processingState == AudioProcessingState.ready &&
         _lastProcessingState == AudioProcessingState.ready &&
+        event.playing == _lastPlaying &&
         _lastPublished != null;
     if (!continuous) {
-      _lastPosition = event.playbackEvent.updatePosition;
-      _lastPositionTime = event.playbackEvent.updateTime;
+      // A play/pause transition changes how audio_service projects the
+      // baseline: while paused it returns updatePosition verbatim. The
+      // player's projected position is the only value that keeps the
+      // notification seek bar at the actual pause point.
+      final usesProjectedPosition =
+          _lastPublished != null &&
+          (!event.playing ||
+              !_lastPlaying ||
+              nativeState == ProcessingState.completed);
+      _lastPosition = usesProjectedPosition
+          ? audioPlayer.position
+          : event.playbackEvent.updatePosition;
+      _lastPositionTime = usesProjectedPosition
+          ? DateTime.now()
+          : event.playbackEvent.updateTime;
     }
     _lastPlaying = event.playing;
     _lastProcessingState = processingState;

@@ -12,6 +12,7 @@ class _Player implements AudioPlayer {
     sync: true,
   );
   PlayerEvent _event = PlayerEvent();
+  Duration _pausedPosition = Duration.zero;
 
   @override
   Stream<PlayerEvent> get playerEventStream => events.stream;
@@ -31,7 +32,18 @@ class _Player implements AudioPlayer {
   @override
   ProcessingState get processingState => _event.playbackEvent.processingState;
   @override
-  Duration get position => _event.playbackEvent.updatePosition;
+  Duration get position {
+    final event = _event.playbackEvent;
+    if (!_event.playing) return _pausedPosition;
+    if (event.processingState != ProcessingState.ready ||
+        event.duration == null) {
+      return event.updatePosition;
+    }
+    final projected =
+        event.updatePosition + DateTime.now().difference(event.updateTime);
+    return projected <= event.duration! ? projected : event.duration!;
+  }
+
   @override
   Duration get bufferedPosition => _event.playbackEvent.bufferedPosition;
   @override
@@ -56,6 +68,7 @@ class _Player implements AudioPlayer {
         updateTime: updateTime,
       ),
     );
+    _pausedPosition = _event.playbackEvent.updatePosition;
     events.add(_event);
   }
 
@@ -226,6 +239,34 @@ void main() {
       );
     },
   );
+
+  test('pause publishes the projected position to the media session', () async {
+    final start = DateTime(2026, 1, 1, 12);
+    player.emit(
+      playing: true,
+      state: ProcessingState.ready,
+      position: Duration.zero,
+      updateTime: start,
+    );
+    await drain();
+    expect(handler.playbackState.value.updatePosition, Duration.zero);
+
+    // just_audio.pause() broadcasts the projected position even though the
+    // previous ready snapshot still anchored the seek bar at zero.
+    final pausedAt = const Duration(seconds: 37);
+    player.emit(
+      playing: false,
+      state: ProcessingState.ready,
+      position: pausedAt,
+      updateTime: DateTime.now(),
+    );
+    await drain();
+
+    expect(handler.playbackState.value.playing, isFalse);
+    expect(handler.playbackState.value.controls[1], MediaControl.play);
+    expect(handler.playbackState.value.updatePosition, pausedAt);
+    expect(handler.playbackState.value.position, pausedAt);
+  });
 
   test('seek and speed changes publish a new position baseline', () async {
     final start = DateTime(2026, 1, 1, 12);
