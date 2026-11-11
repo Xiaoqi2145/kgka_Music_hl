@@ -598,12 +598,15 @@ class _FeatureShelf extends StatelessWidget {
       padding: const EdgeInsets.only(right: 18),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final cardSize = (constraints.maxWidth - 10) / 2;
+          final cardSize = featureCardSize(constraints.maxWidth);
           return SizedBox(
-            height: cardSize.clamp(140.0, 200.0),
+            height: cardSize,
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.start,
               children: [
-                Expanded(
+                SizedBox(
+                  width: cardSize,
+                  height: cardSize,
                   child: _FeatureCard(
                     title: '猜你喜欢',
                     subtitle: daily.songs.isEmpty
@@ -617,7 +620,9 @@ class _FeatureShelf extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 10),
-                Expanded(
+                SizedBox(
+                  width: cardSize,
+                  height: cardSize,
                   child: albums.isNotEmpty
                       ? _FeatureCard(
                           title: '新碟上架',
@@ -649,6 +654,10 @@ class _FeatureShelf extends StatelessWidget {
     );
   }
 }
+
+@visibleForTesting
+double featureCardSize(double maxWidth) =>
+    ((maxWidth - 10) / 2).clamp(140.0, 200.0);
 
 class _FeatureCard extends StatelessWidget {
   const _FeatureCard({
@@ -1795,8 +1804,9 @@ class _HomeSkeleton extends StatelessWidget {
             const SizedBox(height: 14),
             LayoutBuilder(
               builder: (context, constraints) {
-                final cardSize = (constraints.maxWidth - 10) / 2;
+                final cardSize = featureCardSize(constraints.maxWidth);
                 return Row(
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     SkeletonBox(width: cardSize, height: cardSize, radius: 12),
                     const SizedBox(width: 10),
