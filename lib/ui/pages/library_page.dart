@@ -5,6 +5,7 @@ import '../../controllers/download_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
+import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
 import '../widgets/toast.dart';
@@ -22,6 +23,7 @@ class LibraryPage extends StatefulWidget {
     required this.api,
     required this.auth,
     required this.player,
+    required this.cache,
     required this.downloads,
     required this.theme,
     required this.localMusic,
@@ -30,6 +32,7 @@ class LibraryPage extends StatefulWidget {
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
+  final CacheService cache;
   final DownloadController downloads;
   final ThemeController theme;
   final LocalMusicController localMusic;
@@ -276,6 +279,7 @@ class _LibraryPageState extends State<LibraryPage>
       api: widget.api,
       auth: widget.auth,
       player: widget.player,
+      cache: widget.cache,
       playlist: playlist,
     );
   }
@@ -403,6 +407,7 @@ class _LibraryPageState extends State<LibraryPage>
                   player: widget.player,
                   localMusic: widget.localMusic,
                   api: widget.api,
+                  cache: widget.cache,
                   onOpenDownloads: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => DownloadedSongsPage(
@@ -748,6 +753,7 @@ class _QuickActionRow extends StatelessWidget {
     required this.player,
     required this.localMusic,
     required this.api,
+    required this.cache,
     required this.onOpenDownloads,
     required this.onOpenCloudDrive,
   });
@@ -757,6 +763,7 @@ class _QuickActionRow extends StatelessWidget {
   final PlayerController player;
   final LocalMusicController localMusic;
   final MusicApi api;
+  final CacheService cache;
   final VoidCallback onOpenDownloads;
   final VoidCallback onOpenCloudDrive;
 
@@ -787,6 +794,7 @@ class _QuickActionRow extends StatelessWidget {
                           api: api,
                           auth: auth,
                           player: player,
+                          cache: cache,
                           playlist: liked,
                         ),
                 );

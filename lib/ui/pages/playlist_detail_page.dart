@@ -9,6 +9,7 @@ import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
+import '../../services/playlist_cache_keys.dart';
 import '../widgets/artwork.dart';
 import '../widgets/listenable_selector.dart';
 import '../widgets/skeleton_box.dart';
@@ -21,15 +22,13 @@ import '../widgets/toast.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 
-/// 缓存中完整歌单歌曲列表的 key 后缀。
-const _fullSongsCacheSuffix = '_full';
-
 /// 打开歌单详情：竖屏使用整页，横屏从右侧以悬浮面板展开。
 void openPlaylistDetail({
   required BuildContext context,
   required MusicApi api,
   required AuthController auth,
   required PlayerController player,
+  required CacheService cache,
   required PlaylistSummary playlist,
 }) {
   final size = MediaQuery.sizeOf(context);
@@ -40,6 +39,7 @@ void openPlaylistDetail({
           api: api,
           auth: auth,
           player: player,
+          cache: cache,
           playlist: playlist,
         ),
       ),
@@ -77,6 +77,7 @@ void openPlaylistDetail({
               api: api,
               auth: auth,
               player: player,
+              cache: cache,
               playlist: playlist,
               sidePanel: true,
             ),
@@ -106,6 +107,7 @@ class PlaylistDetailPage extends StatefulWidget {
     required this.api,
     required this.auth,
     required this.player,
+    required this.cache,
     required this.playlist,
     this.sidePanel = false,
   });
@@ -113,6 +115,7 @@ class PlaylistDetailPage extends StatefulWidget {
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
+  final CacheService cache;
   final PlaylistSummary playlist;
 
   /// Side-panel routes already have a bounded width. Do not apply the
@@ -129,7 +132,6 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   final _scrollController = ScrollController();
   final _searchController = TextEditingController();
   final _songs = <Song>[];
-  final _cache = CacheService();
 
   PlaylistSummary? _info;
   var _nextPage = 1;
@@ -144,6 +146,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   bool _allSongsLoaded = false;
   Future<List<Song>>? _fullSongsFuture;
   int _queueLoadGeneration = 0;
+  late int _observedCacheClearGeneration;
+  int _cacheEpoch = 0;
   String _searchQuery = '';
   _SongSortMode _sortMode = _SongSortMode.defaultOrder;
   int _songsVersion = 0;
@@ -229,13 +233,33 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   @override
   void initState() {
     super.initState();
+    _observedCacheClearGeneration = widget.cache.clearGeneration;
+    widget.cache.addListener(_handleCacheChange);
     _scrollController.addListener(_maybeLoadMore);
+    _loadInitial();
+  }
+
+  void _handleCacheChange() {
+    final generation = widget.cache.clearGeneration;
+    if (generation == _observedCacheClearGeneration) return;
+    _observedCacheClearGeneration = generation;
+    if (!mounted) return;
+    _cacheEpoch++;
+    _queueLoadGeneration++;
+    _fullSongsFuture = null;
+    _allSongsLoaded = false;
+    _isLoadingAllSongs = false;
+    _isLoadingMore = false;
+    _loadMoreError = null;
+    _filteredSongsVersion = -1;
     _loadInitial();
   }
 
   @override
   void dispose() {
     _queueLoadGeneration++;
+    _cacheEpoch++;
+    widget.cache.removeListener(_handleCacheChange);
     _scrollController
       ..removeListener(_maybeLoadMore)
       ..dispose();
@@ -308,11 +332,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<List<Song>> _loadAllSongsImpl({bool Function()? shouldCancel}) async {
+    if (shouldCancel?.call() == true) return List<Song>.of(_songs);
+    final epoch = _cacheEpoch;
+    bool isCurrent() =>
+        mounted &&
+        !_disposedForCacheEpoch(epoch) &&
+        shouldCancel?.call() != true;
+
     if (_isLoadingAllSongs) return List<Song>.of(_songs);
     setState(() => _isLoadingAllSongs = true);
     List<Song>? cachedSongs;
     void applySongs(List<Song> allSongs) {
-      if (!mounted || shouldCancel?.call() == true) return;
+      if (!isCurrent()) return;
       setState(() {
         final isCurrentPrefix =
             _songs.length <= allSongs.length &&
@@ -338,14 +369,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       final id = _isAlbum
           ? (widget.playlist.albumId ?? widget.playlist.id)
           : widget.playlist.id;
-      final fullCacheKey = _isAlbum
-          ? 'cache_album_${widget.playlist.albumId ?? widget.playlist.id}$_fullSongsCacheSuffix'
-          : 'cache_playlist_${widget.playlist.id}$_fullSongsCacheSuffix';
-      final fullCached = await _cache.read<Map<String, dynamic>>(
+      final fullCacheKey = PlaylistCacheKeys.fullSongs(widget.playlist);
+      final fullCached = await widget.cache.read<Map<String, dynamic>>(
         fullCacheKey,
         decode: (json) => json,
         ttl: AppConfig.playlistDetailTtl,
       );
+      if (!isCurrent()) return List<Song>.of(_songs);
       if (fullCached != null) {
         cachedSongs = (fullCached.data['songs'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
@@ -389,22 +419,22 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             shouldCancel: shouldCancel,
           );
         }
-        if (shouldCancel?.call() == true) {
+        if (!isCurrent()) {
           if (mounted) setState(() => _isLoadingAllSongs = false);
           return allSongs;
         }
-        await _cache.write(fullCacheKey, {
+        await widget.cache.write(fullCacheKey, {
           'songs': allSongs.map((s) => s.toCache()).toList(),
         });
       }
-      if (!mounted || shouldCancel?.call() == true) {
+      if (!isCurrent()) {
         if (mounted) setState(() => _isLoadingAllSongs = false);
         return allSongs;
       }
       applySongs(allSongs);
       return allSongs;
     } catch (_) {
-      if (cachedSongs != null && mounted && shouldCancel?.call() != true) {
+      if (cachedSongs != null && isCurrent()) {
         applySongs(cachedSongs);
         return cachedSongs;
       }
@@ -423,14 +453,17 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   void _startBackgroundQueueLoad(int expectedRevision) {
     if (_searchQuery.isEmpty && !_allSongsLoaded) {
       final generation = ++_queueLoadGeneration;
+      final epoch = _cacheEpoch;
       final task =
           _loadAllSongs(
             shouldCancel: () =>
                 !mounted ||
+                epoch != _cacheEpoch ||
                 generation != _queueLoadGeneration ||
                 widget.player.queueRevision != expectedRevision,
           ).then((_) async {
             if (mounted &&
+                epoch == _cacheEpoch &&
                 generation == _queueLoadGeneration &&
                 widget.player.queueRevision == expectedRevision) {
               await widget.player.replaceQueue(
@@ -445,6 +478,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<void> _loadInitial() async {
+    final epoch = _cacheEpoch;
+    bool isCurrent() => mounted && !_disposedForCacheEpoch(epoch);
+
     setState(() {
       _isInitialLoading = true;
       _isLoadingMore = false;
@@ -457,20 +493,19 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       _songsVersion++;
     });
 
-    final cacheKey = _isAlbum
-        ? 'cache_album_${widget.playlist.albumId ?? widget.playlist.id}'
-        : 'cache_playlist_${widget.playlist.id}';
+    final cacheKey = PlaylistCacheKeys.page(widget.playlist);
 
     // 先读缓存，命中则立即显示
     CacheResult<Map<String, dynamic>>? cached;
     try {
-      cached = await _cache.read<Map<String, dynamic>>(
+      cached = await widget.cache.read<Map<String, dynamic>>(
         cacheKey,
         decode: (json) => json,
         ttl: AppConfig.playlistDetailTtl,
       );
     } catch (_) {}
-    if (cached != null && mounted) {
+    if (!isCurrent()) return;
+    if (cached != null) {
       final cacheData = cached.data;
       final infoJson = cacheData['info'];
       setState(() {
@@ -497,6 +532,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           pageSize: _pageSize,
         );
         if (!mounted) return;
+        if (!isCurrent()) return;
 
         setState(() {
           final songs = songPage.songs;
@@ -516,7 +552,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               songPage.rawItemCount == _pageSize;
           _isInitialLoading = false;
         });
-        await _cache.write(cacheKey, {
+        if (!isCurrent()) return;
+        await widget.cache.write(cacheKey, {
+          'info': _currentPlaylist.toCache(),
           'songs': songPage.songs.map((s) => s.toCache()).toList(),
         });
       } else {
@@ -529,6 +567,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           ),
         ]);
         if (!mounted) return;
+        if (!isCurrent()) return;
 
         final info = results[0] as PlaylistSummary;
         final songPage = results[1] as SongPage;
@@ -552,13 +591,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               songPage.rawItemCount == _pageSize;
           _isInitialLoading = false;
         });
-        await _cache.write(cacheKey, {
+        if (!isCurrent()) return;
+        await widget.cache.write(cacheKey, {
           'info': info.toCache(),
           'songs': songs.map((s) => s.toCache()).toList(),
         });
       }
     } catch (error) {
-      if (!mounted) return;
+      if (!isCurrent()) return;
       if (cached != null) {
         // 有缓存数据，保持不报错（降级）
         return;
@@ -569,6 +609,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       });
     }
   }
+
+  bool _disposedForCacheEpoch(int epoch) => epoch != _cacheEpoch;
 
   void _maybeLoadMore() {
     if (!_scrollController.hasClients || !_hasMore || _isLoadingMore) {
@@ -593,6 +635,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   Future<void> _loadMore() async {
     if (_isLoadingMore || !_hasMore) return;
+    final epoch = _cacheEpoch;
 
     setState(() {
       _isLoadingMore = true;
@@ -611,7 +654,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               page: _nextPage,
               pageSize: _pageSize,
             );
-      if (!mounted) return;
+      if (!mounted || epoch != _cacheEpoch) return;
 
       setState(() {
         final songs = songPage.songs;
@@ -624,7 +667,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         _isLoadingMore = false;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || epoch != _cacheEpoch) return;
       setState(() {
         _loadMoreError = error.toString();
         _isLoadingMore = false;
@@ -815,6 +858,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     required MusicApi api,
     required AuthController auth,
     required PlayerController player,
+    required CacheService cache,
     required String playlistId,
   }) async {
     Toast.info('正在导入歌单...');
@@ -826,6 +870,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         api: api,
         auth: auth,
         player: player,
+        cache: cache,
         playlist: info,
       );
     } catch (e) {

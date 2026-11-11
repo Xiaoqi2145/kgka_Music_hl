@@ -8,6 +8,7 @@ import '../core/api_client.dart';
 import '../models/music_models.dart';
 import '../services/cache_service.dart';
 import '../services/music_api.dart';
+import '../services/playlist_cache_keys.dart';
 import '../services/vip_background_task.dart';
 
 class AuthController extends ChangeNotifier {
@@ -447,18 +448,9 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> _invalidatePlaylistCache(PlaylistSummary playlist) async {
-    final ids = <String>{
-      playlist.id,
-      if (playlist.listId?.isNotEmpty == true) playlist.listId!,
-      if (playlist.sourceGlobalId?.isNotEmpty == true) playlist.sourceGlobalId!,
-      if (playlist.albumId?.isNotEmpty == true) playlist.albumId!,
-    };
-    for (final id in ids.where((value) => value.isNotEmpty)) {
+    for (final key in PlaylistCacheKeys.invalidationKeys(playlist)) {
       try {
-        await _cacheService.remove('cache_playlist_$id');
-        await _cacheService.remove('cache_playlist_${id}_full');
-        await _cacheService.remove('cache_album_$id');
-        await _cacheService.remove('cache_album_${id}_full');
+        await _cacheService.remove(key);
       } catch (_) {
         // A cache invalidation failure must not turn a successful API mutation
         // into a reported mutation failure.

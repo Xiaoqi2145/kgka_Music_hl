@@ -60,6 +60,7 @@ class _AppShellState extends State<AppShell> {
         api: widget.api,
         auth: widget.auth,
         player: widget.player,
+        cache: widget.cache,
         downloads: widget.downloads,
         theme: widget.theme,
         localMusic: widget.localMusic,

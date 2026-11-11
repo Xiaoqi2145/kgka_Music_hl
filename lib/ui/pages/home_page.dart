@@ -226,6 +226,7 @@ class _HomePageState extends State<HomePage> {
       api: widget.api,
       auth: widget.auth,
       player: widget.player,
+      cache: widget.cache,
       playlist: playlist,
     );
   }
@@ -259,6 +260,7 @@ class _HomePageState extends State<HomePage> {
           api: widget.api,
           auth: widget.auth,
           player: widget.player,
+          cache: widget.cache,
           initialAlbums: _cachedData?.albums ?? [],
         ),
       ),

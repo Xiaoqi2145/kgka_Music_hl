@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
+import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
 import '../widgets/mini_player.dart';
@@ -14,12 +15,14 @@ class AlbumShopPage extends StatefulWidget {
     required this.api,
     required this.auth,
     required this.player,
+    required this.cache,
     required this.initialAlbums,
   });
 
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
+  final CacheService cache;
   final List<AlbumShopItem> initialAlbums;
 
   @override
@@ -83,6 +86,7 @@ class _AlbumShopPageState extends State<AlbumShopPage> {
       api: widget.api,
       auth: widget.auth,
       player: widget.player,
+      cache: widget.cache,
       playlist: playlist,
     );
   }
