@@ -659,6 +659,11 @@ class _FeatureShelf extends StatelessWidget {
 double featureCardSize(double maxWidth) =>
     ((maxWidth - 10) / 2).clamp(140.0, 200.0);
 
+@visibleForTesting
+int homeSongPageSize(bool isWide) => isWide
+    ? _SongSectionState._widePerPage
+    : _SongSectionState._portraitPerPage;
+
 class _FeatureCard extends StatelessWidget {
   const _FeatureCard({
     required this.title,
@@ -782,7 +787,8 @@ class _SongSection extends StatefulWidget {
 }
 
 class _SongSectionState extends State<_SongSection> {
-  static const _perPage = 5;
+  static const _portraitPerPage = 5;
+  static const _widePerPage = 6;
   late final PageController _pageController;
   int _page = 0;
 
@@ -798,8 +804,6 @@ class _SongSectionState extends State<_SongSection> {
     super.dispose();
   }
 
-  int get _pageCount => (widget.songs.length / _perPage).ceil();
-
   @override
   Widget build(BuildContext context) {
     if (widget.songs.isEmpty) {
@@ -808,7 +812,9 @@ class _SongSectionState extends State<_SongSection> {
 
     final size = MediaQuery.sizeOf(context);
     final isWide = size.shortestSide >= 600;
-    final rowCount = isWide ? (_perPage / 2).ceil() : _perPage;
+    final perPage = homeSongPageSize(isWide);
+    final rowCount = isWide ? (perPage / 2).ceil() : perPage;
+    final pageCount = (widget.songs.length / perPage).ceil();
 
     return AnimatedBuilder(
       animation: widget.auth,
@@ -835,14 +841,11 @@ class _SongSectionState extends State<_SongSection> {
                 height: rowCount * 76.0,
                 child: PageView.builder(
                   controller: _pageController,
-                  itemCount: _pageCount,
+                  itemCount: pageCount,
                   onPageChanged: (i) => setState(() => _page = i),
                   itemBuilder: (context, pageIndex) {
-                    final start = pageIndex * _perPage;
-                    final end = (start + _perPage).clamp(
-                      0,
-                      widget.songs.length,
-                    );
+                    final start = pageIndex * perPage;
+                    final end = (start + perPage).clamp(0, widget.songs.length);
                     final pageSongs = widget.songs.sublist(start, end);
 
                     if (isWide) {
@@ -912,11 +915,11 @@ class _SongSectionState extends State<_SongSection> {
                   },
                 ),
               ),
-              if (_pageCount > 1) ...[
+              if (pageCount > 1) ...[
                 const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(_pageCount, (i) {
+                  children: List.generate(pageCount, (i) {
                     final active = i == _page;
                     return AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
