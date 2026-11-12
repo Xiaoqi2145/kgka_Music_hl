@@ -2212,19 +2212,61 @@ class _LyricCandidatePreviewPageState
   }
 }
 
-class _CandidateLyricPreview extends StatelessWidget {
+class _CandidateLyricPreview extends StatefulWidget {
   const _CandidateLyricPreview({required this.player, required this.lines});
 
   final PlayerController player;
   final List<LyricLine> lines;
 
-  int _activeIndex(Duration position) {
+  @override
+  State<_CandidateLyricPreview> createState() => _CandidateLyricPreviewState();
+}
+
+class _CandidateLyricPreviewState extends State<_CandidateLyricPreview> {
+  static const _lineExtent = 92.0;
+
+  final _controller = ScrollController();
+  int _activeIndex = -1;
+  bool _positioned = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeIndex = _activeIndexFor(widget.player.smoothPosition);
+    widget.player.positionListenable.addListener(_handlePositionChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncToActive());
+  }
+
+  @override
+  void didUpdateWidget(covariant _CandidateLyricPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.player != widget.player) {
+      oldWidget.player.positionListenable.removeListener(
+        _handlePositionChanged,
+      );
+      widget.player.positionListenable.addListener(_handlePositionChanged);
+    }
+    if (oldWidget.lines != widget.lines) {
+      _positioned = false;
+      _activeIndex = _activeIndexFor(widget.player.smoothPosition);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _syncToActive());
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.player.positionListenable.removeListener(_handlePositionChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  int _activeIndexFor(Duration position) {
     var low = 0;
-    var high = lines.length - 1;
+    var high = widget.lines.length - 1;
     var result = 0;
     while (low <= high) {
       final middle = (low + high) >> 1;
-      if (position >= lines[middle].time) {
+      if (position >= widget.lines[middle].time) {
         result = middle;
         low = middle + 1;
       } else {
@@ -2234,47 +2276,85 @@ class _CandidateLyricPreview extends StatelessWidget {
     return result;
   }
 
+  void _handlePositionChanged() {
+    if (!mounted) return;
+    final next = _activeIndexFor(widget.player.smoothPosition);
+    if (next == _activeIndex) return;
+    setState(() => _activeIndex = next);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncToActive(animated: true);
+    });
+  }
+
+  void _syncToActive({bool animated = false}) {
+    if (!mounted || !_controller.hasClients || _activeIndex < 0) return;
+    final offset = lyricPreviewScrollOffset(
+      activeIndex: _activeIndex,
+      lineExtent: _lineExtent,
+      topPadding: 44,
+      viewportHeight: _controller.position.viewportDimension,
+      maxScrollExtent: _controller.position.maxScrollExtent,
+    );
+    if ((_controller.offset - offset).abs() < 1) return;
+    if (!_positioned || !animated) {
+      _positioned = true;
+      _controller.jumpTo(offset);
+      return;
+    }
+    _controller.animateTo(
+      offset,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([player, player.positionListenable]),
-      builder: (context, _) {
-        final active = _activeIndex(player.smoothPosition);
+    return ValueListenableBuilder<Duration>(
+      valueListenable: widget.player.positionListenable,
+      builder: (context, _, _) {
         return ListView.builder(
+          controller: _controller,
+          itemExtent: _lineExtent,
           padding: const EdgeInsets.fromLTRB(28, 44, 28, 96),
-          itemCount: lines.length,
+          itemCount: widget.lines.length,
           itemBuilder: (context, index) {
-            final line = lines[index];
-            final isActive = index == active;
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 15),
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 180),
-                opacity: isActive ? 1 : .52,
+            final line = widget.lines[index];
+            final isActive = index == _activeIndex;
+            return AnimatedOpacity(
+              duration: const Duration(milliseconds: 180),
+              opacity: isActive ? 1 : .52,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Text(
                       line.text,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: isActive ? 24 : 20,
-                        height: 1.35,
+                        fontSize: isActive ? 22 : 18,
+                        height: 1.25,
                         fontWeight: isActive
                             ? FontWeight.w800
                             : FontWeight.w500,
                       ),
                     ),
                     if (line.translation?.trim().isNotEmpty == true) ...[
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 5),
                       Text(
                         line.translation!.trim(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: .78),
-                          fontSize: isActive ? 17 : 15,
-                          height: 1.35,
+                          fontSize: isActive ? 15 : 13,
+                          height: 1.25,
                         ),
                       ),
                     ],
@@ -2287,6 +2367,20 @@ class _CandidateLyricPreview extends StatelessWidget {
       },
     );
   }
+}
+
+@visibleForTesting
+double lyricPreviewScrollOffset({
+  required int activeIndex,
+  required double lineExtent,
+  required double topPadding,
+  required double viewportHeight,
+  required double maxScrollExtent,
+}) {
+  if (activeIndex < 0) return 0;
+  return (topPadding + activeIndex * lineExtent - viewportHeight * .34)
+      .clamp(0.0, maxScrollExtent)
+      .toDouble();
 }
 
 class _LyricPreviewError extends StatelessWidget {
