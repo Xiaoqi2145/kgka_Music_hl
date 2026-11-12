@@ -61,14 +61,9 @@ class _LibraryPageState extends State<LibraryPage>
   /// 重影。淡入则全程只有一份内容，高度只跳一次。
   late final AnimationController _sectionFade;
   late final Animation<double> _sectionFadeIn;
-  int _lastTabIndex = 0;
 
-  /// 列表段淡入的起始透明度；空态是真正的「从无到有」，用 0。
+  /// 列表段淡入的起始透明度；空态也从可见状态开始。
   static const _listFadeFrom = 0.3;
-
-  /// 动画结束后不留任何多余 RenderObject。
-  static Widget _fadeIn(Widget child, double opacity) =>
-      opacity >= 1 ? child : Opacity(opacity: opacity, child: child);
 
   @override
   void initState() {
@@ -84,24 +79,19 @@ class _LibraryPageState extends State<LibraryPage>
       parent: _sectionFade,
       curve: Curves.easeOutCubic,
     );
-    _tabController.addListener(_handleTabChanged);
-  }
-
-  void _handleTabChanged() {
-    // animateTo 过程中会连续触发多次，等落定后再播一次。
-    if (_tabController.indexIsChanging) return;
-    if (_tabController.index == _lastTabIndex) return;
-    _lastTabIndex = _tabController.index;
-    _sectionFade.forward(from: 0);
   }
 
   @override
   void dispose() {
-    _tabController
-      ..removeListener(_handleTabChanged)
-      ..dispose();
+    _tabController.dispose();
     _sectionFade.dispose();
     super.dispose();
+  }
+
+  void _selectTab(int index) {
+    if (index == _tabController.index) return;
+    _sectionFade.forward(from: 0);
+    _tabController.animateTo(index);
   }
 
   /// 当前 tab 对应的歌单列表。
@@ -434,13 +424,12 @@ class _LibraryPageState extends State<LibraryPage>
                 child: _PlaylistTabBar(
                   controller: _tabController,
                   auth: widget.auth,
+                  onSelect: _selectTab,
                 ),
               ),
               // 当前 Tab 对应的歌单列表（虚拟化 sliver）。
-              // _sectionFade 也在这里：切 tab 的淡入需要逐帧刷新行透明度，而
-              // sliver 外层套不了 Opacity，只能由这段重建来驱动。
               _ListenableSliver(
-                listenables: [widget.auth, _tabController, _sectionFade],
+                listenables: [widget.auth, _tabController],
                 builder: _buildPlaylistSection,
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 160)),
@@ -453,7 +442,7 @@ class _LibraryPageState extends State<LibraryPage>
 
   /// 构建歌单列表区（排序/多选工具条 + 虚拟化列表）。
   ///
-  /// 只在 [_ListenableSliver] 收到 auth、tab 或 [_sectionFade] 变化时调用。
+  /// 只在 [_ListenableSliver] 收到 auth 或 tab 变化时调用。
   Widget _buildPlaylistSection(BuildContext context) {
     final current = _currentList;
     final sorted = _sortedPlaylists(current);
@@ -461,9 +450,10 @@ class _LibraryPageState extends State<LibraryPage>
     // 宽屏，手机横屏（最短边约 360~430）仍走单列。
     final isWide = MediaQuery.sizeOf(context).shortestSide >= 600;
     final colorScheme = Theme.of(context).colorScheme;
-    // sliver 本身不能套 Opacity，只能逐行施加。
-    final fade = _sectionFadeIn.value;
-    final listOpacity = _listFadeFrom + (1 - _listFadeFrom) * fade;
+    final listOpacity = Tween<double>(
+      begin: _listFadeFrom,
+      end: 1,
+    ).animate(_sectionFadeIn);
 
     return SliverMainAxisGroup(
       slivers: [
@@ -529,88 +519,104 @@ class _LibraryPageState extends State<LibraryPage>
             ),
           ),
         ),
-        if (sorted.isEmpty)
-          SliverToBoxAdapter(
-            // 空态是真正的「从无到有」，从 0 起淡入。
-            child: _fadeIn(const _EmptyGroup(), fade),
-          )
-        else if (isWide)
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-            sliver: SliverGrid(
-              gridDelegate:
-                  const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 340,
-                    mainAxisExtent: 72,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                  ),
-              delegate: SliverChildBuilderDelegate((context, index) {
-                return _fadeIn(
-                  _PlaylistGroupTile(
-                    playlist: sorted[index],
-                    selected:
-                        _multiSelectMode && _selectedIndices.contains(index),
-                    multiSelectMode: _multiSelectMode,
-                    onTap: _multiSelectMode
-                        ? () => _toggleSelected(index)
-                        : () => _openPlaylist(sorted[index]),
-                    onLongPress: () => _enterMultiSelect(index),
-                  ),
-                  listOpacity,
-                );
-              }, childCount: sorted.length),
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-            sliver: SliverList.separated(
-              itemCount: sorted.length,
-              separatorBuilder: (_, _) => ColoredBox(
-                color: colorScheme.surfaceContainer,
-                child: Divider(
-                  height: 1,
-                  indent: 62,
-                  color: colorScheme.outlineVariant.withValues(alpha: .3),
-                ),
-              ),
-              itemBuilder: (context, index) {
-                final isFirst = index == 0;
-                final isLast = index == sorted.length - 1;
-                // Sliver 逐行绘制底色时，必须把底色和内容一起裁圆；
-                // 只裁 _PlaylistRow 会让首尾的方形 ColoredBox 露出来。
-                final radius = BorderRadius.only(
-                  topLeft: isFirst ? const Radius.circular(14) : Radius.zero,
-                  topRight: isFirst ? const Radius.circular(14) : Radius.zero,
-                  bottomLeft: isLast ? const Radius.circular(14) : Radius.zero,
-                  bottomRight: isLast ? const Radius.circular(14) : Radius.zero,
-                );
-                return _fadeIn(
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainer,
-                      borderRadius: radius,
-                    ),
-                    child: _PlaylistRow(
-                      playlist: sorted[index],
-                      selected:
-                          _multiSelectMode && _selectedIndices.contains(index),
-                      multiSelectMode: _multiSelectMode,
-                      onTap: _multiSelectMode
-                          ? () => _toggleSelected(index)
-                          : () => _openPlaylist(sorted[index]),
-                      onLongPress: () => _enterMultiSelect(index),
-                      borderRadius: radius,
-                    ),
-                  ),
-                  listOpacity,
-                );
-              },
-            ),
-          ),
+        _buildPlaylistContent(
+          sorted: sorted,
+          isWide: isWide,
+          colorScheme: colorScheme,
+          opacity: listOpacity,
+        ),
       ],
     );
+  }
+
+  Widget _buildPlaylistContent({
+    required List<PlaylistSummary> sorted,
+    required bool isWide,
+    required ColorScheme colorScheme,
+    required Animation<double> opacity,
+  }) {
+    final Widget content;
+    if (sorted.isEmpty) {
+      content = const SliverToBoxAdapter(child: _EmptyGroup());
+    } else if (isWide) {
+      content = SliverPadding(
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 340,
+            mainAxisExtent: 72,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+          ),
+          delegate: SliverChildBuilderDelegate((context, index) {
+            final playlist = sorted[index];
+            return _PlaylistGroupTile(
+              key: ValueKey(_playlistKey(playlist)),
+              playlist: playlist,
+              selected: _multiSelectMode && _selectedIndices.contains(index),
+              multiSelectMode: _multiSelectMode,
+              onTap: _multiSelectMode
+                  ? () => _toggleSelected(index)
+                  : () => _openPlaylist(playlist),
+              onLongPress: () => _enterMultiSelect(index),
+            );
+          }, childCount: sorted.length),
+        ),
+      );
+    } else {
+      content = SliverPadding(
+        padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+        sliver: SliverList.separated(
+          itemCount: sorted.length,
+          separatorBuilder: (_, _) => ColoredBox(
+            color: colorScheme.surfaceContainer,
+            child: Divider(
+              height: 1,
+              indent: 62,
+              color: colorScheme.outlineVariant.withValues(alpha: .3),
+            ),
+          ),
+          itemBuilder: (context, index) {
+            final playlist = sorted[index];
+            final isFirst = index == 0;
+            final isLast = index == sorted.length - 1;
+            // Sliver 逐行绘制底色时，必须把底色和内容一起裁圆；
+            // 只裁 _PlaylistRow 会让首尾的方形 ColoredBox 露出来。
+            final radius = BorderRadius.only(
+              topLeft: isFirst ? const Radius.circular(14) : Radius.zero,
+              topRight: isFirst ? const Radius.circular(14) : Radius.zero,
+              bottomLeft: isLast ? const Radius.circular(14) : Radius.zero,
+              bottomRight: isLast ? const Radius.circular(14) : Radius.zero,
+            );
+            return DecoratedBox(
+              key: ValueKey(_playlistKey(playlist)),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainer,
+                borderRadius: radius,
+              ),
+              child: _PlaylistRow(
+                playlist: playlist,
+                selected: _multiSelectMode && _selectedIndices.contains(index),
+                multiSelectMode: _multiSelectMode,
+                onTap: _multiSelectMode
+                    ? () => _toggleSelected(index)
+                    : () => _openPlaylist(playlist),
+                onLongPress: () => _enterMultiSelect(index),
+                borderRadius: radius,
+              ),
+            );
+          },
+        ),
+      );
+    }
+    return SliverFadeTransition(opacity: opacity, sliver: content);
+  }
+
+  String _playlistKey(PlaylistSummary playlist) {
+    if (playlist.isCollectedAlbum) {
+      return 'album:${playlist.musiclibId?.isNotEmpty == true ? playlist.musiclibId : playlist.id}';
+    }
+    return 'playlist:${playlist.listId?.isNotEmpty == true ? playlist.listId : playlist.id}';
   }
 }
 
@@ -620,10 +626,7 @@ class _LibraryPageState extends State<LibraryPage>
 /// RenderSliver），但又不能为了监听一个控制器就把整棵滚动视图重建一遍。
 /// 这个部件把「订阅 → 重建」的范围收在单个 sliver 上。
 class _ListenableSliver extends StatefulWidget {
-  const _ListenableSliver({
-    required this.listenables,
-    required this.builder,
-  });
+  const _ListenableSliver({required this.listenables, required this.builder});
 
   final List<Listenable> listenables;
   final WidgetBuilder builder;
@@ -724,9 +727,9 @@ class _AccountRow extends StatelessWidget {
                     profile?.nickname ?? 'KA Music 用户',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   Text(
                     '已登录',
@@ -936,10 +939,12 @@ class _PlaylistTabBar extends StatelessWidget {
   const _PlaylistTabBar({
     required this.controller,
     required this.auth,
+    required this.onSelect,
   });
 
   final TabController controller;
   final AuthController auth;
+  final ValueChanged<int> onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -963,7 +968,7 @@ class _PlaylistTabBar extends StatelessWidget {
                     label: '创建',
                     count: auth.createdPlaylists.length,
                     selected: controller.index == 0,
-                    onTap: () => controller.animateTo(0),
+                    onTap: () => onSelect(0),
                   ),
                 ),
                 Expanded(
@@ -971,7 +976,7 @@ class _PlaylistTabBar extends StatelessWidget {
                     label: '收藏',
                     count: auth.collectedPlaylists.length,
                     selected: controller.index == 1,
-                    onTap: () => controller.animateTo(1),
+                    onTap: () => onSelect(1),
                   ),
                 ),
                 Expanded(
@@ -979,7 +984,7 @@ class _PlaylistTabBar extends StatelessWidget {
                     label: '专辑',
                     count: auth.collectedAlbums.length,
                     selected: controller.index == 2,
-                    onTap: () => controller.animateTo(2),
+                    onTap: () => onSelect(2),
                   ),
                 ),
               ],
@@ -1177,6 +1182,7 @@ class _EmptyGroup extends StatelessWidget {
 /// 全部行都会被 build + paint。现在换成真正的 [SliverGrid] 委托按视口取。
 class _PlaylistGroupTile extends StatelessWidget {
   const _PlaylistGroupTile({
+    super.key,
     required this.playlist,
     required this.selected,
     required this.multiSelectMode,
