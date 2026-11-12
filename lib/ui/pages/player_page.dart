@@ -157,6 +157,7 @@ List<SongSheetAction> _playerMoreActions({
   required AuthController auth,
   bool isGrid = false,
   bool includeNext = false,
+  bool includeQuickActions = true,
 }) {
   SongSheetAction action({
     required IconData icon,
@@ -180,19 +181,21 @@ List<SongSheetAction> _playerMoreActions({
       subtitle: player.playbackSpeedLabel,
       onTap: () => showPlaybackSpeedSheet(context: context, player: player),
     ),
-    action(
-      icon: Icons.high_quality_rounded,
-      title: isGrid ? '音质' : '音质：${player.audioQuality.label}',
-      subtitle: isGrid ? player.audioQuality.badge : '切换当前播放音质',
-      onTap: () => _showAudioQualityPicker(context, player),
-    ),
-    action(
-      icon: Icons.graphic_eq_rounded,
-      title: '音效',
-      subtitle: isGrid ? null : player.audioEffectsLabel,
-      onTap: () => showAudioEffectsSheet(context: context, player: player),
-    ),
-    if (!isGrid)
+    if (includeQuickActions)
+      action(
+        icon: Icons.high_quality_rounded,
+        title: isGrid ? '音质' : '音质：${player.audioQuality.label}',
+        subtitle: isGrid ? player.audioQuality.badge : '切换当前播放音质',
+        onTap: () => _showAudioQualityPicker(context, player),
+      ),
+    if (includeQuickActions)
+      action(
+        icon: Icons.graphic_eq_rounded,
+        title: '音效',
+        subtitle: isGrid ? null : player.audioEffectsLabel,
+        onTap: () => showAudioEffectsSheet(context: context, player: player),
+      ),
+    if (!isGrid && includeQuickActions)
       action(
         icon: Icons.manage_search_rounded,
         title: '更换歌词',
@@ -357,6 +360,7 @@ class _PlayerBodyState extends State<_PlayerBody> {
                             player: widget.player,
                             auth: widget.auth,
                             song: widget.song,
+                            showQuickActions: size.shortestSide >= 600,
                             onClose: widget.onClose,
                             onQueue: widget.onQueue,
                             onArtistTap: _openArtist,
@@ -667,6 +671,7 @@ class _LandscapePlayerContent extends StatelessWidget {
     required this.player,
     required this.auth,
     required this.song,
+    required this.showQuickActions,
     required this.onClose,
     required this.onQueue,
     required this.onArtistTap,
@@ -675,6 +680,7 @@ class _LandscapePlayerContent extends StatelessWidget {
   final PlayerController player;
   final AuthController auth;
   final Song song;
+  final bool showQuickActions;
   final VoidCallback onClose;
   final VoidCallback onQueue;
   final ValueChanged<Song> onArtistTap;
@@ -697,6 +703,7 @@ class _LandscapePlayerContent extends StatelessWidget {
                 player: player,
                 auth: auth,
                 song: song,
+                showQuickActions: showQuickActions,
                 onClose: onClose,
                 compact: compact,
                 onArtistTap: onArtistTap,
@@ -718,7 +725,19 @@ class _LandscapePlayerContent extends StatelessWidget {
                       flex: 12,
                       child: _LandscapeRightPanel(
                         player: player,
+                        showQuickActions: showQuickActions,
                         onQueue: onQueue,
+                        onLyricPicker: () => showLyricCandidatePicker(
+                          context: context,
+                          player: player,
+                          song: song,
+                        ),
+                        onQualityPicker: () =>
+                            _showAudioQualityPicker(context, player),
+                        onAudioEffects: () => showAudioEffectsSheet(
+                          context: context,
+                          player: player,
+                        ),
                         compact: compact,
                       ),
                     ),
@@ -738,6 +757,7 @@ class _LandscapeHeader extends StatelessWidget {
     required this.player,
     required this.auth,
     required this.song,
+    required this.showQuickActions,
     required this.onClose,
     required this.compact,
     required this.onArtistTap,
@@ -746,6 +766,7 @@ class _LandscapeHeader extends StatelessWidget {
   final PlayerController player;
   final AuthController auth;
   final Song song;
+  final bool showQuickActions;
   final VoidCallback onClose;
   final bool compact;
   final ValueChanged<Song> onArtistTap;
@@ -831,6 +852,7 @@ class _LandscapeHeader extends StatelessWidget {
         song: song,
         player: player,
         auth: auth,
+        includeQuickActions: !showQuickActions,
       ),
     );
   }
@@ -1016,12 +1038,20 @@ class _LandscapeArtworkShowcaseState extends State<_LandscapeArtworkShowcase>
 class _LandscapeRightPanel extends StatelessWidget {
   const _LandscapeRightPanel({
     required this.player,
+    required this.showQuickActions,
     required this.onQueue,
+    required this.onLyricPicker,
+    required this.onQualityPicker,
+    required this.onAudioEffects,
     required this.compact,
   });
 
   final PlayerController player;
+  final bool showQuickActions;
   final VoidCallback onQueue;
+  final VoidCallback onLyricPicker;
+  final VoidCallback onQualityPicker;
+  final VoidCallback onAudioEffects;
   final bool compact;
 
   @override
@@ -1046,6 +1076,10 @@ class _LandscapeRightPanel extends StatelessWidget {
               player: player,
               bright: true,
               onQueue: onQueue,
+              showQuickActions: showQuickActions,
+              onLyricPicker: onLyricPicker,
+              onQualityPicker: onQualityPicker,
+              onAudioEffects: onAudioEffects,
               compactOverride: true,
               denseOverride: veryTight,
             ),
@@ -3210,6 +3244,10 @@ class _Controls extends StatelessWidget {
     this.bright = false,
     this.compactOverride = false,
     this.denseOverride = false,
+    this.showQuickActions = false,
+    this.onLyricPicker,
+    this.onQualityPicker,
+    this.onAudioEffects,
   });
 
   final PlayerController player;
@@ -3217,6 +3255,10 @@ class _Controls extends StatelessWidget {
   final bool bright;
   final bool compactOverride;
   final bool denseOverride;
+  final bool showQuickActions;
+  final VoidCallback? onLyricPicker;
+  final VoidCallback? onQualityPicker;
+  final VoidCallback? onAudioEffects;
 
   @override
   Widget build(BuildContext context) {
@@ -3239,6 +3281,17 @@ class _Controls extends StatelessWidget {
         return Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            if (showQuickActions) ...[
+              _EdgeControlButton(
+                tooltip: '更换歌词',
+                size: edgeButtonSize,
+                iconSize: edgeIconSize,
+                color: color,
+                icon: Icons.manage_search_rounded,
+                onPressed: onLyricPicker,
+              ),
+              SizedBox(width: gap),
+            ],
             SizedBox.square(
               dimension: edgeButtonSize,
               child: IconButton(
@@ -3316,6 +3369,26 @@ class _Controls extends StatelessWidget {
                 icon: const Icon(Icons.queue_music_rounded),
               ),
             ),
+            if (showQuickActions) ...[
+              SizedBox(width: gap),
+              _EdgeControlButton(
+                tooltip: '音质 · ${player.audioQuality.badge}',
+                size: edgeButtonSize,
+                iconSize: edgeIconSize,
+                color: color,
+                icon: Icons.high_quality_rounded,
+                onPressed: onQualityPicker,
+              ),
+              SizedBox(width: gap),
+              _EdgeControlButton(
+                tooltip: '音效 · ${player.audioEffectsLabel}',
+                size: edgeButtonSize,
+                iconSize: edgeIconSize,
+                color: color,
+                icon: Icons.graphic_eq_rounded,
+                onPressed: onAudioEffects,
+              ),
+            ],
           ],
         );
       },
@@ -3328,6 +3401,39 @@ class _Controls extends StatelessWidget {
       PlaybackMode.shuffle => Icons.shuffle_rounded,
       PlaybackMode.singleLoop => Icons.repeat_one_rounded,
     };
+  }
+}
+
+class _EdgeControlButton extends StatelessWidget {
+  const _EdgeControlButton({
+    required this.tooltip,
+    required this.size,
+    required this.iconSize,
+    required this.color,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final double size;
+  final double iconSize;
+  final Color color;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: size,
+      child: IconButton(
+        tooltip: tooltip,
+        color: color,
+        iconSize: iconSize,
+        padding: EdgeInsets.zero,
+        onPressed: onPressed,
+        icon: Icon(icon),
+      ),
+    );
   }
 }
 
