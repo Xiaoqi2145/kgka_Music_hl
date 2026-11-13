@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kgka_music_hl/controllers/player_page_layout_controller.dart';
 import 'package:kgka_music_hl/ui/widgets/player_page_actions.dart';
 import 'package:kgka_music_hl/ui/widgets/player_quick_action_bar.dart';
+import 'package:kgka_music_hl/ui/widgets/player_quick_action_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'player_quick_actions_test_support.dart';
@@ -77,6 +78,69 @@ void main() {
 
     await openMoreSheet(tester);
     expect(find.text('定时播放'), findsOneWidget);
+  });
+
+  testWidgets('手机横屏兼容模式显示原有三个快捷动作', (tester) async {
+    await pumpQuickActionPlayer(tester, size: kPhoneLandscape);
+
+    expect(find.byTooltip('更换歌词'), findsOneWidget);
+    expect(find.byTooltip('音质 · 128K'), findsOneWidget);
+    expect(find.byTooltip('音效 · 关闭'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('手机横屏控制行与快捷动作同排且不溢出', (tester) async {
+    await prepareQuickActionTests(
+      quickActionPrefs([
+        PlayerActionId.lyricPicker,
+        PlayerActionId.audioQuality,
+        PlayerActionId.audioEffects,
+      ]),
+    );
+    await pumpQuickActionPlayer(tester, size: kPhoneLandscape);
+
+    final queue = tester.getRect(find.byTooltip('播放列表'));
+    final lyrics = tester.getRect(find.byTooltip('更换歌词'));
+    expect((lyrics.center.dy - queue.center.dy).abs(), lessThan(1));
+    expect((lyrics.width - queue.width).abs(), lessThan(.1));
+    expect((lyrics.height - queue.height).abs(), lessThan(.1));
+    expect(tester.takeException(), isNull);
+    expect(find.byTooltip('音质 · 128K'), findsOneWidget);
+    expect(find.byTooltip('音效 · 关闭'), findsOneWidget);
+  });
+
+  testWidgets('720x360 横屏使用 3 个槽位且控制行不溢出', (tester) async {
+    await prepareQuickActionTests(
+      quickActionPrefs([
+        PlayerActionId.lyricPicker,
+        PlayerActionId.audioQuality,
+        PlayerActionId.audioEffects,
+        PlayerActionId.playbackSpeed,
+      ]),
+    );
+    await pumpQuickActionPlayer(tester, size: const Size(720, 360));
+
+    expect(find.byTooltip('更换歌词'), findsOneWidget);
+    expect(find.byTooltip('音质 · 128K'), findsOneWidget);
+    expect(find.byTooltip('音效 · 关闭'), findsOneWidget);
+    expect(find.byTooltip('倍速播放'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('手机横屏编辑面板不覆盖控制行', (tester) async {
+    await pumpQuickActionPlayer(tester, size: const Size(720, 360));
+    await openQuickActionEditor(tester);
+
+    final editor = tester.getRect(find.byType(PlayerQuickActionEditor));
+    final queue = tester.getRect(find.byTooltip('播放列表'));
+    expect(editor.top, greaterThan(0));
+    expect(editor.height, lessThan(360 * .75));
+    expect(queue.top, greaterThan(editor.bottom));
+    expect(
+      find.byKey(const Key('quick-action-candidate-playbackSpeed')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('条件不可用项不占槽且仍留在更多面板', (tester) async {

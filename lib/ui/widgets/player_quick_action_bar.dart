@@ -18,6 +18,7 @@ class PlayerQuickActionBar extends StatelessWidget {
     required this.color,
     required this.gap,
     this.editing = false,
+    this.grouped = false,
   });
 
   final QuickActionResolution resolution;
@@ -27,13 +28,14 @@ class PlayerQuickActionBar extends StatelessWidget {
   final Color color;
   final double gap;
   final bool editing;
+  final bool grouped;
 
   @override
   Widget build(BuildContext context) {
     if (!resolution.show || resolution.actions.isEmpty) {
       return const SizedBox.shrink();
     }
-    return Row(
+    final buttons = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         for (final action in resolution.actions) ...[
@@ -53,6 +55,18 @@ class PlayerQuickActionBar extends StatelessWidget {
           ),
         ],
       ],
+    );
+    if (!grouped) return buttons;
+    return Container(
+      padding: EdgeInsets.all(gap),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: editing ? .5 : .22),
+        ),
+      ),
+      child: buttons,
     );
   }
 }

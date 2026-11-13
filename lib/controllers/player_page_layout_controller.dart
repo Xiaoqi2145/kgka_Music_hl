@@ -31,7 +31,7 @@ abstract interface class QuickActionPlacement {
   QuickActionPlacementSpec resolve(Size size, {required bool veryTight});
 }
 
-/// 一期策略：仅横屏显示快捷区；竖屏暂不增加（接口已留）。
+/// 一期策略：横屏显示快捷区；竖屏暂不增加（接口已留）。
 class LandscapeOnlyPlacement implements QuickActionPlacement {
   const LandscapeOnlyPlacement();
 
@@ -52,10 +52,13 @@ class LandscapeOnlyPlacement implements QuickActionPlacement {
         host: QuickActionHost.belowControls,
       );
     }
+    // 手机与平板横屏共用同一宿主；手机保留 3 个槽位，给核心播放键留足
+    // 实际点击尺寸，超出的动作继续回落到「更多」。
     final tablet = size.shortestSide >= 600;
+    final maxSlots = tablet ? 5 : 3;
     return QuickActionPlacementSpec(
       show: true,
-      maxSlots: tablet ? 5 : 3,
+      maxSlots: maxSlots,
       host: QuickActionHost.belowControls,
     );
   }
@@ -210,13 +213,10 @@ class PlayerPageLayoutController extends ChangeNotifier {
   }) {
     final spec = placement.resolve(size, veryTight: veryTight);
     if (!_hasCustomized && override == null) {
-      // 兼容模式走独立早期分支，不经过新策略矩阵：仅平板横屏显示 3 个。
-      final tabletLandscape =
-          size.width > size.height && size.shortestSide >= 600;
       return resolveQuickActions(
         ids: kLegacyQuickActions,
         spec: QuickActionPlacementSpec(
-          show: tabletLandscape,
+          show: spec.show,
           maxSlots: 3,
           host: QuickActionHost.belowControls,
         ),

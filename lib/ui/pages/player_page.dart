@@ -437,6 +437,7 @@ class _PlayerBodyState extends State<_PlayerBody> {
                     onCommit: _commitEdit,
                     onCancel: _cancelEdit,
                     onReset: _resetEdit,
+                    bottomInset: landscape ? 148 : 190,
                   ),
               ],
             ),
@@ -1091,7 +1092,7 @@ class _LandscapeRightPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final veryTight = constraints.maxHeight < 250;
+        final veryTight = constraints.maxHeight < 220;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1102,7 +1103,7 @@ class _LandscapeRightPanel extends StatelessWidget {
               ),
             ),
             // 歌词与进度条之间只保留约一行歌词的间隔。
-            SizedBox(height: compact ? 32 : 44),
+            SizedBox(height: veryTight ? 10 : (compact ? 32 : 44)),
             _Progress(player: player, bright: true, compact: true),
             SizedBox(height: veryTight ? 0 : 4),
             _Controls(
@@ -3397,8 +3398,11 @@ class _Controls extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = compactOverride || constraints.maxWidth < 360;
-        final dense = denseOverride;
-        final edgeButtonSize = dense ? 34.0 : (compact ? 40.0 : 44.0);
+        final dense = denseOverride || constraints.maxHeight < 260;
+        final tight = constraints.maxHeight < 220;
+        final edgeButtonSize = tight
+            ? 30.0
+            : (dense ? 34.0 : (compact ? 40.0 : 44.0));
         final edgeIconSize = dense ? 21.0 : (compact ? 24.0 : 27.0);
         final skipButtonSize = dense ? 42.0 : (compact ? 50.0 : 56.0);
         final skipIconSize = dense ? 33.0 : (compact ? 40.0 : 46.0);
@@ -3419,20 +3423,22 @@ class _Controls extends StatelessWidget {
         final trailingQuickActions = quickActions
             .where((action) => !leadingQuickActions.contains(action))
             .toList(growable: false);
-        Widget quickBar(List<PlayerAction> actions) => PlayerQuickActionBar(
-          resolution: QuickActionResolution(
-            show: actions.isNotEmpty,
-            maxSlots: actions.length,
-            actions: actions,
-            overflow: const <PlayerAction>[],
-          ),
-          player: player,
-          size: edgeButtonSize,
-          iconSize: edgeIconSize,
-          color: color,
-          gap: gap,
-          editing: editing,
-        );
+        Widget quickBar(List<PlayerAction> actions, {required bool grouped}) =>
+            PlayerQuickActionBar(
+              resolution: QuickActionResolution(
+                show: actions.isNotEmpty,
+                maxSlots: actions.length,
+                actions: actions,
+                overflow: const <PlayerAction>[],
+              ),
+              player: player,
+              size: edgeButtonSize,
+              iconSize: edgeIconSize,
+              color: color,
+              gap: gap,
+              editing: editing,
+              grouped: grouped,
+            );
 
         return FittedBox(
           fit: BoxFit.scaleDown,
@@ -3440,7 +3446,7 @@ class _Controls extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              quickBar(leadingQuickActions),
+              quickBar(leadingQuickActions, grouped: false),
               SizedBox.square(
                 dimension: edgeButtonSize,
                 child: IconButton(
@@ -3518,7 +3524,7 @@ class _Controls extends StatelessWidget {
                   icon: const Icon(Icons.queue_music_rounded),
                 ),
               ),
-              quickBar(trailingQuickActions),
+              quickBar(trailingQuickActions, grouped: true),
             ],
           ),
         );

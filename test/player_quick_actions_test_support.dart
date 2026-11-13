@@ -10,7 +10,7 @@ import 'package:kgka_music_hl/ui/widgets/player_page_actions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const Size kTabletLandscape = Size(1024, 768);
-const Size kPhoneLandscape = Size(800, 400);
+const Size kPhoneLandscape = Size(800, 360);
 const Size kPhonePortrait = Size(400, 800);
 
 class FakePlayer extends ChangeNotifier implements PlayerController {

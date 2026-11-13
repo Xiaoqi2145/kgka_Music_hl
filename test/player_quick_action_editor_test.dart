@@ -23,6 +23,8 @@ void main() {
     expect(editorRect.height, lessThan(tester.view.physicalSize.height * .65));
     expect(find.byTooltip('播放列表'), findsOneWidget);
     expect(find.byTooltip('上一首'), findsWidgets);
+    final lyricsAction = tester.getRect(find.byTooltip('更换歌词'));
+    expect(editorRect.bottom, lessThan(lyricsAction.top));
     expect(find.text('更多'), findsNothing);
     expect(find.byTooltip('倍速播放'), findsNothing);
 

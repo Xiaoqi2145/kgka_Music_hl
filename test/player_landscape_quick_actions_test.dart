@@ -27,14 +27,14 @@ void main() {
     expect(find.text('更换歌词'), findsNothing);
   });
 
-  testWidgets('phone landscape keeps quick actions in the more sheet', (
+  testWidgets('phone landscape shows the same quick actions in control row', (
     tester,
   ) async {
-    await pumpPlayer(tester, size: const Size(800, 400));
+    await pumpPlayer(tester, size: const Size(800, 360));
 
-    expect(find.byTooltip('更换歌词'), findsNothing);
-    expect(find.byTooltip('音质 · 128K'), findsNothing);
-    expect(find.byTooltip('音效 · 关闭'), findsNothing);
+    expect(find.byTooltip('更换歌词'), findsOneWidget);
+    expect(find.byTooltip('音质 · 128K'), findsOneWidget);
+    expect(find.byTooltip('音效 · 关闭'), findsOneWidget);
   });
 
   testWidgets('custom config renders only the selected quick actions', (

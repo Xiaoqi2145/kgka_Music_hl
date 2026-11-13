@@ -51,9 +51,16 @@ void main() {
     });
 
     test('手机横屏显示 3 个槽位', () {
-      final s = spec(const Size(800, 400));
+      final s = spec(const Size(800, 360));
       expect(s.show, isTrue);
       expect(s.maxSlots, 3);
+    });
+
+    test('手机横屏低高度仍显示，只有 veryTight 隐藏', () {
+      final normal = spec(const Size(720, 360));
+      expect(normal.show, isTrue);
+      expect(normal.maxSlots, 3);
+      expect(spec(const Size(720, 360), veryTight: true).show, isFalse);
     });
 
     test('竖屏暂不显示（portraitTbd 占位，D3 预留接口）', () {
@@ -180,7 +187,7 @@ void main() {
       ]);
     });
 
-    test('兼容模式 resolve 保持平板横屏 3 项、其余屏幕隐藏', () {
+    test('兼容模式 resolve 横屏显示 3 项、竖屏隐藏', () {
       final controller = PlayerPageLayoutController.instance;
       final player = _Player();
       final song = _Song();
@@ -200,14 +207,18 @@ void main() {
       expect(
         controller
             .resolve(
-              size: const Size(800, 400),
+              size: const Size(800, 360),
               veryTight: false,
               player: player,
               song: song,
               all: registry,
             )
             .excludeIds,
-        isEmpty,
+        <PlayerActionId>{
+          PlayerActionId.lyricPicker,
+          PlayerActionId.audioQuality,
+          PlayerActionId.audioEffects,
+        },
       );
     });
 
