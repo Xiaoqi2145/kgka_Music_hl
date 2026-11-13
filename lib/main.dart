@@ -9,6 +9,7 @@ import 'config/app_config.dart';
 import 'controllers/auth_controller.dart';
 import 'controllers/download_controller.dart';
 import 'controllers/player_controller.dart';
+import 'controllers/player_page_layout_controller.dart';
 import 'controllers/local_music_controller.dart';
 import 'controllers/theme_controller.dart';
 import 'core/api_client.dart';
@@ -43,6 +44,7 @@ Future<void> main() async {
 
   final themeController = ThemeController();
   await themeController.load();
+  await PlayerPageLayoutController.instance.load();
 
   runApp(
     KaMusicApp(

@@ -4,7 +4,7 @@
 > 级别：L2 📖
 > 状态：现行
 > 关联代码：lib/ui/pages/（20 个文件）、lib/ui/widgets/（15 个文件）、lib/ui/adaptive_layout.dart、lib/ui/app_theme.dart
-> 最近更新：2026-09-26（行数与文件数实测复核）
+> 最近更新：2026-11-13（播放页快捷区组件登记）
 > 变更触发条件：新增/删除/重命名页面或组件、单个文件行数变化超过 30%、导航入口或出口变化、巨型文件拆分时
 
 ---
@@ -103,6 +103,9 @@ UI 层共 **37 个 Dart 文件 / 19 822 行**（非空口径），占 `lib/` 的
 | `audio_effects_sheet.dart` | 500 | `showAudioEffectsSheet()`、`AudioEffectsPage` | 音效页：均衡器多段、低音增强、曲线绘制 | `settings_page.dart:164`、`player_page.dart:311` |
 | `app_update_widgets.dart` | 340 | `AppUpdateBanner`、`showAppUpdateDialog()` | 更新提示横幅与更新对话框（含轻量 Markdown 渲染） | 当前无实例化点（见 TD-55） |
 | `song_action_sheets.dart` | 315 | `SongSheetAction`、`showSongActionSheet()`、`showAddToPlaylistSheet()`、`addSongToQueueWithFeedback()` | 歌曲操作面板（宫格 + 列表两种形态）、添加到歌单、加入队列 | 首页、歌单详情、歌手详情、云盘、搜索、播放历史、播放页 |
+| `player_page_actions.dart` | — | `PlayerActionId`、`PlayerAction`、`buildPlayerActions()` | 播放页 14 项控件注册表与「更多」面板转换器 | 播放页、快捷行、编辑器 |
+| `player_quick_action_bar.dart` | — | `PlayerQuickActionBar` | 控制行下方的快捷区宿主，按解析结果渲染按钮与编辑槽位 | 播放页横屏右栏 |
+| `player_quick_action_editor.dart` | — | `PlayerQuickActionEditor` | 播放页内快捷区可视化编辑覆盖层：候选池、排序预览、完成/取消/恢复默认 | 播放页编辑态 |
 | `sleep_timer_sheet.dart` | 229 | `showSleepTimerSheet()` | 定时播放面板（剩余时间展示、预设时长芯片） | `player_page.dart:334` |
 | `toast.dart` | 213 | `Toast`、`ToastType` | 全局 Toast，挂在根 Navigator 的 Overlay，不依赖调用处 context | 全项目；`navigatorKey` 绑定在 `main.dart:142` |
 | `artwork.dart` | 193 | `Artwork`、`artworkDecodePixels()` | 封面组件：磁盘缓存 → `Image.file`，含 Shimmer 占位与渐变兜底；`artworkDecodePixels` 是**公开纯函数**（已被 `test/artwork_and_selector_test.dart` 覆盖） | 几乎所有列表与详情页 |

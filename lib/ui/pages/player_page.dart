@@ -11,21 +11,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
+import '../../controllers/player_page_layout_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import '../adaptive_layout.dart';
-import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/artwork.dart';
 import '../widgets/cached_artwork_image.dart';
 import '../widgets/play_queue_sheet.dart';
-import '../widgets/playback_speed_sheet.dart';
-import '../widgets/sleep_timer_sheet.dart';
+import '../widgets/player_page_actions.dart';
+import '../widgets/player_quick_action_bar.dart';
+import '../widgets/player_quick_action_editor.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import 'artist_detail_page.dart';
 import 'comment_page.dart';
-import 'desktop_lyrics_settings_page.dart';
 
 typedef _LyricDisplayMode = LyricDisplayMode;
 
@@ -150,124 +150,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 }
 
+/// 「更多」面板：固定「编辑播放页」入口 + 注册表动作；逐项剔除已渲染到
+/// 快捷区的动作。excludeIds 只取「最终真正渲染」的集合。
 List<SongSheetAction> _playerMoreActions({
   required BuildContext context,
   required Song song,
   required PlayerController player,
   required AuthController auth,
+  required Set<PlayerActionId> excludeIds,
+  required VoidCallback onStartEdit,
   bool isGrid = false,
   bool includeNext = false,
-  bool includeQuickActions = true,
 }) {
-  SongSheetAction action({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    WidgetBuilder? subtitleBuilder,
-    required VoidCallback onTap,
-  }) => SongSheetAction(
-    icon: icon,
-    title: title,
-    subtitle: subtitle,
-    subtitleBuilder: subtitleBuilder,
-    isGrid: isGrid,
-    onTap: onTap,
+  final all = buildPlayerActions(
+    context: context,
+    song: song,
+    player: player,
+    auth: auth,
+    onAudioQuality: () => _showAudioQualityPicker(context, player),
+    onLyricPicker: () =>
+        showLyricCandidatePicker(context: context, player: player, song: song),
   );
-
-  return [
-    action(
-      icon: Icons.speed_rounded,
-      title: isGrid ? '倍速' : '倍速播放',
-      subtitle: player.playbackSpeedLabel,
-      onTap: () => showPlaybackSpeedSheet(context: context, player: player),
+  return <SongSheetAction>[
+    SongSheetAction(
+      icon: Icons.dashboard_customize_rounded,
+      title: '编辑播放页',
+      subtitle: isGrid ? null : '自定义快捷区显示哪些控件',
+      isGrid: isGrid,
+      onTap: onStartEdit,
     ),
-    if (includeQuickActions)
-      action(
-        icon: Icons.high_quality_rounded,
-        title: isGrid ? '音质' : '音质：${player.audioQuality.label}',
-        subtitle: isGrid ? player.audioQuality.badge : '切换当前播放音质',
-        onTap: () => _showAudioQualityPicker(context, player),
-      ),
-    if (includeQuickActions)
-      action(
-        icon: Icons.graphic_eq_rounded,
-        title: '音效',
-        subtitle: isGrid ? null : player.audioEffectsLabel,
-        onTap: () => showAudioEffectsSheet(context: context, player: player),
-      ),
-    if (!isGrid && includeQuickActions)
-      action(
-        icon: Icons.manage_search_rounded,
-        title: '更换歌词',
-        subtitle: '搜索并选择其他歌词版本',
-        onTap: () => showLyricCandidatePicker(
-          context: context,
-          player: player,
-          song: song,
-        ),
-      ),
-    action(
-      icon: Icons.bedtime_rounded,
-      title: isGrid ? '定时' : '定时播放',
-      subtitleBuilder: isGrid
-          ? null
-          : (context) => ValueListenableBuilder<SleepTimerUiState>(
-            valueListenable: player.sleepTimerUiListenable,
-            builder: (context, state, _) {
-              final subtitle = state.finishCurrentSong
-                  ? '播完歌曲后停止'
-                  : state.active
-                  ? '剩余 ${_formatSleepRemaining(state.remaining)}'
-                  : null;
-              return subtitle == null
-                  ? const SizedBox.shrink()
-                  : Text(
-                    subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  );
-            },
-          ),
-      onTap: () => showSleepTimerSheet(context: context, player: player),
-    ),
-    if (player.isDesktopLyricsSupported) ...[
-      action(
-        icon: player.desktopLyricsEnabled
-            ? Icons.lyrics_rounded
-            : Icons.lyrics_outlined,
-        title: '桌面歌词',
-        subtitle: isGrid ? null : (player.desktopLyricsEnabled ? '已开启' : '已关闭'),
-        onTap: () =>
-            player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled),
-      ),
-      if (player.desktopLyricsEnabled)
-        action(
-          icon: Icons.tune_rounded,
-          title: '歌词设置',
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => DesktopLyricsSettingsPage(player: player),
-            ),
-          ),
-        ),
-    ],
-    if (includeNext)
-      action(
-        icon: Icons.queue_music_rounded,
-        title: '下一首',
-        onTap: () => addSongToQueueWithFeedback(
-          context: context,
-          player: player,
-          song: song,
-        ),
-      ),
-    if (song.source == SongSource.kugou)
-      action(
-        icon: Icons.playlist_add_rounded,
-        title: '添加到歌单',
-        onTap: () =>
-            showAddToPlaylistSheet(context: context, auth: auth, song: song),
-      ),
+    for (final action in all)
+      if (!action.core &&
+          action.showInMore(isGrid: isGrid, includeNext: includeNext) &&
+          action.available(player, song) &&
+          !excludeIds.contains(action.id))
+        playerActionToSheetAction(action, isGrid: isGrid, player: player),
   ];
 }
 
@@ -315,6 +232,11 @@ class _PlayerBodyState extends State<_PlayerBody> {
   var _lyricFocusRequest = 0;
   bool? _lastSystemUiLandscape;
 
+  // 播放页内可视化编辑态（D4）：草稿只在编辑期间存在，取消/退出即丢弃。
+  bool _editing = false;
+  List<PlayerActionId>? _draft;
+  bool _resetToLegacy = false;
+
   bool get _lyricPageActive => _page == 1 && !_pageScrolling;
   bool get _lyricPageVisible => _page == 1 || _pageScrolling;
 
@@ -325,88 +247,200 @@ class _PlayerBodyState extends State<_PlayerBody> {
     super.dispose();
   }
 
+  void _startEdit() {
+    final controller = PlayerPageLayoutController.instance;
+    setState(() {
+      _draft = controller.hasCustomized
+          ? [...controller.saved]
+          : <PlayerActionId>[...kLegacyQuickActions];
+      _editing = true;
+      _resetToLegacy = false;
+    });
+  }
+
+  void _onDraftChanged(List<PlayerActionId> next) {
+    setState(() => _draft = next);
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editing = false;
+      _draft = null;
+      _resetToLegacy = false;
+    });
+  }
+
+  void _commitEdit() {
+    final controller = PlayerPageLayoutController.instance;
+    final draft = _draft ?? <PlayerActionId>[];
+    final prefs = SharedPreferences.getInstance();
+    if (_resetToLegacy) {
+      unawaited(
+        prefs.then((prefs) {
+          return controller.resetToDefault(preferences: prefs);
+        }),
+      );
+    } else {
+      unawaited(
+        prefs.then((prefs) {
+          return controller.setQuickActions(draft, preferences: prefs);
+        }),
+      );
+    }
+    _cancelEdit();
+  }
+
+  void _resetEdit() {
+    setState(() {
+      _draft = <PlayerActionId>[...kLegacyQuickActions];
+      _resetToLegacy = true;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final landscape = size.width > size.height;
     _syncSystemUi(landscape);
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarIconBrightness: Brightness.light,
-        statusBarBrightness: Brightness.light,
+    final layout = PlayerPageLayoutController.instance;
+    final allActions = buildPlayerActions(
+      context: context,
+      song: widget.song,
+      player: widget.player,
+      auth: widget.auth,
+      onAudioQuality: () => _showAudioQualityPicker(context, widget.player),
+      onLyricPicker: () => showLyricCandidatePicker(
+        context: context,
+        player: widget.player,
+        song: widget.song,
       ),
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            _ArtworkBackground(song: widget.song, player: widget.player),
-            // Edge-to-edge is mandatory on API 36. Keep player controls
-            // inside the current system-bar/cutout insets in both orientations.
-            SafeArea(
-              child: Column(
-                children: [
-                  if (!landscape)
-                    _TopBar(
-                      player: widget.player,
-                      auth: widget.auth,
-                      song: widget.song,
-                      onClose: widget.onClose,
-                      onArtistTap: _openArtist,
-                    ),
-                  Expanded(
-                    child: landscape
-                        ? _LandscapePlayerContent(
-                            player: widget.player,
-                            auth: widget.auth,
-                            song: widget.song,
-                            showQuickActions: size.shortestSide >= 600,
-                            onClose: widget.onClose,
-                            onQueue: widget.onQueue,
-                            onArtistTap: _openArtist,
-                          )
-                        : NotificationListener<ScrollNotification>(
-                            onNotification: _handlePageScrollNotification,
-                            child: PageView(
-                              controller: _pageController,
-                              allowImplicitScrolling: true,
-                              onPageChanged: (value) =>
-                                  _setPageState(page: value),
-                              children: [
-                                TickerMode(
-                                  enabled: _page == 0 || _pageScrolling,
-                                  child: _PosterPlayerPage(
-                                    key: const PageStorageKey(
-                                      'poster-player-page',
+    );
+    final veryTight = size.height < 250;
+    final draft = _draft ?? const <PlayerActionId>[];
+    final editorResolution = layout.resolve(
+      size: const Size(1024, 768),
+      veryTight: false,
+      player: widget.player,
+      song: widget.song,
+      all: allActions,
+      override: draft,
+    );
+    final resolution = layout.resolve(
+      size: size,
+      veryTight: veryTight,
+      player: widget.player,
+      song: widget.song,
+      all: allActions,
+      override: _editing ? draft : null,
+    );
+
+    return AnimatedBuilder(
+      animation: Listenable.merge(<Listenable>[layout, widget.player]),
+      builder: (context, _) => PopScope<Object?>(
+        canPop: !_editing,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && _editing) _cancelEdit();
+        },
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.light,
+            statusBarBrightness: Brightness.light,
+          ),
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            body: Stack(
+              children: [
+                _ArtworkBackground(song: widget.song, player: widget.player),
+                // Edge-to-edge is mandatory on API 36. Keep player controls
+                // inside the current system-bar/cutout insets in both orientations.
+                SafeArea(
+                  child: Column(
+                    children: [
+                      if (!landscape)
+                        _TopBar(
+                          player: widget.player,
+                          auth: widget.auth,
+                          song: widget.song,
+                          onClose: widget.onClose,
+                          onArtistTap: _openArtist,
+                          excludeIds: resolution.excludeIds,
+                          onStartEdit: _startEdit,
+                          editing: _editing,
+                        ),
+                      Expanded(
+                        child: landscape
+                            ? _LandscapePlayerContent(
+                                player: widget.player,
+                                auth: widget.auth,
+                                song: widget.song,
+                                resolution: resolution,
+                                editing: _editing,
+                                excludeIds: resolution.excludeIds,
+                                onStartEdit: _startEdit,
+                                onClose: widget.onClose,
+                                onQueue: widget.onQueue,
+                                onArtistTap: _openArtist,
+                              )
+                            : NotificationListener<ScrollNotification>(
+                                onNotification: _handlePageScrollNotification,
+                                child: PageView(
+                                  controller: _pageController,
+                                  allowImplicitScrolling: true,
+                                  onPageChanged: (value) =>
+                                      _setPageState(page: value),
+                                  children: [
+                                    TickerMode(
+                                      enabled: _page == 0 || _pageScrolling,
+                                      child: _PosterPlayerPage(
+                                        key: const PageStorageKey(
+                                          'poster-player-page',
+                                        ),
+                                        player: widget.player,
+                                        song: widget.song,
+                                        resolution: resolution,
+                                        editing: _editing,
+                                        onQueue: widget.onQueue,
+                                      ),
                                     ),
-                                    player: widget.player,
-                                    song: widget.song,
-                                    onQueue: widget.onQueue,
-                                  ),
-                                ),
-                                TickerMode(
-                                  enabled: _lyricPageVisible,
-                                  child: _LyricPlayerPage(
-                                    key: const PageStorageKey(
-                                      'lyric-player-page',
+                                    TickerMode(
+                                      enabled: _lyricPageVisible,
+                                      child: _LyricPlayerPage(
+                                        key: const PageStorageKey(
+                                          'lyric-player-page',
+                                        ),
+                                        player: widget.player,
+                                        song: widget.song,
+                                        focusRequest: _lyricFocusRequest,
+                                        isPageActive: _lyricPageActive,
+                                        isPageVisible: _lyricPageVisible,
+                                        isPageTransitioning: _pageScrolling,
+                                      ),
                                     ),
-                                    player: widget.player,
-                                    song: widget.song,
-                                    focusRequest: _lyricFocusRequest,
-                                    isPageActive: _lyricPageActive,
-                                    isPageVisible: _lyricPageVisible,
-                                    isPageTransitioning: _pageScrolling,
-                                  ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                          ),
+                              ),
+                      ),
+                      if (!landscape) _PageDots(page: _page),
+                    ],
                   ),
-                  if (!landscape) _PageDots(page: _page),
-                ],
-              ),
+                ),
+                // D4: 覆盖层放在 Stack 顶层；它自身给底部控制行留出可交互区域。
+                if (_editing)
+                  PlayerQuickActionEditor(
+                    all: allActions,
+                    draft: draft,
+                    resolution: editorResolution,
+                    player: widget.player,
+                    song: widget.song,
+                    onChanged: _onDraftChanged,
+                    onCommit: _commitEdit,
+                    onCancel: _cancelEdit,
+                    onReset: _resetEdit,
+                  ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -671,7 +705,10 @@ class _LandscapePlayerContent extends StatelessWidget {
     required this.player,
     required this.auth,
     required this.song,
-    required this.showQuickActions,
+    required this.resolution,
+    required this.editing,
+    required this.excludeIds,
+    required this.onStartEdit,
     required this.onClose,
     required this.onQueue,
     required this.onArtistTap,
@@ -680,7 +717,10 @@ class _LandscapePlayerContent extends StatelessWidget {
   final PlayerController player;
   final AuthController auth;
   final Song song;
-  final bool showQuickActions;
+  final QuickActionResolution resolution;
+  final bool editing;
+  final Set<PlayerActionId> excludeIds;
+  final VoidCallback onStartEdit;
   final VoidCallback onClose;
   final VoidCallback onQueue;
   final ValueChanged<Song> onArtistTap;
@@ -703,7 +743,9 @@ class _LandscapePlayerContent extends StatelessWidget {
                 player: player,
                 auth: auth,
                 song: song,
-                showQuickActions: showQuickActions,
+                excludeIds: excludeIds,
+                onStartEdit: onStartEdit,
+                editing: editing,
                 onClose: onClose,
                 compact: compact,
                 onArtistTap: onArtistTap,
@@ -725,19 +767,9 @@ class _LandscapePlayerContent extends StatelessWidget {
                       flex: 12,
                       child: _LandscapeRightPanel(
                         player: player,
-                        showQuickActions: showQuickActions,
+                        resolution: resolution,
+                        editing: editing,
                         onQueue: onQueue,
-                        onLyricPicker: () => showLyricCandidatePicker(
-                          context: context,
-                          player: player,
-                          song: song,
-                        ),
-                        onQualityPicker: () =>
-                            _showAudioQualityPicker(context, player),
-                        onAudioEffects: () => showAudioEffectsSheet(
-                          context: context,
-                          player: player,
-                        ),
                         compact: compact,
                       ),
                     ),
@@ -757,7 +789,9 @@ class _LandscapeHeader extends StatelessWidget {
     required this.player,
     required this.auth,
     required this.song,
-    required this.showQuickActions,
+    required this.excludeIds,
+    required this.onStartEdit,
+    required this.editing,
     required this.onClose,
     required this.compact,
     required this.onArtistTap,
@@ -766,7 +800,9 @@ class _LandscapeHeader extends StatelessWidget {
   final PlayerController player;
   final AuthController auth;
   final Song song;
-  final bool showQuickActions;
+  final Set<PlayerActionId> excludeIds;
+  final VoidCallback onStartEdit;
+  final bool editing;
   final VoidCallback onClose;
   final bool compact;
   final ValueChanged<Song> onArtistTap;
@@ -833,7 +869,7 @@ class _LandscapeHeader extends StatelessWidget {
                 tooltip: '更多',
                 size: compact ? 38 : 44,
                 iconSize: compact ? 22 : 24,
-                onPressed: () => _showMoreSheet(context),
+                onPressed: editing ? null : () => _showMoreSheet(context),
                 icon: Icons.more_horiz_rounded,
               ),
             ],
@@ -852,7 +888,8 @@ class _LandscapeHeader extends StatelessWidget {
         song: song,
         player: player,
         auth: auth,
-        includeQuickActions: !showQuickActions,
+        excludeIds: excludeIds,
+        onStartEdit: onStartEdit,
       ),
     );
   }
@@ -1038,20 +1075,16 @@ class _LandscapeArtworkShowcaseState extends State<_LandscapeArtworkShowcase>
 class _LandscapeRightPanel extends StatelessWidget {
   const _LandscapeRightPanel({
     required this.player,
-    required this.showQuickActions,
+    required this.resolution,
+    required this.editing,
     required this.onQueue,
-    required this.onLyricPicker,
-    required this.onQualityPicker,
-    required this.onAudioEffects,
     required this.compact,
   });
 
   final PlayerController player;
-  final bool showQuickActions;
+  final QuickActionResolution resolution;
+  final bool editing;
   final VoidCallback onQueue;
-  final VoidCallback onLyricPicker;
-  final VoidCallback onQualityPicker;
-  final VoidCallback onAudioEffects;
   final bool compact;
 
   @override
@@ -1076,10 +1109,8 @@ class _LandscapeRightPanel extends StatelessWidget {
               player: player,
               bright: true,
               onQueue: onQueue,
-              showQuickActions: showQuickActions,
-              onLyricPicker: onLyricPicker,
-              onQualityPicker: onQualityPicker,
-              onAudioEffects: onAudioEffects,
+              resolution: resolution,
+              editing: editing,
               compactOverride: true,
               denseOverride: veryTight,
             ),
@@ -1300,6 +1331,9 @@ class _TopBar extends StatelessWidget {
     required this.song,
     required this.onClose,
     required this.onArtistTap,
+    required this.excludeIds,
+    required this.onStartEdit,
+    required this.editing,
   });
 
   final PlayerController player;
@@ -1307,6 +1341,9 @@ class _TopBar extends StatelessWidget {
   final Song song;
   final VoidCallback onClose;
   final ValueChanged<Song> onArtistTap;
+  final Set<PlayerActionId> excludeIds;
+  final VoidCallback onStartEdit;
+  final bool editing;
 
   @override
   Widget build(BuildContext context) {
@@ -1363,7 +1400,7 @@ class _TopBar extends StatelessWidget {
               const SizedBox(width: 8),
               _GlassIconButton(
                 tooltip: '更多',
-                onPressed: () => _showMoreSheet(context),
+                onPressed: editing ? null : () => _showMoreSheet(context),
                 icon: Icons.more_horiz_rounded,
               ),
             ],
@@ -1382,6 +1419,8 @@ class _TopBar extends StatelessWidget {
         song: song,
         player: player,
         auth: auth,
+        excludeIds: excludeIds,
+        onStartEdit: onStartEdit,
         isGrid: true,
         includeNext: true,
       ),
@@ -1389,23 +1428,20 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-String _formatSleepRemaining(Duration? remaining) {
-  if (remaining == null || remaining <= Duration.zero) return '';
-  final minutes = remaining.inMinutes;
-  final seconds = remaining.inSeconds.remainder(60);
-  return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-}
-
 class _PosterPlayerPage extends StatefulWidget {
   const _PosterPlayerPage({
     super.key,
     required this.player,
     required this.song,
+    required this.resolution,
+    required this.editing,
     required this.onQueue,
   });
 
   final PlayerController player;
   final Song song;
+  final QuickActionResolution resolution;
+  final bool editing;
   final VoidCallback onQueue;
 
   @override
@@ -1451,6 +1487,8 @@ class _PosterPlayerPageState extends State<_PosterPlayerPage>
               _Controls(
                 player: widget.player,
                 bright: true,
+                resolution: widget.resolution,
+                editing: widget.editing,
                 onQueue: widget.onQueue,
               ),
             ],
@@ -3335,24 +3373,20 @@ class _Controls extends StatelessWidget {
   const _Controls({
     required this.player,
     required this.onQueue,
+    this.resolution,
+    this.editing = false,
     this.bright = false,
     this.compactOverride = false,
     this.denseOverride = false,
-    this.showQuickActions = false,
-    this.onLyricPicker,
-    this.onQualityPicker,
-    this.onAudioEffects,
   });
 
   final PlayerController player;
   final VoidCallback onQueue;
+  final QuickActionResolution? resolution;
+  final bool editing;
   final bool bright;
   final bool compactOverride;
   final bool denseOverride;
-  final bool showQuickActions;
-  final VoidCallback? onLyricPicker;
-  final VoidCallback? onQualityPicker;
-  final VoidCallback? onAudioEffects;
 
   @override
   Widget build(BuildContext context) {
@@ -3371,119 +3405,122 @@ class _Controls extends StatelessWidget {
         final playButtonSize = dense ? 58.0 : (compact ? 72.0 : 82.0);
         final playIconSize = dense ? 46.0 : (compact ? 56.0 : 64.0);
         final gap = dense ? 3.0 : (compact ? 5.0 : 9.0);
+        final quickActions = resolution?.show == true
+            ? resolution!.actions
+            : const <PlayerAction>[];
+        final leadingQuickActions = quickActions
+            .where(
+              (action) =>
+                  action.id == PlayerActionId.lyricPicker ||
+                  action.id == PlayerActionId.playbackSpeed ||
+                  action.id == PlayerActionId.sleepTimer,
+            )
+            .toList(growable: false);
+        final trailingQuickActions = quickActions
+            .where((action) => !leadingQuickActions.contains(action))
+            .toList(growable: false);
+        Widget quickBar(List<PlayerAction> actions) => PlayerQuickActionBar(
+          resolution: QuickActionResolution(
+            show: actions.isNotEmpty,
+            maxSlots: actions.length,
+            actions: actions,
+            overflow: const <PlayerAction>[],
+          ),
+          player: player,
+          size: edgeButtonSize,
+          iconSize: edgeIconSize,
+          color: color,
+          gap: gap,
+          editing: editing,
+        );
 
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (showQuickActions) ...[
-              _EdgeControlButton(
-                tooltip: '更换歌词',
-                size: edgeButtonSize,
-                iconSize: edgeIconSize,
-                color: color,
-                icon: Icons.manage_search_rounded,
-                onPressed: onLyricPicker,
+        return FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              quickBar(leadingQuickActions),
+              SizedBox.square(
+                dimension: edgeButtonSize,
+                child: IconButton(
+                  tooltip: player.playbackModeLabel,
+                  color: color,
+                  iconSize: edgeIconSize,
+                  padding: EdgeInsets.zero,
+                  onPressed: () {
+                    player.cyclePlaybackMode();
+                    Toast.show(
+                      '已切换到${player.playbackModeLabel}',
+                      duration: const Duration(milliseconds: 1100),
+                    );
+                  },
+                  icon: Icon(_playbackModeIcon(player.playbackMode)),
+                ),
               ),
               SizedBox(width: gap),
-            ],
-            SizedBox.square(
-              dimension: edgeButtonSize,
-              child: IconButton(
-                tooltip: player.playbackModeLabel,
-                color: color,
-                iconSize: edgeIconSize,
-                padding: EdgeInsets.zero,
-                onPressed: () {
-                  player.cyclePlaybackMode();
-                  Toast.show(
-                    '已切换到${player.playbackModeLabel}',
-                    duration: const Duration(milliseconds: 1100),
-                  );
-                },
-                icon: Icon(_playbackModeIcon(player.playbackMode)),
+              SizedBox.square(
+                dimension: skipButtonSize,
+                child: IconButton(
+                  tooltip: '上一首',
+                  color: color,
+                  iconSize: skipIconSize,
+                  padding: EdgeInsets.zero,
+                  onPressed: player.previous,
+                  icon: const Icon(Icons.skip_previous_rounded),
+                ),
               ),
-            ),
-            SizedBox(width: gap),
-            SizedBox.square(
-              dimension: skipButtonSize,
-              child: IconButton(
-                tooltip: '上一首',
-                color: color,
-                iconSize: skipIconSize,
-                padding: EdgeInsets.zero,
-                onPressed: player.previous,
-                icon: const Icon(Icons.skip_previous_rounded),
-              ),
-            ),
-            SizedBox(width: gap),
-            SizedBox.square(
-              dimension: playButtonSize,
-              child: IconButton(
-                tooltip: player.isPlaying ? '暂停' : '播放',
-                color: color,
-                padding: EdgeInsets.zero,
-                onPressed: player.isPreparing ? null : player.togglePlay,
-                iconSize: playIconSize,
-                icon: player.isPreparing
-                    ? SizedBox.square(
-                        dimension: compact ? 24 : 28,
-                        child: const CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: Colors.white,
+              SizedBox(width: gap),
+              SizedBox.square(
+                dimension: playButtonSize,
+                child: IconButton(
+                  tooltip: player.isPlaying ? '暂停' : '播放',
+                  color: color,
+                  padding: EdgeInsets.zero,
+                  onPressed: player.isPreparing ? null : player.togglePlay,
+                  iconSize: playIconSize,
+                  icon: player.isPreparing
+                      ? SizedBox.square(
+                          dimension: compact ? 24 : 28,
+                          child: const CircularProgressIndicator(
+                            strokeWidth: 3,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Icon(
+                          player.isPlaying
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
                         ),
-                      )
-                    : Icon(
-                        player.isPlaying
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                      ),
-              ),
-            ),
-            SizedBox(width: gap),
-            SizedBox.square(
-              dimension: skipButtonSize,
-              child: IconButton(
-                tooltip: '下一首',
-                color: color,
-                iconSize: skipIconSize,
-                padding: EdgeInsets.zero,
-                onPressed: player.next,
-                icon: const Icon(Icons.skip_next_rounded),
-              ),
-            ),
-            SizedBox(width: gap),
-            SizedBox.square(
-              dimension: edgeButtonSize,
-              child: IconButton(
-                tooltip: '播放列表',
-                color: color,
-                iconSize: edgeIconSize,
-                padding: EdgeInsets.zero,
-                onPressed: onQueue,
-                icon: const Icon(Icons.queue_music_rounded),
-              ),
-            ),
-            if (showQuickActions) ...[
-              SizedBox(width: gap),
-              _EdgeControlButton(
-                tooltip: '音质 · ${player.audioQuality.badge}',
-                size: edgeButtonSize,
-                iconSize: edgeIconSize,
-                color: color,
-                icon: Icons.high_quality_rounded,
-                onPressed: onQualityPicker,
+                ),
               ),
               SizedBox(width: gap),
-              _EdgeControlButton(
-                tooltip: '音效 · ${player.audioEffectsLabel}',
-                size: edgeButtonSize,
-                iconSize: edgeIconSize,
-                color: color,
-                icon: Icons.graphic_eq_rounded,
-                onPressed: onAudioEffects,
+              SizedBox.square(
+                dimension: skipButtonSize,
+                child: IconButton(
+                  tooltip: '下一首',
+                  color: color,
+                  iconSize: skipIconSize,
+                  padding: EdgeInsets.zero,
+                  onPressed: player.next,
+                  icon: const Icon(Icons.skip_next_rounded),
+                ),
               ),
+              SizedBox(width: gap),
+              SizedBox.square(
+                dimension: edgeButtonSize,
+                child: IconButton(
+                  tooltip: '播放列表',
+                  color: color,
+                  iconSize: edgeIconSize,
+                  padding: EdgeInsets.zero,
+                  onPressed: onQueue,
+                  icon: const Icon(Icons.queue_music_rounded),
+                ),
+              ),
+              quickBar(trailingQuickActions),
             ],
-          ],
+          ),
         );
       },
     );
@@ -3495,39 +3532,6 @@ class _Controls extends StatelessWidget {
       PlaybackMode.shuffle => Icons.shuffle_rounded,
       PlaybackMode.singleLoop => Icons.repeat_one_rounded,
     };
-  }
-}
-
-class _EdgeControlButton extends StatelessWidget {
-  const _EdgeControlButton({
-    required this.tooltip,
-    required this.size,
-    required this.iconSize,
-    required this.color,
-    required this.icon,
-    required this.onPressed,
-  });
-
-  final String tooltip;
-  final double size;
-  final double iconSize;
-  final Color color;
-  final IconData icon;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox.square(
-      dimension: size,
-      child: IconButton(
-        tooltip: tooltip,
-        color: color,
-        iconSize: iconSize,
-        padding: EdgeInsets.zero,
-        onPressed: onPressed,
-        icon: Icon(icon),
-      ),
-    );
   }
 }
 
