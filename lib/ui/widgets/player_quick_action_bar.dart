@@ -18,7 +18,6 @@ class PlayerQuickActionBar extends StatelessWidget {
     required this.color,
     required this.gap,
     this.editing = false,
-    this.grouped = false,
   });
 
   final QuickActionResolution resolution;
@@ -28,7 +27,6 @@ class PlayerQuickActionBar extends StatelessWidget {
   final Color color;
   final double gap;
   final bool editing;
-  final bool grouped;
 
   @override
   Widget build(BuildContext context) {
@@ -56,15 +54,14 @@ class PlayerQuickActionBar extends StatelessWidget {
         ],
       ],
     );
-    if (!grouped) return buttons;
+    if (!editing) return buttons;
     return Container(
-      padding: EdgeInsets.all(gap),
+      key: const Key('player-quick-actions-edit-frame'),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: editing ? .5 : .22),
-        ),
+        color: Colors.white.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: .55)),
       ),
       child: buttons,
     );

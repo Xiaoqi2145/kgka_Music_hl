@@ -27,6 +27,10 @@ void main() {
     expect(find.byTooltip('更换歌词'), findsNothing);
     expect(find.byTooltip('音效 · 关闭'), findsNothing);
     expect(find.byType(PlayerQuickActionBar), findsWidgets);
+    expect(
+      find.byKey(const Key('player-quick-actions-edit-frame')),
+      findsNothing,
+    );
 
     await openMoreSheet(tester);
     expect(find.text('音质：标准音质'), findsNothing);

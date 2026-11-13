@@ -3412,33 +3412,20 @@ class _Controls extends StatelessWidget {
         final quickActions = resolution?.show == true
             ? resolution!.actions
             : const <PlayerAction>[];
-        final leadingQuickActions = quickActions
-            .where(
-              (action) =>
-                  action.id == PlayerActionId.lyricPicker ||
-                  action.id == PlayerActionId.playbackSpeed ||
-                  action.id == PlayerActionId.sleepTimer,
-            )
-            .toList(growable: false);
-        final trailingQuickActions = quickActions
-            .where((action) => !leadingQuickActions.contains(action))
-            .toList(growable: false);
-        Widget quickBar(List<PlayerAction> actions, {required bool grouped}) =>
-            PlayerQuickActionBar(
-              resolution: QuickActionResolution(
-                show: actions.isNotEmpty,
-                maxSlots: actions.length,
-                actions: actions,
-                overflow: const <PlayerAction>[],
-              ),
-              player: player,
-              size: edgeButtonSize,
-              iconSize: edgeIconSize,
-              color: color,
-              gap: gap,
-              editing: editing,
-              grouped: grouped,
-            );
+        Widget quickBar(List<PlayerAction> actions) => PlayerQuickActionBar(
+          resolution: QuickActionResolution(
+            show: actions.isNotEmpty,
+            maxSlots: actions.length,
+            actions: actions,
+            overflow: const <PlayerAction>[],
+          ),
+          player: player,
+          size: edgeButtonSize,
+          iconSize: edgeIconSize,
+          color: color,
+          gap: gap,
+          editing: editing,
+        );
 
         return FittedBox(
           fit: BoxFit.scaleDown,
@@ -3446,7 +3433,6 @@ class _Controls extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              quickBar(leadingQuickActions, grouped: false),
               SizedBox.square(
                 dimension: edgeButtonSize,
                 child: IconButton(
@@ -3524,7 +3510,7 @@ class _Controls extends StatelessWidget {
                   icon: const Icon(Icons.queue_music_rounded),
                 ),
               ),
-              quickBar(trailingQuickActions, grouped: true),
+              quickBar(quickActions),
             ],
           ),
         );

@@ -25,6 +25,10 @@ void main() {
     expect(find.byTooltip('上一首'), findsWidgets);
     final lyricsAction = tester.getRect(find.byTooltip('更换歌词'));
     expect(editorRect.bottom, lessThan(lyricsAction.top));
+    expect(
+      find.byKey(const Key('player-quick-actions-edit-frame')),
+      findsOneWidget,
+    );
     expect(find.text('更多'), findsNothing);
     expect(find.byTooltip('倍速播放'), findsNothing);
 
