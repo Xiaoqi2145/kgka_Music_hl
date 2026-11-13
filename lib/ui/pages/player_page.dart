@@ -1112,7 +1112,7 @@ class _LandscapeRightPanel extends StatelessWidget {
               onQueue: onQueue,
               resolution: resolution,
               editing: editing,
-              compactOverride: true,
+              compactOverride: veryTight,
               denseOverride: veryTight,
             ),
           ],
@@ -3409,9 +3409,17 @@ class _Controls extends StatelessWidget {
         final playButtonSize = dense ? 58.0 : (compact ? 72.0 : 82.0);
         final playIconSize = dense ? 46.0 : (compact ? 56.0 : 64.0);
         final gap = dense ? 3.0 : (compact ? 5.0 : 9.0);
+        final quickSize = compact ? 26.0 : edgeButtonSize;
+        final quickIconSize = compact ? 18.0 : edgeIconSize;
         final quickActions = resolution?.show == true
             ? resolution!.actions
             : const <PlayerAction>[];
+        final leadingQuickActions = quickActions
+            .take((quickActions.length + 1) ~/ 2)
+            .toList(growable: false);
+        final trailingQuickActions = quickActions
+            .skip((quickActions.length + 1) ~/ 2)
+            .toList(growable: false);
         Widget quickBar(List<PlayerAction> actions) => PlayerQuickActionBar(
           resolution: QuickActionResolution(
             show: actions.isNotEmpty,
@@ -3420,97 +3428,123 @@ class _Controls extends StatelessWidget {
             overflow: const <PlayerAction>[],
           ),
           player: player,
-          size: edgeButtonSize,
-          iconSize: edgeIconSize,
+          size: quickSize,
+          iconSize: quickIconSize,
           color: color,
           gap: gap,
           editing: editing,
         );
 
+        final quickSlotExtent = compact ? 28.0 : (quickSize + gap);
+        final leadingWidth = quickSlotExtent * leadingQuickActions.length;
+        final trailingWidth = quickSlotExtent * trailingQuickActions.length;
+        final sideWidth = math.max(leadingWidth, trailingWidth);
+        final core = Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox.square(
+              dimension: edgeButtonSize,
+              child: IconButton(
+                tooltip: player.playbackModeLabel,
+                color: color,
+                iconSize: edgeIconSize,
+                padding: EdgeInsets.zero,
+                onPressed: () {
+                  player.cyclePlaybackMode();
+                  Toast.show(
+                    '已切换到${player.playbackModeLabel}',
+                    duration: const Duration(milliseconds: 1100),
+                  );
+                },
+                icon: Icon(_playbackModeIcon(player.playbackMode)),
+              ),
+            ),
+            SizedBox(width: gap),
+            SizedBox.square(
+              dimension: skipButtonSize,
+              child: IconButton(
+                tooltip: '上一首',
+                color: color,
+                iconSize: skipIconSize,
+                padding: EdgeInsets.zero,
+                onPressed: player.previous,
+                icon: const Icon(Icons.skip_previous_rounded),
+              ),
+            ),
+            SizedBox(width: gap),
+            SizedBox.square(
+              dimension: playButtonSize,
+              child: IconButton(
+                tooltip: player.isPlaying ? '暂停' : '播放',
+                color: color,
+                padding: EdgeInsets.zero,
+                onPressed: player.isPreparing ? null : player.togglePlay,
+                iconSize: playIconSize,
+                icon: player.isPreparing
+                    ? SizedBox.square(
+                        dimension: compact ? 24 : 28,
+                        child: const CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(
+                        player.isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                      ),
+              ),
+            ),
+            SizedBox(width: gap),
+            SizedBox.square(
+              dimension: skipButtonSize,
+              child: IconButton(
+                tooltip: '下一首',
+                color: color,
+                iconSize: skipIconSize,
+                padding: EdgeInsets.zero,
+                onPressed: player.next,
+                icon: const Icon(Icons.skip_next_rounded),
+              ),
+            ),
+            SizedBox(width: gap),
+            SizedBox.square(
+              dimension: edgeButtonSize,
+              child: IconButton(
+                tooltip: '播放列表',
+                color: color,
+                iconSize: edgeIconSize,
+                padding: EdgeInsets.zero,
+                onPressed: onQueue,
+                icon: const Icon(Icons.queue_music_rounded),
+              ),
+            ),
+          ],
+        );
         return FittedBox(
           fit: BoxFit.scaleDown,
           child: Row(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              SizedBox.square(
-                dimension: edgeButtonSize,
-                child: IconButton(
-                  tooltip: player.playbackModeLabel,
-                  color: color,
-                  iconSize: edgeIconSize,
-                  padding: EdgeInsets.zero,
-                  onPressed: () {
-                    player.cyclePlaybackMode();
-                    Toast.show(
-                      '已切换到${player.playbackModeLabel}',
-                      duration: const Duration(milliseconds: 1100),
-                    );
-                  },
-                  icon: Icon(_playbackModeIcon(player.playbackMode)),
+              SizedBox(
+                width: sideWidth,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: quickBar(leadingQuickActions),
                 ),
               ),
-              SizedBox(width: gap),
-              SizedBox.square(
-                dimension: skipButtonSize,
-                child: IconButton(
-                  tooltip: '上一首',
-                  color: color,
-                  iconSize: skipIconSize,
-                  padding: EdgeInsets.zero,
-                  onPressed: player.previous,
-                  icon: const Icon(Icons.skip_previous_rounded),
+              core,
+              SizedBox(
+                width: sideWidth,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: quickBar(trailingQuickActions),
                 ),
               ),
-              SizedBox(width: gap),
-              SizedBox.square(
-                dimension: playButtonSize,
-                child: IconButton(
-                  tooltip: player.isPlaying ? '暂停' : '播放',
-                  color: color,
-                  padding: EdgeInsets.zero,
-                  onPressed: player.isPreparing ? null : player.togglePlay,
-                  iconSize: playIconSize,
-                  icon: player.isPreparing
-                      ? SizedBox.square(
-                          dimension: compact ? 24 : 28,
-                          child: const CircularProgressIndicator(
-                            strokeWidth: 3,
-                            color: Colors.white,
-                          ),
-                        )
-                      : Icon(
-                          player.isPlaying
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                        ),
-                ),
-              ),
-              SizedBox(width: gap),
-              SizedBox.square(
-                dimension: skipButtonSize,
-                child: IconButton(
-                  tooltip: '下一首',
-                  color: color,
-                  iconSize: skipIconSize,
-                  padding: EdgeInsets.zero,
-                  onPressed: player.next,
-                  icon: const Icon(Icons.skip_next_rounded),
-                ),
-              ),
-              SizedBox(width: gap),
-              SizedBox.square(
-                dimension: edgeButtonSize,
-                child: IconButton(
-                  tooltip: '播放列表',
-                  color: color,
-                  iconSize: edgeIconSize,
-                  padding: EdgeInsets.zero,
-                  onPressed: onQueue,
-                  icon: const Icon(Icons.queue_music_rounded),
-                ),
-              ),
-              quickBar(quickActions),
             ],
           ),
         );

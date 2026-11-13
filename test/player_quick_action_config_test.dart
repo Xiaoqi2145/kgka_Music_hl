@@ -28,7 +28,7 @@ void main() {
     expect(find.byTooltip('音效 · 关闭'), findsNothing);
     expect(find.byType(PlayerQuickActionBar), findsWidgets);
     expect(
-      find.byKey(const Key('player-quick-actions-edit-frame')),
+      find.byKey(const Key('player-quick-action-edit-frame-audioQuality')),
       findsNothing,
     );
 
@@ -106,11 +106,10 @@ void main() {
     final queue = tester.getRect(find.byTooltip('播放列表'));
     final lyrics = tester.getRect(find.byTooltip('更换歌词'));
     expect((lyrics.center.dy - queue.center.dy).abs(), lessThan(1));
-    expect((lyrics.width - queue.width).abs(), lessThan(.1));
-    expect((lyrics.height - queue.height).abs(), lessThan(.1));
-    expect(tester.takeException(), isNull);
+    expect(lyrics.height, lessThanOrEqualTo(queue.height));
     expect(find.byTooltip('音质 · 128K'), findsOneWidget);
     expect(find.byTooltip('音效 · 关闭'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('720x360 横屏使用 3 个槽位且控制行不溢出', (tester) async {

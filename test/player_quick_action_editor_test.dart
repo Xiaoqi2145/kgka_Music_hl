@@ -26,7 +26,15 @@ void main() {
     final lyricsAction = tester.getRect(find.byTooltip('更换歌词'));
     expect(editorRect.bottom, lessThan(lyricsAction.top));
     expect(
-      find.byKey(const Key('player-quick-actions-edit-frame')),
+      find.byKey(const Key('player-quick-action-edit-frame-lyricPicker')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('player-quick-action-edit-frame-audioQuality')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('player-quick-action-edit-frame-audioEffects')),
       findsOneWidget,
     );
     expect(find.text('更多'), findsNothing);

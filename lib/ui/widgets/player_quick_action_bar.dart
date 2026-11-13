@@ -6,8 +6,8 @@ import 'player_page_actions.dart';
 
 /// 与控制行核心按钮同行的用户快捷动作。
 ///
-/// 按钮尺寸、颜色、点击区域与 [IconButton] 核心控件一致，不再使用圆底
-/// 容器或独立一行。编辑态只禁用点击，槽位编辑由覆盖层负责。
+/// 每个动作占固定槽位。正式态只有图标；编辑态在图标外增加独立圆角框，
+/// 框与图标共用同一槽位，不额外撑宽控制行。
 class PlayerQuickActionBar extends StatelessWidget {
   const PlayerQuickActionBar({
     super.key,
@@ -33,37 +33,68 @@ class PlayerQuickActionBar extends StatelessWidget {
     if (!resolution.show || resolution.actions.isEmpty) {
       return const SizedBox.shrink();
     }
-    final buttons = Row(
+    return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         for (final action in resolution.actions) ...[
           SizedBox(width: gap),
-          SizedBox.square(
-            dimension: size,
-            child: Tooltip(
-              message: action.tooltipFor(player),
-              child: IconButton(
-                color: editing ? color.withValues(alpha: .55) : color,
-                iconSize: iconSize,
-                padding: EdgeInsets.zero,
-                onPressed: editing ? null : action.onTap,
-                icon: Icon(action.iconFor(player)),
-              ),
-            ),
+          _QuickActionSlot(
+            action: action,
+            player: player,
+            size: size,
+            iconSize: iconSize,
+            color: color,
+            editing: editing,
           ),
         ],
       ],
     );
-    if (!editing) return buttons;
+  }
+}
+
+class _QuickActionSlot extends StatelessWidget {
+  const _QuickActionSlot({
+    required this.action,
+    required this.player,
+    required this.size,
+    required this.iconSize,
+    required this.color,
+    required this.editing,
+  });
+
+  final PlayerAction action;
+  final PlayerController player;
+  final double size;
+  final double iconSize;
+  final Color color;
+  final bool editing;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      key: const Key('player-quick-actions-edit-frame'),
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: .55)),
+      key: editing
+          ? Key('player-quick-action-edit-frame-${action.id.name}')
+          : null,
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: editing
+          ? BoxDecoration(
+              color: Colors.white.withValues(alpha: .08),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: Colors.white.withValues(alpha: .55)),
+            )
+          : null,
+      child: Tooltip(
+        message: action.tooltipFor(player),
+        child: IconButton(
+          color: editing ? color.withValues(alpha: .55) : color,
+          iconSize: iconSize,
+          padding: EdgeInsets.zero,
+          onPressed: editing ? null : action.onTap,
+          icon: Icon(action.iconFor(player)),
+        ),
       ),
-      child: buttons,
     );
   }
 }

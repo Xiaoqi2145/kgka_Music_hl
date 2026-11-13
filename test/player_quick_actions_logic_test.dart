@@ -54,6 +54,7 @@ void main() {
       final s = spec(const Size(800, 360));
       expect(s.show, isTrue);
       expect(s.maxSlots, 3);
+      expect(spec(const Size(720, 360)).maxSlots, 3);
     });
 
     test('手机横屏低高度仍显示，只有 veryTight 隐藏', () {
