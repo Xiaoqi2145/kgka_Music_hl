@@ -24,7 +24,12 @@ class AppConfig {
   // ===== 缓存与下载配置 =====
   /// 数据缓存目录名 / 下载目录名 / 播放缓存目录名
   static const cacheDirName = 'ka_music_cache';
-  static const downloadDirName = 'ka_music_downloads';
+
+  /// 下载文件存放于系统下载目录下的该子目录。
+  static const downloadDirName = 'KA Music';
+
+  /// 旧版本放置下载文件的目录，仅用于迁移。
+  static const legacyDownloadDirName = 'ka_music_downloads';
   static const playCacheDirName = 'ka_music_play_cache';
 
   /// JSON 数据缓存容量上限（超额后按访问时间淘汰）。

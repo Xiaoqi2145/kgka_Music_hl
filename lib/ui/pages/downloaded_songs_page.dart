@@ -3,12 +3,13 @@ import 'package:flutter/material.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/download_controller.dart';
 import '../../controllers/player_controller.dart';
-import '../../models/music_models.dart';
+import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
-import '../widgets/artwork.dart';
 import '../adaptive_layout.dart';
+import '../widgets/artwork.dart';
+import 'cache_management_page.dart';
 
-/// 已下载歌曲与播放缓存管理页。
+/// 已下载歌曲与下载任务。
 class DownloadedSongsPage extends StatefulWidget {
   const DownloadedSongsPage({
     super.key,
@@ -16,413 +17,351 @@ class DownloadedSongsPage extends StatefulWidget {
     required this.auth,
     required this.player,
     required this.downloads,
+    this.cache,
   });
 
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
   final DownloadController downloads;
+  final CacheService? cache;
 
   @override
   State<DownloadedSongsPage> createState() => _DownloadedSongsPageState();
 }
 
-class _DownloadedSongsPageState extends State<DownloadedSongsPage>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-  }
+class _DownloadedSongsPageState extends State<DownloadedSongsPage> {
+  final _search = TextEditingController();
+  final _busy = <String>{};
+  bool _clearing = false;
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _search.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('已下载'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: '已下载'),
-            Tab(text: '播放缓存'),
-          ],
-        ),
-      ),
-      body: AdaptiveContentPadding(
-        child: TabBarView(
-          controller: _tabController,
-          children: [
-            _DownloadedList(
-              api: widget.api,
-              auth: widget.auth,
-              player: widget.player,
-              downloads: widget.downloads,
-            ),
-            _PlayCacheList(downloads: widget.downloads),
-          ],
+  void _message(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _operate(String key, Future<void> Function() action) async {
+    if (_busy.contains(key) || _clearing) return;
+    setState(() => _busy.add(key));
+    try {
+      await action();
+    } catch (_) {
+      _message('操作失败，请重试');
+    } finally {
+      if (mounted) setState(() => _busy.remove(key));
+    }
+  }
+
+  Future<bool> _confirm(String title, String message) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(title),
+            content: Text(message),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.error,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _delete(DownloadEntry entry) async {
+    final confirmed = await _confirm(
+      '删除下载',
+      '将删除「${entry.song.title}」的本地文件。',
+    );
+    if (!confirmed || !mounted) return;
+    await _operate(entry.song.hash, () async {
+      await widget.downloads.deleteDownload(entry.song);
+      _message('已删除');
+    });
+  }
+
+  Future<void> _clear() async {
+    if (_clearing || _busy.isNotEmpty) return;
+    final confirmed = await _confirm('删除全部下载', '已下载的文件会从设备中删除。');
+    if (!confirmed || !mounted) return;
+    setState(() => _clearing = true);
+    try {
+      await widget.downloads.clearAllDownloads();
+      _message('已删除全部下载');
+    } catch (_) {
+      _message('删除失败，请重试');
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+    }
+  }
+
+  void _openCache() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (cacheContext) => CacheManagementPage(
+          cache: widget.cache ?? widget.player.cacheService,
+          downloads: widget.downloads,
+          onOpenDownloads: () => Navigator.of(cacheContext).pop(),
         ),
       ),
     );
   }
-}
-
-/// 已下载列表。
-class _DownloadedList extends StatelessWidget {
-  const _DownloadedList({
-    required this.api,
-    required this.auth,
-    required this.player,
-    required this.downloads,
-  });
-
-  final MusicApi api;
-  final AuthController auth;
-  final PlayerController player;
-  final DownloadController downloads;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return AnimatedBuilder(
-      animation: downloads,
+      animation: Listenable.merge([widget.downloads, widget.player]),
       builder: (context, _) {
-        final entries = downloads.downloadEntries;
-        final completed = entries
-            .where((e) => e.status == DownloadStatus.downloaded)
+        final all = widget.downloads.downloadEntries;
+        final saved =
+            all.where((e) => e.status == DownloadStatus.downloaded).toList()
+              ..sort(
+                (a, b) => (b.downloadedAt ?? DateTime(0)).compareTo(
+                  a.downloadedAt ?? DateTime(0),
+                ),
+              );
+        final tasks = all
+            .where((e) => e.status != DownloadStatus.downloaded)
             .toList();
-        final downloading = entries
-            .where((e) => e.status == DownloadStatus.downloading)
-            .toList();
+        final query = _search.text.trim().toLowerCase();
+        final entries =
+            (tasks.isEmpty ? saved : [...tasks, ...saved]).where((e) {
+              return query.isEmpty ||
+                  '${e.song.title} ${e.song.artist}'.toLowerCase().contains(
+                    query,
+                  );
+            }).toList();
 
-        if (entries.isEmpty) {
-          return _emptyState(context, '还没有已下载歌曲', '下载歌曲后可离线播放');
-        }
-
-        return ListView(
-          children: [
-            if (completed.isNotEmpty) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
-                child: Row(
-                  children: [
-                    Text(
-                      '已下载 ${completed.length} 首',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('下载'),
+            actions: [
+              IconButton(
+                tooltip: '缓存管理',
+                icon: const Icon(Icons.cached_rounded),
+                onPressed: _openCache,
+              ),
+              if (saved.isNotEmpty)
+                IconButton(
+                  tooltip: '删除全部下载',
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                  onPressed: _clearing || _busy.isNotEmpty ? null : _clear,
+                ),
+            ],
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(2),
+              child: SizedBox(
+                height: 2,
+                child: _clearing
+                    ? const LinearProgressIndicator(semanticsLabel: '正在删除下载')
+                    : null,
+              ),
+            ),
+          ),
+          body: SafeArea(
+            top: false,
+            child: AdaptiveContentPadding(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: TextField(
+                      controller: _search,
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        hintText: '搜索歌曲或歌手',
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        suffixIcon: _search.text.isEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: '清除搜索',
+                                onPressed: () => setState(_search.clear),
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                        filled: true,
+                        fillColor: colors.surfaceContainerLow,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: () => _confirmClearAll(context),
-                      child: const Text('清空全部'),
-                    ),
-                  ],
-                ),
-              ),
-              ...completed.map(
-                (entry) => _DownloadedSongRow(
-                  entry: entry,
-                  api: api,
-                  auth: auth,
-                  player: player,
-                  downloads: downloads,
-                ),
-              ),
-            ],
-            if (downloading.isNotEmpty) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 4),
-                child: Text(
-                  '下载中 ${downloading.length} 首',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                ),
-              ),
-              ...downloading.map((entry) => _DownloadingRow(entry: entry)),
-            ],
-          ],
-        );
-      },
-    );
-  }
-
-  void _confirmClearAll(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('清空全部下载'),
-        content: const Text('确定要删除所有已下载的歌曲吗？此操作不可撤销。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              downloads.clearAllDownloads();
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('清空'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 已下载歌曲行。
-class _DownloadedSongRow extends StatelessWidget {
-  const _DownloadedSongRow({
-    required this.entry,
-    required this.api,
-    required this.auth,
-    required this.player,
-    required this.downloads,
-  });
-
-  final DownloadEntry entry;
-  final MusicApi api;
-  final AuthController auth;
-  final PlayerController player;
-  final DownloadController downloads;
-
-  @override
-  Widget build(BuildContext context) {
-    final song = entry.song;
-    final isCurrent = player.currentSong?.hash == song.hash;
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return ListTile(
-      leading: Artwork(url: song.coverUrl, size: 48, borderRadius: 8),
-      title: Text(
-        song.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: isCurrent
-            ? TextStyle(color: colorScheme.primary, fontWeight: FontWeight.w600)
-            : null,
-      ),
-      subtitle: Text(
-        song.artist,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.play_circle_fill_rounded),
-            color: colorScheme.primary,
-            onPressed: () {
-              player.playSong(song);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.more_vert_rounded),
-            onPressed: () => _showActions(context, song),
-          ),
-        ],
-      ),
-      onTap: () => player.playSong(song),
-    );
-  }
-
-  void _showActions(BuildContext context, Song song) {
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.delete_outline_rounded),
-              title: const Text('删除下载'),
-              onTap: () {
-                Navigator.pop(ctx);
-                downloads.deleteDownload(song);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 下载中行（显示进度）。
-class _DownloadingRow extends StatelessWidget {
-  const _DownloadingRow({required this.entry});
-
-  final DownloadEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final song = entry.song;
-    return ListTile(
-      leading: Artwork(url: song.coverUrl, size: 48, borderRadius: 8),
-      title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        song.artist,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-      trailing: SizedBox(
-        width: 28,
-        height: 28,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            CircularProgressIndicator(
-              value: entry.progress > 0 ? entry.progress : null,
-              strokeWidth: 2.5,
-            ),
-            if (entry.progress > 0)
-              Text(
-                '${(entry.progress * 100).round()}',
-                style: const TextStyle(fontSize: 9),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 播放缓存列表。
-class _PlayCacheList extends StatelessWidget {
-  const _PlayCacheList({required this.downloads});
-
-  final DownloadController downloads;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: downloads,
-      builder: (context, _) {
-        final entries = downloads.playCacheEntries;
-        if (entries.isEmpty) {
-          return _emptyState(context, '还没有播放缓存', '播放歌曲后会自动缓存');
-        }
-
-        final totalBytes = entries.fold<int>(0, (sum, e) => sum + e.size);
-
-        return ListView(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
-              child: Row(
-                children: [
-                  Text(
-                    '缓存 ${entries.length} 首 · ${_formatBytes(totalBytes)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => _confirmClearCache(context),
-                    child: const Text('清空缓存'),
+                  Expanded(
+                    child: entries.isEmpty
+                        ? _empty(context, query.isNotEmpty)
+                        : ListView.builder(
+                            padding: const EdgeInsets.fromLTRB(8, 0, 8, 24),
+                            itemCount: entries.length,
+                            itemBuilder: (context, index) =>
+                                _row(entries[index]),
+                          ),
                   ),
                 ],
               ),
             ),
-            ...entries.map(
-              (entry) => ListTile(
-                leading: Artwork(
-                  url: entry.song.coverUrl,
-                  size: 48,
-                  borderRadius: 8,
-                ),
-                title: Text(
-                  entry.song.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  '${entry.song.artist} · ${_formatBytes(entry.size)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded),
-                  onPressed: () =>
-                      downloads.deletePlayCache(entry.song, entry.quality),
-                ),
-              ),
-            ),
-          ],
+          ),
         );
       },
     );
   }
 
-  void _confirmClearCache(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('清空播放缓存'),
-        content: const Text('确定要清空所有播放缓存吗？下次播放需要重新加载。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              downloads.clearPlayCache();
-            },
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('清空'),
-          ),
-        ],
+  Widget _empty(BuildContext context, bool searching) {
+    final colors = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              searching
+                  ? Icons.search_off_rounded
+                  : Icons.download_for_offline_outlined,
+              size: 48,
+              color: colors.outline,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              searching ? '没有找到匹配的歌曲' : '还没有下载的歌曲',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              searching ? '试试其他歌名或歌手' : '在歌曲菜单中选择下载。',
+              style: TextStyle(color: colors.onSurfaceVariant),
+            ),
+          ],
+        ),
       ),
     );
   }
-}
 
-Widget _emptyState(BuildContext context, String title, String subtitle) {
-  final colorScheme = Theme.of(context).colorScheme;
-  return Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+  Widget _row(DownloadEntry entry) {
+    final colors = Theme.of(context).colorScheme;
+    final song = entry.song;
+    final completed = entry.status == DownloadStatus.downloaded;
+    final running = entry.status == DownloadStatus.downloading;
+    final busy = _busy.contains(song.hash) || _clearing;
+    final current = widget.player.currentSong?.hash == song.hash;
+    final progress = entry.progress.clamp(0.0, 1.0);
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      leading: Artwork(url: song.coverUrl, size: 48, borderRadius: 12),
+      title: Text(
+        song.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontWeight: FontWeight.w600,
+          color: completed && current ? colors.primary : null,
+        ),
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.download_done_rounded,
-            size: 64,
-            color: colorScheme.outline,
-          ),
-          const SizedBox(height: 16),
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
           Text(
-            subtitle,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
+            '${song.artist} · ${entry.quality.badge}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
+          if (!completed) ...[
+            const SizedBox(height: 4),
+            if (running) ...[
+              LinearProgressIndicator(
+                value: progress > 0 ? progress : null,
+                minHeight: 3,
+                borderRadius: BorderRadius.circular(3),
+              ),
+              const SizedBox(height: 4),
+            ],
+            Text(
+              running
+                  ? progress > 0
+                        ? '下载中 ${(progress * 100).round()}%'
+                        : '准备下载…'
+                  : entry.error ?? '下载失败',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: running ? colors.primary : colors.error,
+              ),
+            ),
+          ],
         ],
       ),
-    ),
-  );
-}
-
-String _formatBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+      trailing: completed
+          ? IconButton(
+              tooltip: '删除下载',
+              onPressed: busy ? null : () => _delete(entry),
+              icon: const Icon(Icons.delete_outline_rounded),
+            )
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!running)
+                  IconButton(
+                    tooltip: '重试下载',
+                    icon: const Icon(Icons.refresh_rounded),
+                    onPressed: busy
+                        ? null
+                        : () => _operate(song.hash, () async {
+                            await widget.downloads.download(
+                              song,
+                              entry.quality,
+                            );
+                            if (widget.downloads.entryFor(song)?.status ==
+                                DownloadStatus.failed) {
+                              _message('下载失败，请稍后重试');
+                            }
+                          }),
+                  ),
+                IconButton(
+                  tooltip: running ? '取消下载' : '移除任务',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: _clearing
+                      ? null
+                      : () async {
+                          if (running) {
+                            try {
+                              await widget.downloads.cancelDownload(song);
+                            } catch (_) {
+                              _message('取消失败，请重试');
+                            }
+                          } else if (!busy) {
+                            await _operate(
+                              song.hash,
+                              () => widget.downloads.deleteDownload(song),
+                            );
+                          }
+                        },
+                ),
+              ],
+            ),
+      onTap: completed
+          ? () => _operate(
+              song.hash,
+              () => widget.player.playDownloadedSong(song),
+            )
+          : null,
+    );
+  }
 }

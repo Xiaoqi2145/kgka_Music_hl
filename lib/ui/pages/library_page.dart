@@ -405,6 +405,7 @@ class _LibraryPageState extends State<LibraryPage>
                         auth: widget.auth,
                         player: widget.player,
                         downloads: widget.downloads,
+                        cache: widget.cache,
                       ),
                     ),
                   ),

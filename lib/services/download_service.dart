@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../config/app_config.dart';
 import '../models/music_models.dart';
+import 'android_download_store.dart';
 
 /// 下载任务类型。
 enum DownloadTaskKind { download, playCache }
@@ -19,12 +20,14 @@ class _PendingTask {
     required this.url,
     required this.completer,
     this.onProgress,
+    this.sourcePath,
   });
 
   final DownloadTaskKind kind;
   final Song song;
   final AudioQuality quality;
   final String url;
+  final String? sourcePath;
   final Completer<String> completer;
   final void Function(int received, int total)? onProgress;
 }
@@ -47,15 +50,55 @@ class DownloadService {
   final int _maxConcurrent = AppConfig.maxConcurrentDownloads;
   int _running = 0;
   final List<_PendingTask> _queue = [];
+  final AndroidDownloadStore _store = const AndroidDownloadStore();
 
-  /// 持久下载目录。
+  /// 下载暂存目录。
+  ///
+  /// Android 的 getDownloadsDirectory 落在应用专属外部目录，系统「下载」中
+  /// 不可见，因此先写入应用外部目录，完成后再发布到公共下载目录。其它平台
+  /// 直接使用系统下载目录，文件立即可见。
   Future<Directory> downloadDir() async {
-    final base = await getApplicationDocumentsDirectory();
+    final Directory? base;
+    if (AndroidDownloadStore.isSupported) {
+      base =
+          await getExternalStorageDirectory() ??
+          await getApplicationDocumentsDirectory();
+    } else {
+      base = await getDownloadsDirectory();
+    }
+    if (base == null) {
+      throw StateError('当前平台没有可用的下载目录');
+    }
     final dir = Directory('${base.path}/${AppConfig.downloadDirName}');
     if (!dir.existsSync()) {
       await dir.create(recursive: true);
     }
     return dir;
+  }
+
+  /// 完成下载后发布到用户可见的下载目录。
+  ///
+  /// Android 通过 MediaStore 写入「下载/KA Music」并返回 content URI；
+  /// 其它平台文件本身就在系统下载目录，直接返回路径。
+  Future<String> _publishDownload({
+    required String path,
+    required Song song,
+    required AudioQuality quality,
+  }) async {
+    if (!AndroidDownloadStore.isSupported) return path;
+    final locator = await _store.publish(
+      sourcePath: path,
+      displayName: downloadFileNameFor(song, quality),
+      mimeType: quality == AudioQuality.lossless ? 'audio/flac' : 'audio/mpeg',
+    );
+    await deleteFile(path);
+    return locator;
+  }
+
+  /// 旧版本下载目录，仅用于把已有文件迁移到系统下载目录。
+  Future<Directory> legacyDownloadDir() async {
+    final base = await getApplicationDocumentsDirectory();
+    return Directory('${base.path}/${AppConfig.legacyDownloadDirName}');
   }
 
   /// 临时播放缓存目录。
@@ -73,6 +116,60 @@ class DownloadService {
     final ext = quality == AudioQuality.lossless ? 'flac' : 'mp3';
     final safeHash = song.hash.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
     return '${safeHash}_${quality.apiValue}.$ext';
+  }
+
+  /// 下载文件名：{artist} - {title} [{quality}] {identity}.{ext}
+  String downloadFileNameFor(Song song, AudioQuality quality) {
+    final ext = quality == AudioQuality.lossless ? 'flac' : 'mp3';
+    final title = _safeFilePart(song.title, '未知歌曲');
+    final artist = _safeFilePart(song.artist, '未知艺人');
+    final identity = _safeFilePart(song.hash, 'track');
+    return '$artist - $title [${quality.badge}] $identity.$ext';
+  }
+
+  String _safeFilePart(String value, String fallback) {
+    final cleaned = value
+        .replaceAll(RegExp(r'[\\/:*?"<>|]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (cleaned.isEmpty) return fallback;
+    return cleaned.length > 60 ? cleaned.substring(0, 60).trim() : cleaned;
+  }
+
+  /// 判断索引中的定位符是否已经位于用户可见的下载目录。
+  Future<bool> isPublished(String locator) async {
+    if (AndroidDownloadStore.isLocator(locator)) return true;
+    final visible = await downloadDir();
+    return File(locator).parent.path == visible.path;
+  }
+
+  /// 把旧版本遗留的下载文件移动到用户可见的下载目录。
+  Future<String> relocateDownload({
+    required Song song,
+    required AudioQuality quality,
+    required String sourcePath,
+  }) async {
+    if (AndroidDownloadStore.isSupported) {
+      final locator = await _publishDownload(
+        path: sourcePath,
+        song: song,
+        quality: quality,
+      );
+      return locator;
+    }
+    final dir = await downloadDir();
+    final target = '${dir.path}/${downloadFileNameFor(song, quality)}';
+    await File(sourcePath).copy(target);
+    await File(sourcePath).delete();
+    return target;
+  }
+
+  /// 删除迁移后为空的旧下载目录。
+  Future<void> removeLegacyDownloadDirIfEmpty() async {
+    final dir = await legacyDownloadDir();
+    if (!dir.existsSync()) return;
+    final empty = await dir.list().isEmpty;
+    if (empty) await dir.delete();
   }
 
   /// 缓存 key：{hash}_{quality.apiValue}
@@ -100,6 +197,26 @@ class DownloadService {
       onProgress: onProgress,
     );
     _enqueue(task);
+    return completer.future;
+  }
+
+  /// 将同音质播放缓存复制到持久目录，保留源文件；与下载共享队列和取消机制。
+  Future<String> copyPlaybackCacheToDownload({
+    required Song song,
+    required AudioQuality quality,
+    required String sourcePath,
+  }) {
+    final completer = Completer<String>();
+    _enqueue(
+      _PendingTask(
+        kind: DownloadTaskKind.download,
+        song: song,
+        quality: quality,
+        url: '',
+        sourcePath: sourcePath,
+        completer: completer,
+      ),
+    );
     return completer.future;
   }
 
@@ -143,7 +260,14 @@ class DownloadService {
     if (_running >= _maxConcurrent) return;
     if (_queue.isEmpty) return;
 
-    final task = _queue.removeAt(0);
+    // 取消后立即重试也不能并发写同一个 .part 文件。
+    final index = _queue.indexWhere(
+      (task) => !_runningTasks.containsKey(
+        '${task.kind.name}:${cacheKeyFor(task.song, task.quality)}',
+      ),
+    );
+    if (index < 0) return;
+    final task = _queue.removeAt(index);
     _running++;
 
     try {
@@ -160,18 +284,43 @@ class DownloadService {
   Future<String> _executeTask(_PendingTask task) async {
     final key = cacheKeyFor(task.song, task.quality);
     final taskKey = '${task.kind.name}:$key';
-    final fileName = fileNameFor(task.song, task.quality);
-    final dir = task.kind == DownloadTaskKind.download
-        ? await downloadDir()
-        : await playCacheDir();
-    final targetPath = '${dir.path}/$fileName';
-    final partPath = '$targetPath.part';
-    final partFile = File(partPath);
+    final fileName = task.kind == DownloadTaskKind.download
+        ? downloadFileNameFor(task.song, task.quality)
+        : fileNameFor(task.song, task.quality);
     final cancelToken = CancelToken();
+    void checkCancelled() {
+      if (cancelToken.isCancelled) throw cancelToken.cancelError!;
+    }
+
     _cancelTokens[taskKey] = cancelToken;
     _runningTasks[taskKey] = task;
+    File? partFile;
+    String? publishedPath;
 
     try {
+      final dir = task.kind == DownloadTaskKind.download
+          ? await downloadDir()
+          : await playCacheDir();
+      checkCancelled();
+      final targetPath = '${dir.path}/$fileName';
+      final partPath = '$targetPath.part';
+      partFile = File(partPath);
+      if (task.sourcePath != null) {
+        if (await fileSize(task.sourcePath!) <= 0) {
+          throw StateError('播放缓存文件不存在或为空');
+        }
+        checkCancelled();
+        await File(task.sourcePath!).copy(partPath);
+        checkCancelled();
+        await partFile.rename(targetPath);
+        publishedPath = targetPath;
+        checkCancelled();
+        return await _publishDownload(
+          path: targetPath,
+          song: task.song,
+          quality: task.quality,
+        );
+      }
       // 断点续传：检查已有 .part 文件大小
       int startOffset = 0;
       if (partFile.existsSync()) {
@@ -254,16 +403,27 @@ class DownloadService {
         throw StateError('下载文件不是有效音频');
       }
 
-      // 下载完成，重命名 .part 为最终文件
+      // 下载完成前最后检查取消，防止已取消任务发布最终文件。
+      checkCancelled();
       if (partFile.existsSync()) {
         await partFile.rename(targetPath);
+        publishedPath = targetPath;
       }
-
-      return targetPath;
+      checkCancelled();
+      return await _publishDownload(
+        path: targetPath,
+        song: task.song,
+        quality: task.quality,
+      );
     } on DioException catch (error) {
-      if (CancelToken.isCancel(error) &&
-          task.kind == DownloadTaskKind.playCache) {
-        if (partFile.existsSync()) await partFile.delete();
+      if (CancelToken.isCancel(error)) {
+        if (publishedPath != null) await deleteFile(publishedPath);
+        if (task.kind == DownloadTaskKind.playCache ||
+            task.sourcePath != null) {
+          if (partFile != null && partFile.existsSync()) {
+            await partFile.delete();
+          }
+        }
       }
       rethrow;
     } finally {
@@ -327,17 +487,24 @@ class DownloadService {
     }
   }
 
-  /// 删除文件（若存在）。
-  Future<void> deleteFile(String path) async {
-    final file = File(path);
+  /// 删除文件或已发布的系统下载条目（若存在）。
+  Future<void> deleteFile(String locator) async {
+    if (AndroidDownloadStore.isLocator(locator)) {
+      await _store.delete(locator);
+      return;
+    }
+    final file = File(locator);
     if (file.existsSync()) {
       await file.delete();
     }
   }
 
   /// 获取文件大小（字节），不存在返回 0。
-  Future<int> fileSize(String path) async {
-    final file = File(path);
+  Future<int> fileSize(String locator) async {
+    if (AndroidDownloadStore.isLocator(locator)) {
+      return _store.sizeOf(locator);
+    }
+    final file = File(locator);
     if (file.existsSync()) {
       return await file.length();
     }

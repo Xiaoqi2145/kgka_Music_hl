@@ -847,6 +847,18 @@ class PlayerController extends ChangeNotifier {
   Future<void> playSong(Song song, {List<Song>? queue}) =>
       _playSong(song, queue: queue);
 
+  /// 从下载页播放实际保留的音质，不修改用户默认音质，也不沿用网络队列。
+  Future<void> playDownloadedSong(Song song) {
+    final entry = downloadController?.entryFor(song);
+    return _playSong(
+      song,
+      queue: [song],
+      quality: entry?.status == DownloadStatus.downloaded
+          ? entry!.quality
+          : null,
+    );
+  }
+
   /// 只调整播放队列（增删改），保持当前条目与播放进度继续播放。
   ///
   /// 队列增删改必须用它；[playSong] 一律把点击当作从头播放这首歌。

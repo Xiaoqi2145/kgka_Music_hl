@@ -5,15 +5,22 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.Manifest
+import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.database.Cursor
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.view.WindowManager
+import androidx.core.app.ActivityCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -21,6 +28,15 @@ import com.ryanheise.audioservice.AudioServiceActivity
 import java.io.File
 
 class MainActivity : AudioServiceActivity() {
+    private data class PendingPublish(
+        val sourcePath: String,
+        val displayName: String,
+        val mimeType: String,
+        val result: MethodChannel.Result
+    )
+
+    private val pendingPublishes = mutableMapOf<Int, PendingPublish>()
+    private var nextPublishRequestCode = 4100
     private val updateDownloads = mutableMapOf<Long, String>()
     private var downloadReceiverRegistered = false
     private var lyricsStateReceiverRegistered = false
@@ -106,6 +122,44 @@ class MainActivity : AudioServiceActivity() {
                     }
                     else -> result.notImplemented()
                 }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "kgka_music_hl/downloads")
+            .setMethodCallHandler { call, result ->
+                runCatching {
+                    when (call.method) {
+                        "publish" -> {
+                            val sourcePath = call.argument<String>("sourcePath")
+                            val displayName = call.argument<String>("displayName")
+                            val mimeType = call.argument<String>("mimeType") ?: "audio/mpeg"
+                            require(!sourcePath.isNullOrBlank()) { "sourcePath is required" }
+                            require(!displayName.isNullOrBlank()) { "displayName is required" }
+                            if (needsLegacyStoragePermission()) {
+                                requestPublishPermission(
+                                    PendingPublish(sourcePath, displayName, mimeType, result)
+                                )
+                                return@setMethodCallHandler
+                            }
+                            publishToDownloads(sourcePath, displayName, mimeType)
+                        }
+                        "delete" -> {
+                            val locator = call.argument<String>("locator")
+                                ?: throw IllegalArgumentException("locator is required")
+                            deletePublished(locator)
+                            true
+                        }
+                        "size" -> {
+                            val locator = call.argument<String>("locator")
+                                ?: throw IllegalArgumentException("locator is required")
+                            sizeOfPublished(locator)
+                        }
+                        else -> {
+                            result.notImplemented()
+                            return@setMethodCallHandler
+                        }
+                    }
+                }.onSuccess { result.success(it) }
+                    .onFailure { result.error("downloads_failed", it.message, null) }
             }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "kgka_music_hl/audio_effects")
@@ -443,6 +497,132 @@ class MainActivity : AudioServiceActivity() {
         } finally {
             cursor?.close()
         }
+    }
+
+    private fun needsLegacyStoragePermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+
+    private fun requestPublishPermission(pending: PendingPublish) {
+        val requestCode = nextPublishRequestCode++
+        pendingPublishes[requestCode] = pending
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+            requestCode
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val pending = pendingPublishes.remove(requestCode) ?: return
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            pending.result.error("downloads_permission", "需要存储权限才能保存到下载目录", null)
+            return
+        }
+        runCatching {
+            publishToDownloads(pending.sourcePath, pending.displayName, pending.mimeType)
+        }.onSuccess { pending.result.success(it) }
+            .onFailure { pending.result.error("downloads_failed", it.message, null) }
+    }
+
+    private fun publishToDownloads(
+        sourcePath: String,
+        displayName: String,
+        mimeType: String
+    ): String {
+        val source = File(sourcePath)
+        require(source.isFile && source.length() > 0) { "源文件不存在或为空" }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return publishWithMediaStore(source, displayName, mimeType)
+        }
+        @Suppress("DEPRECATION")
+        return publishToPublicDirectory(source, displayName)
+    }
+
+    private fun publishWithMediaStore(
+        source: File,
+        displayName: String,
+        mimeType: String
+    ): String {
+        val resolver = contentResolver
+        val relativePath = Environment.DIRECTORY_DOWNLOADS + "/KA Music"
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, displayName)
+            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+            put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("无法创建下载条目")
+        try {
+            val output = resolver.openOutputStream(uri)
+                ?: throw IllegalStateException("无法写入下载条目")
+            output.use { out ->
+                source.inputStream().use { input -> input.copyTo(out) }
+            }
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) },
+                null,
+                null
+            )
+        } catch (error: Throwable) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+        return uri.toString()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun publishToPublicDirectory(source: File, displayName: String): String {
+        val directory = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "KA Music"
+        )
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("无法创建下载目录")
+        }
+        val target = File(directory, displayName)
+        source.inputStream().use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        MediaScannerConnection.scanFile(this, arrayOf(target.absolutePath), null, null)
+        return target.absolutePath
+    }
+
+    private fun deletePublished(locator: String) {
+        if (locator.startsWith("content://")) {
+            contentResolver.delete(Uri.parse(locator), null, null)
+            return
+        }
+        val file = File(locator)
+        if (file.exists()) {
+            file.delete()
+        }
+    }
+
+    private fun sizeOfPublished(locator: String): Long {
+        if (locator.startsWith("content://")) {
+            val uri = Uri.parse(locator)
+            contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (index >= 0) return cursor.getLong(index)
+                    }
+                }
+            return 0L
+        }
+        val file = File(locator)
+        return if (file.isFile) file.length() else 0L
     }
 
     private fun installDownloadedApk(fileName: String) {

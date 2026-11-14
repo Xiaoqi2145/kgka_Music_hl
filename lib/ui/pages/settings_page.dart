@@ -9,13 +9,14 @@ import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
-import '../../services/artwork_cache_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
 import '../widgets/toast.dart';
 import 'about_page.dart';
+import 'cache_management_page.dart';
+import 'downloaded_songs_page.dart';
 import 'audio_interruption_settings_page.dart';
 import 'desktop_lyrics_settings_page.dart';
 import 'personalization_settings_page.dart';
@@ -391,19 +392,31 @@ class SettingsPage extends StatelessWidget {
     await player.setAudioQuality(quality);
   }
 
-  /// 打开缓存管理 BottomSheet。
+  /// 打开独立缓存页，下载由用户在单独页面管理。
   Future<void> _showCacheManagement(BuildContext context) async {
-    final cache = this.cache;
     final downloads = this.downloads;
-
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      builder: (sheetContext) {
-        return _CacheManagementSheet(cache: cache, downloads: downloads);
-      },
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (cacheContext) => CacheManagementPage(
+          cache: cache,
+          downloads: downloads,
+          onOpenDownloads: downloads == null
+              ? null
+              : () {
+                  Navigator.of(cacheContext).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => DownloadedSongsPage(
+                        api: api,
+                        auth: auth,
+                        player: player,
+                        downloads: downloads,
+                        cache: cache,
+                      ),
+                    ),
+                  );
+                },
+        ),
+      ),
     );
   }
 
@@ -847,420 +860,6 @@ class _SettingsDivider extends StatelessWidget {
       height: 1,
       indent: 62,
       color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: .4),
-    );
-  }
-}
-
-/// 缓存管理 BottomSheet。
-class _CacheManagementSheet extends StatefulWidget {
-  const _CacheManagementSheet({this.cache, this.downloads});
-
-  final CacheService? cache;
-  final DownloadController? downloads;
-
-  @override
-  State<_CacheManagementSheet> createState() => _CacheManagementSheetState();
-}
-
-class _CacheManagementSheetState extends State<_CacheManagementSheet> {
-  int? _dataCacheSize;
-  int? _artworkCacheSize;
-  int? _downloadSize;
-  int? _playCacheSize;
-  int? _playCacheLimitBytes;
-  int? _artworkCacheLimitBytes;
-  bool _clearing = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSizes();
-  }
-
-  Future<void> _loadSizes() async {
-    int? dataCache, download, playCache, artworkCache;
-    if (widget.cache != null) {
-      try {
-        dataCache = await widget.cache!.getCacheSize();
-      } catch (_) {}
-    }
-    try {
-      artworkCache = await ArtworkCacheService.instance.getCacheSize();
-      _artworkCacheLimitBytes = ArtworkCacheService.instance.maxCacheBytes;
-    } catch (_) {}
-    if (widget.downloads != null) {
-      _playCacheLimitBytes = widget.downloads!.playCacheMaxBytes;
-      try {
-        download = await widget.downloads!.getDownloadDirSize();
-      } catch (_) {}
-      try {
-        playCache = await widget.downloads!.getPlayCacheDirSize();
-      } catch (_) {}
-    }
-    if (mounted) {
-      setState(() {
-        _dataCacheSize = dataCache;
-        _artworkCacheSize = artworkCache;
-        _downloadSize = download;
-        _playCacheSize = playCache;
-        _playCacheLimitBytes = widget.downloads?.playCacheMaxBytes;
-      });
-    }
-  }
-
-  String _formatPlayCacheUsage() {
-    final limit = _playCacheLimitBytes ?? widget.downloads?.playCacheMaxBytes;
-    final size = _formatSize(_playCacheSize);
-    if (limit == null) return size;
-    return '$size / 上限 ${_formatSize(limit)}';
-  }
-
-  String _formatSize(int? bytes) {
-    if (bytes == null) return '计算中…';
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              '缓存管理',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 16),
-            _CacheItem(
-              icon: Icons.storage_rounded,
-              title: '数据缓存',
-              size: _formatSize(_dataCacheSize),
-              onClear:
-                  widget.cache != null &&
-                      _dataCacheSize != null &&
-                      _dataCacheSize! > 0
-                  ? () async {
-                      setState(() => _clearing = true);
-                      try {
-                        await widget.cache!.clearAllCache();
-                        await _loadSizes();
-                        if (mounted) {
-                          Toast.success('数据缓存已清理');
-                        }
-                      } catch (_) {
-                        if (mounted) {
-                          Toast.error('清理失败');
-                        }
-                      }
-                      if (mounted) {
-                        setState(() => _clearing = false);
-                      }
-                    }
-                  : null,
-            ),
-            const SizedBox(height: 10),
-            _CacheItem(
-              icon: Icons.image_rounded,
-              title: '缩略图缓存',
-              size: _formatSize(_artworkCacheSize),
-              onClear: _artworkCacheSize != null && _artworkCacheSize! > 0
-                  ? () async {
-                      setState(() => _clearing = true);
-                      try {
-                        await ArtworkCacheService.instance.clearCache();
-                        await _loadSizes();
-                        if (mounted) {
-                          Toast.success('缩略图缓存已清理');
-                        }
-                      } catch (_) {
-                        if (mounted) {
-                          Toast.error('清理失败');
-                        }
-                      }
-                      if (mounted) {
-                        setState(() => _clearing = false);
-                      }
-                    }
-                  : null,
-            ),
-            const SizedBox(height: 10),
-            _CacheLimitInput(
-              title: '缩略图缓存上限',
-              valueBytes:
-                  _artworkCacheLimitBytes ??
-                  ArtworkCacheService.instance.maxCacheBytes,
-              minBytes: AppConfig.minArtworkCacheMaxBytes,
-              maxBytes: AppConfig.maxArtworkCacheMaxBytes,
-              onSubmitted: (bytes) async {
-                setState(() => _artworkCacheLimitBytes = bytes);
-                await ArtworkCacheService.instance.setMaxCacheBytes(bytes);
-                await _loadSizes();
-              },
-            ),
-            const SizedBox(height: 10),
-            _CacheItem(
-              icon: Icons.download_rounded,
-              title: '下载文件',
-              size: _formatSize(_downloadSize),
-              onClear: null, // 下载文件用户主动管理，不提供一键清理
-            ),
-            const SizedBox(height: 10),
-            _CacheItem(
-              icon: Icons.cached_rounded,
-              title: '播放缓存',
-              size: _formatPlayCacheUsage(),
-              onClear:
-                  widget.downloads != null &&
-                      _playCacheSize != null &&
-                      _playCacheSize! > 0
-                  ? () async {
-                      setState(() => _clearing = true);
-                      try {
-                        await widget.downloads!.clearPlayCache();
-                        await _loadSizes();
-                        if (mounted) {
-                          Toast.success('播放缓存已清理');
-                        }
-                      } catch (_) {
-                        if (mounted) {
-                          Toast.error('清理失败');
-                        }
-                      }
-                      if (mounted) {
-                        setState(() => _clearing = false);
-                      }
-                    }
-                  : null,
-            ),
-            if (widget.downloads != null) ...[
-              const SizedBox(height: 10),
-              _CacheLimitInput(
-                title: '播放缓存上限',
-                valueBytes:
-                    _playCacheLimitBytes ?? widget.downloads!.playCacheMaxBytes,
-                minBytes: AppConfig.minPlayCacheMaxBytes,
-                maxBytes: AppConfig.maxPlayCacheMaxBytes,
-                onSubmitted: (bytes) async {
-                  setState(() => _playCacheLimitBytes = bytes);
-                  await widget.downloads!.setPlayCacheMaxBytes(bytes);
-                  await _loadSizes();
-                },
-              ),
-            ],
-            const SizedBox(height: 20),
-            if (_clearing) const Center(child: CircularProgressIndicator()),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 缓存上限输入框（播放缓存 / 缩略图缓存共用）。
-class _CacheLimitInput extends StatefulWidget {
-  const _CacheLimitInput({
-    required this.title,
-    required this.valueBytes,
-    required this.minBytes,
-    required this.maxBytes,
-    required this.onSubmitted,
-  });
-
-  static const _bytesPerMb = 1024 * 1024;
-
-  final String title;
-  final int valueBytes;
-  final int minBytes;
-  final int maxBytes;
-  final Future<void> Function(int bytes) onSubmitted;
-
-  @override
-  State<_CacheLimitInput> createState() => _CacheLimitInputState();
-}
-
-class _CacheLimitInputState extends State<_CacheLimitInput> {
-  late final TextEditingController _controller;
-  bool _saving = false;
-
-  int get _minMb => widget.minBytes ~/ _CacheLimitInput._bytesPerMb;
-
-  int get _maxMb => widget.maxBytes ~/ _CacheLimitInput._bytesPerMb;
-
-  int _valueMbFromBytes(int bytes) {
-    return (bytes / _CacheLimitInput._bytesPerMb).round().clamp(_minMb, _maxMb);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(
-      text: _valueMbFromBytes(widget.valueBytes).toString(),
-    );
-  }
-
-  @override
-  void didUpdateWidget(covariant _CacheLimitInput oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.valueBytes != oldWidget.valueBytes && !_saving) {
-      _controller.text = _valueMbFromBytes(widget.valueBytes).toString();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final parsed = int.tryParse(_controller.text.trim());
-    if (parsed == null) return;
-
-    final clamped = parsed.clamp(_minMb, _maxMb);
-    _controller.text = clamped.toString();
-    setState(() => _saving = true);
-    try {
-      await widget.onSubmitted(clamped * _CacheLimitInput._bytesPerMb);
-    } finally {
-      if (mounted) {
-        setState(() => _saving = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.tune_rounded, size: 22, color: colorScheme.primary),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              widget.title,
-              style: Theme.of(
-                context,
-              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-            ),
-          ),
-          SizedBox(
-            width: 124,
-            child: TextField(
-              controller: _controller,
-              enabled: !_saving,
-              textAlign: TextAlign.end,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: InputDecoration(
-                isDense: true,
-                suffixText: 'MB',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 10,
-                ),
-              ),
-              onSubmitted: (_) => _submit(),
-            ),
-          ),
-          const SizedBox(width: 8),
-          SizedBox.square(
-            dimension: 38,
-            child: _saving
-                ? Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: colorScheme.primary,
-                    ),
-                  )
-                : IconButton(
-                    tooltip: '保存',
-                    icon: const Icon(Icons.check_rounded),
-                    onPressed: _submit,
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 缓存管理中的单项条目。
-class _CacheItem extends StatelessWidget {
-  const _CacheItem({
-    required this.icon,
-    required this.title,
-    required this.size,
-    this.onClear,
-  });
-
-  final IconData icon;
-  final String title;
-  final String size;
-  final VoidCallback? onClear;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 22, color: colorScheme.primary),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                Text(
-                  size,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (onClear != null)
-            TextButton(
-              onPressed: onClear,
-              child: Text('清理', style: TextStyle(color: colorScheme.error)),
-            ),
-        ],
-      ),
     );
   }
 }

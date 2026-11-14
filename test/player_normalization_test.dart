@@ -468,6 +468,32 @@ class _LocalHitDownloadController extends DownloadController {
       false;
 }
 
+class _SavedDownloadController extends DownloadController {
+  _SavedDownloadController(MusicApi api) : super(DownloadService(), api);
+  final lookedUp = <AudioQuality>[];
+  @override
+  Future<void> initialize() async {}
+  @override
+  Future<void> flush() async {}
+  @override
+  DownloadEntry? entryFor(Song song) => DownloadEntry(
+    song: song,
+    quality: AudioQuality.high,
+    status: DownloadStatus.downloaded,
+    filePath: '/tmp/saved.mp3',
+  );
+  @override
+  ({String path, LoudnessData? loudness})? localSourceFor(
+    Song song,
+    AudioQuality quality,
+  ) {
+    lookedUp.add(quality);
+    return quality == AudioQuality.high
+        ? (path: '/tmp/saved.mp3', loudness: const LoudnessData(lufs: -8))
+        : null;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => debugDefaultTargetPlatformOverride = TargetPlatform.android);
@@ -577,6 +603,23 @@ void main() {
     controller.isPlaying = true;
     await drain();
   }
+
+  test('download page uses saved quality without changing default or requesting network', () async {
+    await setup();
+    await controller.setAudioQuality(AudioQuality.lossless);
+    final downloads = _SavedDownloadController(api);
+    controller.downloadController = downloads;
+    addTearDown(downloads.dispose);
+    api.requests.clear();
+    await controller.playDownloadedSong(b);
+    await drain();
+    expect(downloads.lookedUp, contains(AudioQuality.high));
+    expect(api.requests, isEmpty);
+    expect(controller.audioQuality, AudioQuality.lossless);
+    expect(controller.currentSong?.hash, b.hash);
+    expect(controller.queue, [b]);
+    expect(controller.errorMessage, isNull);
+  });
 
   void tail() {
     handler.audioPlayer.emitNative(

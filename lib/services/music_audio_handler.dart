@@ -122,7 +122,9 @@ class MusicAudioHandler extends BaseAudioHandler
       _playlistMutations.run(action);
 
   AudioSource _audioSourceFor(Song song, String url) {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
+    if (url.startsWith('http://') ||
+        url.startsWith('https://') ||
+        url.startsWith('content://')) {
       return AudioSource.uri(Uri.parse(url), tag: song);
     }
     return AudioSource.file(url, tag: song);
