@@ -9,6 +9,7 @@ import 'package:kgka_music_hl/config/app_config.dart';
 import 'package:kgka_music_hl/controllers/download_controller.dart';
 import 'package:kgka_music_hl/models/loudness_data.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
+import 'package:kgka_music_hl/services/download_options.dart';
 import 'package:kgka_music_hl/services/download_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 
@@ -184,6 +185,9 @@ void main() {
     api = _Api();
     controller = DownloadController(service, api);
     await controller.initialize();
+    await controller.setDownloadOptions(
+      const DownloadOptions(writeTags: false),
+    );
   });
 
   tearDown(() async {
@@ -508,7 +512,9 @@ void main() {
   test(
     'cancelled copy and immediate same-key retry serialize publication',
     () async {
-      final real = _DirectoryService(root)..directoryGate = Completer<void>();
+      final real = _DirectoryService(root)
+        ..directoryGate = Completer<void>()
+        ..applyOptions(const DownloadOptions(writeTags: false));
       final song = _song('retry-copy');
       final source = File('${root.path}/retry-source.mp3')
         ..writeAsBytesSync(_audio);
@@ -568,15 +574,41 @@ void main() {
     );
   }
 
-  test('download file names carry artist, title and quality', () {
+  test('download file names follow the configured style', () {
     final service = _DirectoryService(root);
-    final name = service.downloadFileNameFor(
-      const Song(id: 'n', hash: 'abc/def', title: '夜航', artist: '歌手乙'),
-      _quality,
+    const song = Song(id: 'n', hash: 'abc/def', title: '夜航', artist: '歌手乙');
+    expect(service.downloadFileNameFor(song, _quality), '夜航 - 歌手乙.mp3');
+    service.applyOptions(
+      const DownloadOptions(namingStyle: DownloadNamingStyle.artistTitle),
     );
-    expect(name, '歌手乙 - 夜航 [320K] abc def.mp3');
-    expect(name.contains('/'), isFalse);
+    expect(service.downloadFileNameFor(song, _quality), '歌手乙 - 夜航.mp3');
+    service.applyOptions(
+      const DownloadOptions(namingStyle: DownloadNamingStyle.titleOnly),
+    );
+    expect(service.downloadFileNameFor(song, _quality), '夜航.mp3');
+    expect(service.downloadFileNameFor(song, _quality).contains('/'), isFalse);
     service.dispose();
+  });
+
+  test('download quality option overrides playback quality only when set', () async {
+    expect(
+      controller.downloadOptions.resolveQuality(AudioQuality.standard),
+      AudioQuality.standard,
+    );
+    await controller.setDownloadOptions(
+      const DownloadOptions(quality: AudioQuality.lossless),
+    );
+    expect(
+      controller.downloadOptions.resolveQuality(AudioQuality.standard),
+      AudioQuality.lossless,
+    );
+    await controller.setDownloadOptions(
+      controller.downloadOptions.copyWith(clearQuality: true),
+    );
+    expect(
+      controller.downloadOptions.resolveQuality(AudioQuality.standard),
+      AudioQuality.standard,
+    );
   });
 
   test('legacy downloads move to the system downloads directory', () async {

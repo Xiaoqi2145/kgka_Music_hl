@@ -10,6 +10,8 @@ import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
 import '../../services/cache_service.dart';
+import '../../models/music_models.dart';
+import '../../services/download_options.dart';
 import '../../services/music_api.dart';
 import '../widgets/audio_effects_sheet.dart';
 import '../widgets/audio_quality_sheet.dart';
@@ -25,6 +27,14 @@ import 'playback_stats_page.dart';
 import '../adaptive_layout.dart';
 
 class SettingsPage extends StatelessWidget {
+  /// 命名方式预览用的示例歌曲。
+  static const _sampleSong = Song(
+    id: 'preview',
+    title: '歌曲名',
+    artist: '歌手名',
+    hash: 'preview',
+  );
+
   const SettingsPage({
     super.key,
     required this.api,
@@ -61,7 +71,13 @@ class SettingsPage extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(title: const Text('设置')),
         body: AnimatedBuilder(
-          animation: Listenable.merge([auth, player, localMusic, theme]),
+          animation: Listenable.merge([
+            auth,
+            player,
+            localMusic,
+            theme,
+            ?downloads,
+          ]),
           builder: (context, _) {
             return AdaptiveContentPadding(
               child: ListView(
@@ -295,6 +311,42 @@ class SettingsPage extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 24),
+                  // Download section
+                  _SectionHeader(title: '下载'),
+                  const SizedBox(height: 8),
+                  _SettingsCard(
+                    children: [
+                      _SettingsTile(
+                        icon: Icons.drive_file_rename_outline_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '文件命名',
+                        subtitle: downloads?.downloadOptions.namingStyle.label ??
+                            DownloadNamingStyle.titleArtist.label,
+                        onTap: () => _selectDownloadNaming(context),
+                      ),
+                      _SettingsDivider(),
+                      _SettingsTile(
+                        icon: Icons.high_quality_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '下载音质',
+                        subtitle: downloads?.downloadOptions.qualityLabel ??
+                            '跟随播放音质',
+                        onTap: () => _selectDownloadQuality(context),
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.sell_rounded,
+                        iconColor: colorScheme.primary,
+                        title: '写入歌曲信息',
+                        subtitle: '把标题、歌手、专辑与封面写入下载文件',
+                        value: downloads?.downloadOptions.writeTags ?? true,
+                        onChanged: (value) => downloads?.setDownloadOptions(
+                          downloads!.downloadOptions.copyWith(writeTags: value),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
                   // Cache section
                   _SectionHeader(title: '缓存'),
                   const SizedBox(height: 8),
@@ -390,6 +442,111 @@ class SettingsPage extends StatelessWidget {
     );
     if (quality == null) return;
     await player.setAudioQuality(quality);
+  }
+
+  Future<void> _selectDownloadNaming(BuildContext context) async {
+    final controller = downloads;
+    if (controller == null) return;
+    final selected = await showModalBottomSheet<DownloadNamingStyle>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (sheetContext) {
+        final colors = Theme.of(sheetContext).colorScheme;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Text(
+                  '文件命名',
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              for (final style in DownloadNamingStyle.values)
+                ListTile(
+                  title: Text(style.label),
+                  subtitle: Text(
+                    controller.downloadOptions
+                        .copyWith(namingStyle: style)
+                        .baseNameFor(_sampleSong),
+                  ),
+                  trailing: controller.downloadOptions.namingStyle == style
+                      ? Icon(Icons.check_rounded, color: colors.primary)
+                      : null,
+                  onTap: () => Navigator.of(sheetContext).pop(style),
+                ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null) return;
+    await controller.setDownloadOptions(
+      controller.downloadOptions.copyWith(namingStyle: selected),
+    );
+  }
+
+  Future<void> _selectDownloadQuality(BuildContext context) async {
+    final controller = downloads;
+    if (controller == null) return;
+    final selected = await showModalBottomSheet<AudioQuality?>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (sheetContext) {
+        final colors = Theme.of(sheetContext).colorScheme;
+        final current = controller.downloadOptions.quality;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Text(
+                  '下载音质',
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              ListTile(
+                title: const Text('跟随播放音质'),
+                trailing: current == null
+                    ? Icon(Icons.check_rounded, color: colors.primary)
+                    : null,
+                onTap: () => Navigator.of(sheetContext).pop(),
+              ),
+              for (final quality in AudioQuality.values)
+                ListTile(
+                  title: Text(quality.label),
+                  trailing: current == quality
+                      ? Icon(Icons.check_rounded, color: colors.primary)
+                      : null,
+                  onTap: () => Navigator.of(sheetContext).pop(quality),
+                ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null) {
+      if (controller.downloadOptions.quality == null) return;
+      await controller.setDownloadOptions(
+        controller.downloadOptions.copyWith(clearQuality: true),
+      );
+      return;
+    }
+    await controller.setDownloadOptions(
+      controller.downloadOptions.copyWith(quality: selected),
+    );
   }
 
   /// 打开独立缓存页，下载由用户在单独页面管理。

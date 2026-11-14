@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../models/loudness_data.dart';
 import '../models/music_models.dart';
+import '../services/download_options.dart';
 import '../services/download_service.dart';
 import '../services/music_api.dart';
 
@@ -114,6 +115,9 @@ class DownloadController extends ChangeNotifier {
   Future<void>? _playCachePersistFuture;
   int playCacheMaxBytes = AppConfig.defaultPlayCacheMaxBytes;
 
+  /// 下载选项：命名方式、下载音质与是否写入标签。
+  DownloadOptions downloadOptions = const DownloadOptions();
+
   /// 启动时加载索引并校验文件存在性。并发调用共享同一个初始化 Future。
   Future<void> initialize() {
     if (_initialized) return Future<void>.value();
@@ -123,6 +127,7 @@ class DownloadController extends ChangeNotifier {
   Future<void> _initialize() async {
     try {
       await _loadPlayCacheSettings();
+      await _loadDownloadOptions();
       await _loadDownloads();
       await _loadPlayCache();
       await _service.cleanPlayCacheOrphans(
@@ -134,6 +139,19 @@ class DownloadController extends ChangeNotifier {
       _initializing = null;
       notifyListeners();
     }
+  }
+
+  Future<void> _loadDownloadOptions() async {
+    downloadOptions = await DownloadOptions.load();
+    _service.applyOptions(downloadOptions);
+  }
+
+  /// 更新下载选项并立即生效。
+  Future<void> setDownloadOptions(DownloadOptions options) async {
+    downloadOptions = options;
+    _service.applyOptions(options);
+    notifyListeners();
+    await options.persist();
   }
 
   Future<void> _loadPlayCacheSettings() async {
@@ -411,6 +429,11 @@ class DownloadController extends ChangeNotifier {
   }
 
   // ===== 下载操作 =====
+
+  /// 按下载选项发起下载；音质未指定时沿用给定播放音质。
+  Future<void> downloadWithOptions(Song song, AudioQuality playbackQuality) {
+    return download(song, downloadOptions.resolveQuality(playbackQuality));
+  }
 
   /// 用户主动下载歌曲；同音质播放缓存直接复制，不请求远程地址。
   Future<void> download(Song song, AudioQuality quality) async {

@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import '../config/app_config.dart';
 import '../models/music_models.dart';
 import 'android_download_store.dart';
+import 'download_options.dart';
+import 'download_tag_writer.dart';
 
 /// 下载任务类型。
 enum DownloadTaskKind { download, playCache }
@@ -52,6 +54,14 @@ class DownloadService {
   final List<_PendingTask> _queue = [];
   final AndroidDownloadStore _store = const AndroidDownloadStore();
 
+  /// 当前下载选项（命名方式、音质、是否写入标签）。
+  DownloadOptions downloadOptions = const DownloadOptions();
+
+  /// 把选项应用到后续下载；由控制器在设置变化时调用。
+  void applyOptions(DownloadOptions options) {
+    downloadOptions = options;
+  }
+
   /// 下载暂存目录。
   ///
   /// Android 的 getDownloadsDirectory 落在应用专属外部目录，系统「下载」中
@@ -74,6 +84,12 @@ class DownloadService {
       await dir.create(recursive: true);
     }
     return dir;
+  }
+
+  /// 把标题、歌手、专辑与封面写入下载文件；关闭该选项时直接跳过。
+  Future<void> _writeTags(String path, Song song) async {
+    if (!downloadOptions.writeTags) return;
+    await const DownloadTagWriter().apply(path: path, song: song);
   }
 
   /// 完成下载后发布到用户可见的下载目录。
@@ -118,13 +134,11 @@ class DownloadService {
     return '${safeHash}_${quality.apiValue}.$ext';
   }
 
-  /// 下载文件名：{artist} - {title} [{quality}] {identity}.{ext}
+  /// 下载文件名：按设置的命名方式组成，并补上扩展名。
   String downloadFileNameFor(Song song, AudioQuality quality) {
     final ext = quality == AudioQuality.lossless ? 'flac' : 'mp3';
-    final title = _safeFilePart(song.title, '未知歌曲');
-    final artist = _safeFilePart(song.artist, '未知艺人');
-    final identity = _safeFilePart(song.hash, 'track');
-    return '$artist - $title [${quality.badge}] $identity.$ext';
+    final base = _safeFilePart(downloadOptions.baseNameFor(song), '未知歌曲');
+    return '$base.$ext';
   }
 
   String _safeFilePart(String value, String fallback) {
@@ -150,6 +164,7 @@ class DownloadService {
     required String sourcePath,
   }) async {
     if (AndroidDownloadStore.isSupported) {
+      await _writeTags(sourcePath, song);
       final locator = await _publishDownload(
         path: sourcePath,
         song: song,
@@ -315,6 +330,8 @@ class DownloadService {
         await partFile.rename(targetPath);
         publishedPath = targetPath;
         checkCancelled();
+        await _writeTags(targetPath, task.song);
+        checkCancelled();
         return await _publishDownload(
           path: targetPath,
           song: task.song,
@@ -409,6 +426,8 @@ class DownloadService {
         await partFile.rename(targetPath);
         publishedPath = targetPath;
       }
+      checkCancelled();
+      await _writeTags(targetPath, task.song);
       checkCancelled();
       return await _publishDownload(
         path: targetPath,

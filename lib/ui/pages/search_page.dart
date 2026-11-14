@@ -894,7 +894,10 @@ class _SearchResults extends StatelessWidget {
                                           ? '已下载'
                                           : '下载',
                                       onTap: () => player.downloadController!
-                                          .download(song, player.audioQuality),
+                                          .downloadWithOptions(
+                                            song,
+                                            player.audioQuality,
+                                          ),
                                     ),
                                 ],
                               );

@@ -366,10 +366,8 @@ class _HistorySongRow extends StatelessWidget {
                             title: player.downloadController!.isDownloaded(song)
                                 ? '已下载'
                                 : '下载',
-                            onTap: () => player.downloadController!.download(
-                              song,
-                              player.audioQuality,
-                            ),
+                            onTap: () => player.downloadController!
+                                .downloadWithOptions(song, player.audioQuality),
                           ),
                       ],
                     );
