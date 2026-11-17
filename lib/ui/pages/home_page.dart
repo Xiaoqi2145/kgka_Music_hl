@@ -8,6 +8,7 @@ import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
+import '../app_theme.dart';
 import '../widgets/artwork.dart';
 import '../widgets/listenable_selector.dart';
 import '../widgets/skeleton_box.dart';
@@ -16,7 +17,6 @@ import '../widgets/now_playing_badge.dart';
 import '../widgets/preparing_indicator.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
-import 'album_shop_page.dart';
 import 'artist_detail_page.dart';
 import 'playlist_detail_page.dart';
 import 'search_page.dart';
@@ -132,7 +132,6 @@ class _HomePageState extends State<HomePage> {
         final results = await Future.wait([
           widget.api.dailyRecommend(),
           widget.api.recommendedPlaylists(),
-          widget.api.albumShop(),
         ]);
         if (owner != _currentCacheOwner) {
           throw StateError('Homepage cache owner changed during refresh');
@@ -140,14 +139,12 @@ class _HomePageState extends State<HomePage> {
         return _HomeData(
           daily: results[0] as DailyRecommend,
           playlists: results[1] as List<PlaylistSummary>,
-          albums: results[2] as List<AlbumShopItem>,
         );
       },
       decode: _homeDataFromCache,
       encode: (data) => {
         'daily': data.daily.toCache(),
         'playlists': data.playlists.map((p) => p.toCache()).toList(),
-        'albums': data.albums.map((a) => a.toCache()).toList(),
       },
       onData: (data) {
         if (owner != _currentCacheOwner) {
@@ -205,10 +202,6 @@ class _HomePageState extends State<HomePage> {
           .whereType<Map<String, dynamic>>()
           .map(PlaylistSummary.fromCache)
           .toList(),
-      albums: (json['albums'] as List? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(AlbumShopItem.fromCache)
-          .toList(),
     );
   }
 
@@ -253,20 +246,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _openAlbumShop() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AlbumShopPage(
-          api: widget.api,
-          auth: widget.auth,
-          player: widget.player,
-          cache: widget.cache,
-          initialAlbums: _cachedData?.albums ?? [],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<_HomeData>(
@@ -295,7 +274,6 @@ class _HomePageState extends State<HomePage> {
                   child: _RecommendHeader(
                     auth: widget.auth,
                     daily: data!.daily,
-                    albums: data.albums,
                     sectionIndex: _sectionIndex,
                     onSectionChanged: (value) {
                       setState(() => _sectionIndex = value);
@@ -306,7 +284,6 @@ class _HomePageState extends State<HomePage> {
                         widget.player.playSong(songs.first, queue: songs);
                       }
                     },
-                    onAlbumTap: _openAlbumShop,
                     api: widget.api,
                     player: widget.player,
                   ),
@@ -319,7 +296,9 @@ class _HomePageState extends State<HomePage> {
                         child: Column(
                           children: [
                             _SongSection(
-                              title: '母带音质·精选',
+                              // 与上方 Banner 是同一份每日推荐数据，标题必须
+                              // 说同一件事；否则一屏里出现两个名字、一批歌。
+                              title: '今日推荐',
                               songs: data.daily.songs,
                               onPlay: _playSong,
                               isLiked: (song) => widget.auth.isLiked(song),
@@ -359,22 +338,18 @@ class _RecommendHeader extends StatelessWidget {
   const _RecommendHeader({
     required this.auth,
     required this.daily,
-    required this.albums,
     required this.sectionIndex,
     required this.onSectionChanged,
     required this.onDailyPlay,
-    required this.onAlbumTap,
     required this.api,
     required this.player,
   });
 
   final AuthController auth;
   final DailyRecommend daily;
-  final List<AlbumShopItem> albums;
   final int sectionIndex;
   final ValueChanged<int> onSectionChanged;
   final VoidCallback onDailyPlay;
-  final VoidCallback onAlbumTap;
   final MusicApi api;
   final PlayerController player;
 
@@ -383,13 +358,23 @@ class _RecommendHeader extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
+        // 头部此前是一段不透明渐变、并在底部收成纯白：一旦用户开了自定义
+        // 背景图，这层白就在内容区顶端拉出一条硬白边，把页面切成两半。
+        // 现在顶部保留足够不透明度压住状态栏与 Tab 文字，向下淡出到全透明，
+        // 与窗口背景（纯色或背景图）连成一片，不再有明确接缝。
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: isDark
-              ? const [Color(0xFF10233A), Color(0xFF06070A)]
-              : const [Color(0xFFDCEEFF), Color(0xFFF7FBFF), Colors.white],
-          stops: isDark ? const [0, 1] : const [0, .68, 1],
+              ? [
+                  const Color(0xFF10233A).withValues(alpha: .94),
+                  const Color(0xFF06070A).withValues(alpha: 0),
+                ]
+              : [
+                  const Color(0xFFDCEEFF).withValues(alpha: .94),
+                  const Color(0xFFF7FBFF).withValues(alpha: 0),
+                ],
+          stops: const [0, 1],
         ),
       ),
       child: SafeArea(
@@ -414,12 +399,7 @@ class _RecommendHeader extends StatelessWidget {
               ),
               if (sectionIndex == 0) ...[
                 const SizedBox(height: 14),
-                _FeatureShelf(
-                  daily: daily,
-                  albums: albums,
-                  onDailyPlay: onDailyPlay,
-                  onAlbumTap: onAlbumTap,
-                ),
+                _DailyBanner(daily: daily, onPlay: onDailyPlay),
               ],
             ],
           ),
@@ -487,8 +467,8 @@ class _TopTabs extends StatelessWidget {
                                           ? colorScheme.onSurface
                                           : colorScheme.onSurfaceVariant,
                                       fontWeight: entry.$1 == index
-                                          ? FontWeight.w900
-                                          : FontWeight.w700,
+                                          ? FontWeight.w800
+                                          : FontWeight.w600,
                                     ),
                               ),
                               const SizedBox(height: 6),
@@ -509,11 +489,9 @@ class _TopTabs extends StatelessWidget {
                 ),
               ),
             ),
-            IconButton(
-              tooltip: '菜单',
-              onPressed: () {},
-              icon: const Icon(Icons.menu_rounded),
-            ),
+            // 这里原本是一个 onPressed 为空、视觉上却像入口的菜单按钮：
+            // 点了没有任何反应，是首屏最容易被用户判定为"坏了"的地方。
+            // 在真正的菜单功能落地前，先移除这个空壳入口。
           ],
         );
       },
@@ -543,6 +521,7 @@ class _SmartSearch extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Row(
       children: [
         Expanded(
@@ -550,25 +529,44 @@ class _SmartSearch extends StatelessWidget {
             onTap: () => _openSearch(context),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
+                color: isDark
                     ? Colors.white.withValues(alpha: .08)
                     : Colors.white.withValues(alpha: .92),
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: Colors.white.withValues(alpha: .56)),
+                borderRadius: BorderRadius.circular(12),
+                // 深色模式下白 56% 的描边比内容本身还亮，抢走了搜索框的层次；
+                // 改用主题分隔色，只在浅色模式保留高光边。
+                border: Border.all(
+                  color: isDark
+                      ? colorScheme.outlineVariant
+                      : Colors.white.withValues(alpha: .56),
+                ),
               ),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 10,
                 ),
-                child: Text(
-                  '搜索歌曲，歌手',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.search_rounded,
+                      size: 20,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '搜索歌曲，歌手',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                          // 占位文字不该比正文更抢眼：w700 → w500。
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -579,104 +577,230 @@ class _SmartSearch extends StatelessWidget {
   }
 }
 
-class _FeatureShelf extends StatelessWidget {
-  const _FeatureShelf({
-    required this.daily,
-    required this.albums,
-    required this.onDailyPlay,
-    required this.onAlbumTap,
-  });
+/// 每日推荐 Banner。
+///
+/// 取代此前并排的两张方形卡（「猜你喜欢」+「新碟上架」）。前者与下方列表
+/// 指向同一批每日推荐歌曲，同一份内容在一屏内被曝光了两次；后者与音乐
+/// 推荐无关，只是借首屏黄金位做一个商城入口。Banner 把日期、今日首曲与
+/// 播放入口收进一张横向卡片，只保留一次呈现。
+class _DailyBanner extends StatelessWidget {
+  const _DailyBanner({required this.daily, required this.onPlay});
 
   final DailyRecommend daily;
-  final List<AlbumShopItem> albums;
-  final VoidCallback onDailyPlay;
-  final VoidCallback onAlbumTap;
+  final VoidCallback onPlay;
 
   @override
   Widget build(BuildContext context) {
+    final songs = daily.songs;
+    final covers = dailyBannerCovers(daily);
+    final headline = songs.isEmpty ? '献给此刻迈步的你' : songs.first.title;
+    // 首曲下方只留歌手；曲目数挪到顶部与日期并排，读起来是一行"元信息"，
+    // 不再把两件不相干的事（谁唱的 / 一共几首）挤在同一行里。
+    final caption = songs.isEmpty
+        ? '今天还没有推荐，稍后再来看看'
+        : songs.first.artist;
+    final dateLabel = dailyBannerDateLabel(daily.title);
+    final countLabel = songs.isEmpty ? null : '${songs.length}首';
+
     return Padding(
       padding: const EdgeInsets.only(right: 18),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final cardSize = featureCardSize(constraints.maxWidth);
-          return SizedBox(
-            height: cardSize,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: cardSize,
-                  height: cardSize,
-                  child: _FeatureCard(
-                    title: '猜你喜欢',
-                    subtitle: daily.songs.isEmpty
-                        ? '献给此刻迈步的你'
-                        : daily.songs.first.title,
-                    imageUrl: daily.songs.isEmpty
-                        ? daily.coverUrl
-                        : daily.songs.first.coverUrl,
-                    gradient: const [Color(0xFFFFD88E), Color(0xFFFF8DA2)],
-                    onTap: onDailyPlay,
-                  ),
+      child: Semantics(
+        button: true,
+        label: '每日推荐，$headline',
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onPlay,
+          child: SizedBox(
+            height: dailyBannerHeight,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF2F6DF6), Color(0xFF1B3FA8)],
                 ),
-                const SizedBox(width: 10),
-                SizedBox(
-                  width: cardSize,
-                  height: cardSize,
-                  child: albums.isNotEmpty
-                      ? _FeatureCard(
-                          title: '新碟上架',
-                          subtitle:
-                              '${albums.first.singerName} · ${albums.first.albumName}',
-                          imageUrl: albums.first.coverUrl,
-                          gradient: const [
-                            Color(0xFF454A92),
-                            Color(0xFF78CAFF),
-                          ],
-                          onTap: onAlbumTap,
-                        )
-                      : _FeatureCard(
-                          title: '新碟上架',
-                          subtitle: '暂无新专辑',
-                          imageUrl: null,
-                          gradient: const [
-                            Color(0xFF454A92),
-                            Color(0xFF78CAFF),
-                          ],
-                          onTap: () {},
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (covers.isEmpty)
+                      const Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: EdgeInsets.only(right: 18),
+                          child: Icon(
+                            Icons.graphic_eq_rounded,
+                            size: 96,
+                            color: Color(0x33FFFFFF),
+                          ),
                         ),
+                      )
+                    else if (covers.length == 1)
+                      Image.network(
+                        covers.first,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      )
+                    else
+                      // 两首歌的封面左右并置成一张拼贴：只铺一首会让「每日推荐」
+                      // 看起来像某一张专辑的入口，两首歌的封面才读得出"这是一批歌"。
+                      Row(
+                        children: [
+                          for (final url in covers)
+                            Expanded(
+                              child: Image.network(
+                                url,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) =>
+                                    const SizedBox.shrink(),
+                              ),
+                            ),
+                        ],
+                      ),
+                    // 两张封面之间会形成一条贯穿整张卡的竖向接缝。用一道柔和的
+                    // 暗色过渡带把它压下去，读起来是暗角而不是一条被切开的分界线。
+                    if (covers.length > 1)
+                      Align(
+                        alignment: Alignment.center,
+                        child: FractionallySizedBox(
+                          widthFactor: .2,
+                          heightFactor: 1,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Colors.black.withValues(alpha: 0),
+                                  Colors.black.withValues(alpha: .30),
+                                  Colors.black.withValues(alpha: 0),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            Colors.black.withValues(alpha: .42),
+                            Colors.black.withValues(alpha: .70),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 16, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: .22),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  child: const Text(
+                                    '每日推荐',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: .4,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                dateLabel,
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: .86),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              if (countLabel != null) ...[
+                                const SizedBox(width: 8),
+                                Text(
+                                  countLabel,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: .64),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const Spacer(),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 56),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  headline,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 21,
+                                    height: 1.2,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  caption,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: .84),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Positioned(
+                      right: 16,
+                      bottom: 16,
+                      child: _BannerPlayButton(onTap: onPlay),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          );
-        },
+          ),
+        ),
       ),
     );
   }
 }
 
-@visibleForTesting
-double featureCardSize(double maxWidth) =>
-    ((maxWidth - 10) / 2).clamp(140.0, 200.0);
+/// Banner 右下角的播放图标。
+///
+/// 这里刻意不画圆形底色：它只是一枚提示「这张卡可以播放」的图标，真正的
+/// 点击热区是整个 Banner。白底圆按钮在深色封面上会变成一个高对比度的实体
+/// 按钮，抢走首曲标题的注意力；无底图标 + 一层阴影就能保证在任意封面上可见。
+class _BannerPlayButton extends StatelessWidget {
+  const _BannerPlayButton({required this.onTap});
 
-@visibleForTesting
-int homeSongPageSize(bool isWide) => isWide
-    ? _SongSectionState._widePerPage
-    : _SongSectionState._portraitPerPage;
-
-class _FeatureCard extends StatelessWidget {
-  const _FeatureCard({
-    required this.title,
-    required this.subtitle,
-    required this.imageUrl,
-    required this.gradient,
-    required this.onTap,
-  });
-
-  final String title;
-  final String subtitle;
-  final String? imageUrl;
-  final List<Color> gradient;
   final VoidCallback onTap;
 
   @override
@@ -684,82 +808,74 @@ class _FeatureCard extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(colors: gradient),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Stack(
-            children: [
-              if (imageUrl != null)
-                Positioned.fill(
-                  child: Image.network(
-                    imageUrl!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                  ),
-                ),
-              Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: .16),
-                        Colors.black.withValues(alpha: .54),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 14,
-                bottom: 13,
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  color: Colors.white.withValues(alpha: .94),
-                  size: 32,
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.white.withValues(alpha: .82),
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Icon(
+          Icons.play_arrow_rounded,
+          size: 34,
+          color: Colors.white.withValues(alpha: .94),
+          shadows: const [
+            Shadow(
+              color: Color(0x99000000),
+              blurRadius: 8,
+              offset: Offset(0, 2),
+            ),
+          ],
         ),
       ),
     );
   }
 }
+
+/// 每日推荐 Banner 的高度。
+///
+/// 此前这里是两张正方形卡，高度随宽度在 140–200 之间浮动，一屏里既占掉
+/// 大量纵向空间、又因为尺寸随屏宽变化而让首屏节奏不稳定。Banner 用固定
+/// 高度 + 横向铺满，首屏结构在任何宽度下都一致。
+@visibleForTesting
+const double dailyBannerHeight = 168;
+
+/// 取 Banner 上要展示的封面，最多两张。
+///
+/// 优先用每首歌自己的封面；歌曲封面缺失时退回到整张推荐列表的封面，
+/// 再去重——两首歌共用一张图时并排铺开会出现完全相同的两块，看起来像
+/// 渲染错误，所以同一张图只留一次。
+@visibleForTesting
+List<String> dailyBannerCovers(DailyRecommend daily) {
+  final urls = <String>[];
+  void add(String? url) {
+    if (url == null || url.isEmpty) return;
+    if (urls.contains(url)) return;
+    urls.add(url);
+  }
+
+  // 优先取歌曲自己的封面；不足两张时再用整张推荐列表的封面补齐。
+  for (final song in daily.songs) {
+    if (urls.length >= 2) break;
+    add(song.coverUrl);
+  }
+  add(daily.coverUrl);
+  return urls.take(2).toList(growable: false);
+}
+
+/// 把「每日推荐 2026-11-17」这类标题里的日期取出来，只保留 M月d日。
+///
+/// 标题本身不再整句上屏：Banner 左上角已有「每日推荐」标签，再重复一遍
+/// 会挤占首曲标题的空间。
+@visibleForTesting
+String dailyBannerDateLabel(String title, {DateTime? now}) {
+  final match = RegExp(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})').firstMatch(title);
+  if (match != null) {
+    return '${match.group(2)}月${match.group(3)}日';
+  }
+  final today = now ?? DateTime.now();
+  return '${today.month}月${today.day}日';
+}
+
+@visibleForTesting
+int homeSongPageSize(bool isWide) => isWide
+    ? _SongSectionState._widePerPage
+    : _SongSectionState._portraitPerPage;
 
 class _SongSection extends StatefulWidget {
   const _SongSection({
@@ -1090,7 +1206,7 @@ class _HomeSongRow extends StatelessWidget {
                     isLiked
                         ? Icons.favorite_rounded
                         : Icons.favorite_border_rounded,
-                    color: isLiked ? Colors.redAccent : colorScheme.outline,
+                    color: isLiked ? AppTheme.musicRed : colorScheme.outline,
                     size: 27,
                   ),
                   visualDensity: VisualDensity.compact,
@@ -1212,7 +1328,7 @@ class _SectionHeader extends StatelessWidget {
             title,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
               fontSize: 18,
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w800,
               color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
@@ -1248,7 +1364,7 @@ class _PlaylistCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   height: 1.16,
                 ),
               ),
@@ -1456,7 +1572,7 @@ class _RadioHeroCard extends StatelessWidget {
         child: Ink(
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainer,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(14),
@@ -1493,7 +1609,7 @@ class _RadioHeroCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           color: Colors.white,
-                          fontWeight: FontWeight.w900,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
                       const SizedBox(height: 5),
@@ -1583,7 +1699,7 @@ class _RadioStationCard extends StatelessWidget {
           children: [
             Stack(
               children: [
-                Artwork(url: station.artworkUrl, size: 128, borderRadius: 10),
+                Artwork(url: station.artworkUrl, size: 128, borderRadius: 8),
                 Positioned.fill(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(10),
@@ -1614,7 +1730,7 @@ class _RadioStationCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w700,
                 height: 1.16,
               ),
             ),
@@ -1684,7 +1800,7 @@ class _RadioSkeleton extends StatelessWidget {
         children: [
           const SkeletonBox(width: 112, height: 24, radius: 8),
           const SizedBox(height: 14),
-          const SkeletonBox(width: double.infinity, height: 170, radius: 14),
+          const SkeletonBox(width: double.infinity, height: 168, radius: 16),
           const SizedBox(height: 22),
           const SkeletonBox(width: 90, height: 22, radius: 8),
           const SizedBox(height: 12),
@@ -1730,7 +1846,7 @@ class _RadioEmpty extends StatelessWidget {
               '暂无电台内容',
               style: Theme.of(
                 context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
             ),
           ],
         ),
@@ -1761,7 +1877,7 @@ class _RadioUnsupported extends StatelessWidget {
             '电台暂不支持',
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 6),
           Text(
@@ -1803,18 +1919,10 @@ class _HomeSkeleton extends StatelessWidget {
             const SizedBox(height: 28),
             const SkeletonBox(width: double.infinity, height: 44, radius: 9),
             const SizedBox(height: 14),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final cardSize = featureCardSize(constraints.maxWidth);
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.start,
-                  children: [
-                    SkeletonBox(width: cardSize, height: cardSize, radius: 12),
-                    const SizedBox(width: 10),
-                    SkeletonBox(width: cardSize, height: cardSize, radius: 12),
-                  ],
-                );
-              },
+            const SkeletonBox(
+              width: double.infinity,
+              height: dailyBannerHeight,
+              radius: 16,
             ),
             const SizedBox(height: 28),
             const SkeletonBox(width: 128, height: 24, radius: 8),
@@ -1889,15 +1997,10 @@ class _ErrorView extends StatelessWidget {
 }
 
 class _HomeData {
-  const _HomeData({
-    required this.daily,
-    required this.playlists,
-    required this.albums,
-  });
+  const _HomeData({required this.daily, required this.playlists});
 
   final DailyRecommend daily;
   final List<PlaylistSummary> playlists;
-  final List<AlbumShopItem> albums;
 }
 
 class _RadioData {
