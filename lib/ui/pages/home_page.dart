@@ -592,198 +592,241 @@ class _DailyBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final songs = daily.songs;
-    final covers = dailyBannerCovers(daily);
-    final headline = songs.isEmpty ? '献给此刻迈步的你' : songs.first.title;
-    // 首曲下方只留歌手；曲目数挪到顶部与日期并排，读起来是一行"元信息"，
-    // 不再把两件不相干的事（谁唱的 / 一共几首）挤在同一行里。
-    final caption = songs.isEmpty
-        ? '今天还没有推荐，稍后再来看看'
-        : songs.first.artist;
+    final metrics = dailyBannerMetrics(
+      MediaQuery.sizeOf(context).width - 36,
+    );
+    final items = dailyBannerItems(daily).take(metrics.columns).toList();
+
+    if (items.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 18),
+        child: _BannerEmpty(height: metrics.height),
+      );
+    }
+
     final dateLabel = dailyBannerDateLabel(daily.title);
-    final countLabel = songs.isEmpty ? null : '${songs.length}首';
+    final metaLabel = dailyBannerMetaLabel(dateLabel, songs.length);
 
     return Padding(
       padding: const EdgeInsets.only(right: 18),
-      child: Semantics(
-        button: true,
-        label: '每日推荐，$headline',
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onPlay,
-          child: SizedBox(
-            height: dailyBannerHeight,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF2F6DF6), Color(0xFF1B3FA8)],
+      child: SizedBox(
+        height: metrics.height,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final item in items) ...[
+              if (item != items.first) const SizedBox(width: 12),
+              Expanded(
+                child: _BannerCard(
+                  item: item,
+                  metaLabel: metaLabel,
+                  compact: metrics.compact,
+                  onPlay: item == items.first ? onPlay : null,
                 ),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (covers.isEmpty)
-                      const Align(
-                        alignment: Alignment.centerRight,
-                        child: Padding(
-                          padding: EdgeInsets.only(right: 18),
-                          child: Icon(
-                            Icons.graphic_eq_rounded,
-                            size: 96,
-                            color: Color(0x33FFFFFF),
-                          ),
-                        ),
-                      )
-                    else if (covers.length == 1)
-                      Image.network(
-                        covers.first,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      )
-                    else
-                      // 两首歌的封面左右并置成一张拼贴：只铺一首会让「每日推荐」
-                      // 看起来像某一张专辑的入口，两首歌的封面才读得出"这是一批歌"。
-                      Row(
-                        children: [
-                          for (final url in covers)
-                            Expanded(
-                              child: Image.network(
-                                url,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, _, _) =>
-                                    const SizedBox.shrink(),
-                              ),
-                            ),
-                        ],
-                      ),
-                    // 两张封面之间会形成一条贯穿整张卡的竖向接缝。用一道柔和的
-                    // 暗色过渡带把它压下去，读起来是暗角而不是一条被切开的分界线。
-                    if (covers.length > 1)
-                      Align(
-                        alignment: Alignment.center,
-                        child: FractionallySizedBox(
-                          widthFactor: .2,
-                          heightFactor: 1,
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Colors.black.withValues(alpha: 0),
-                                  Colors.black.withValues(alpha: .30),
-                                  Colors.black.withValues(alpha: 0),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.black.withValues(alpha: .42),
-                            Colors.black.withValues(alpha: .70),
-                          ],
-                        ),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 16, 16, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              DecoratedBox(
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: .22),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 4,
-                                  ),
-                                  child: const Text(
-                                    '每日推荐',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: .4,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                dateLabel,
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: .86),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              if (countLabel != null) ...[
-                                const SizedBox(width: 8),
-                                Text(
-                                  countLabel,
-                                  style: TextStyle(
-                                    color: Colors.white.withValues(alpha: .64),
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          const Spacer(),
-                          Padding(
-                            padding: const EdgeInsets.only(right: 56),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  headline,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 21,
-                                    height: 1.2,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  caption,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white.withValues(alpha: .84),
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Positioned(
-                      right: 16,
-                      bottom: 16,
-                      child: _BannerPlayButton(onTap: onPlay),
-                    ),
-                  ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Banner 单张卡片：左侧封面（正方形，永不裁切），右侧信息。
+class _BannerCard extends StatelessWidget {
+  const _BannerCard({
+    required this.item,
+    required this.metaLabel,
+    required this.compact,
+    required this.onPlay,
+  });
+
+  final BannerItem item;
+  final String metaLabel;
+  final bool compact;
+  final VoidCallback? onPlay;
+
+  @override
+  Widget build(BuildContext context) {
+    final cover = item.coverUrl;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: onPlay != null,
+      label: '每日推荐，${item.title}',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onPlay,
+        child: DecoratedBox(
+          // 不再使用品牌蓝渐变填充：首屏其它卡片（歌单、电台）都是中性底色
+          // + 灰黑文字，Banner 独自撑一块高饱和蓝面会显得像是另一个应用的
+          // 插入件。这里统一到 surfaceContainer。
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainer,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 封面用正方形，且宽度不超过卡片的一半：固定正方形在高窄卡上
+                // 会把右侧信息区挤到只剩几个像素，这一层夹取让两种极端都不会溢出。
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    // 封面恒定正方形，但不允许超过卡片一半宽：极窄的卡上
+                    // 固定正方形会把右侧信息区压到只剩几个像素。
+                    final side = constraints.maxHeight.isFinite
+                        ? constraints.maxHeight.clamp(
+                            0.0,
+                            constraints.maxWidth * .5,
+                          )
+                        : constraints.maxWidth * .5;
+                    return SizedBox(
+                      width: side,
+                      child: _BannerCoverStack(cover: cover),
+                    );
+                  },
                 ),
+                Expanded(
+                  child: _BannerInfo(
+                    title: item.title,
+                    artist: item.artist,
+                    metaLabel: metaLabel,
+                    compact: compact,
+                    onPlay: onPlay,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Banner 左侧的正方形封面。
+class _BannerCoverStack extends StatelessWidget {
+  const _BannerCoverStack({required this.cover});
+
+  final String cover;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.network(
+          cover,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const Center(
+            child: Icon(
+              Icons.graphic_eq_rounded,
+              size: 44,
+              color: Color(0x40FFFFFF),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BannerInfo extends StatelessWidget {
+  const _BannerInfo({
+    required this.title,
+    required this.artist,
+    required this.metaLabel,
+    required this.compact,
+    required this.onPlay,
+  });
+
+  final String title;
+  final String artist;
+  final String metaLabel;
+  final bool compact;
+  final VoidCallback? onPlay;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // 文字层级对齐首页其它区块：元信息 onSurfaceVariant、
+          // 标题 onSurface、歌手 onSurfaceVariant。
+          Text(
+            metaLabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colorScheme.onSurfaceVariant,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: .2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            maxLines: compact ? 1 : 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colorScheme.onSurface,
+              fontSize: compact ? 15 : 18,
+              height: 1.25,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colorScheme.onSurfaceVariant,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _BannerPlayButton(onTap: onPlay),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BannerEmpty extends StatelessWidget {
+  const _BannerEmpty({required this.height});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '今天还没有推荐，稍后再来看看',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -801,7 +844,8 @@ class _DailyBanner extends StatelessWidget {
 class _BannerPlayButton extends StatelessWidget {
   const _BannerPlayButton({required this.onTap});
 
-  final VoidCallback onTap;
+  /// 只有可播放的那张卡会传回调；其余卡片为 null，图标仅作视觉提示。
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -813,49 +857,146 @@ class _BannerPlayButton extends StatelessWidget {
         child: Icon(
           Icons.play_arrow_rounded,
           size: 34,
-          color: Colors.white.withValues(alpha: .94),
-          shadows: const [
-            Shadow(
-              color: Color(0x99000000),
-              blurRadius: 8,
-              offset: Offset(0, 2),
-            ),
-          ],
+          color: Theme.of(context).colorScheme.primary,
         ),
       ),
     );
   }
 }
 
-/// 每日推荐 Banner 的高度。
+/// 每日推荐 Banner 的自适应尺寸。
 ///
-/// 此前这里是两张正方形卡，高度随宽度在 140–200 之间浮动，一屏里既占掉
-/// 大量纵向空间、又因为尺寸随屏宽变化而让首屏节奏不稳定。Banner 用固定
-/// 高度 + 横向铺满，首屏结构在任何宽度下都一致。
+/// 旧实现是「宽度铺满 + 高度写死 168」。手机竖屏下卡片约 2.1:1 尚可，
+/// 但平板横屏内容区能到 1100+ 宽，同样 168 高就变成 6.6:1：方形封面塞进
+/// 3.3:1 的槽位，BoxFit.cover 只裁不拉，上下各切掉 35%，画面主体直接
+/// 消失——这就是"平板畸变"的真正来源。
+///
+/// 现在高度按宽度推算并夹在合理区间，且宽度超过阈值时改为左右各一张卡：
+/// 单张卡内部封面固定正方形、信息在右侧，封面比例恒定 1:1，永远不裁主体。
 @visibleForTesting
-const double dailyBannerHeight = 168;
+class DailyBannerMetrics {
+  const DailyBannerMetrics({
+    required this.height,
+    required this.columns,
+    required this.compact,
+  });
 
-/// 取 Banner 上要展示的封面，最多两张。
+  /// Banner 整体高度（逻辑像素）。
+  final double height;
+
+  /// 并排展示几张卡片：窄屏 1 张，宽屏 2 张。
+  final int columns;
+
+  /// 单卡是否处于紧凑形态（文字更小、标题单行）。
+  final bool compact;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DailyBannerMetrics &&
+      other.height == height &&
+      other.columns == columns &&
+      other.compact == compact;
+
+  @override
+  int get hashCode => Object.hash(height, columns, compact);
+}
+
+/// 根据可用宽度推算 Banner 尺寸。
 ///
-/// 优先用每首歌自己的封面；歌曲封面缺失时退回到整张推荐列表的封面，
-/// 再去重——两首歌共用一张图时并排铺开会出现完全相同的两块，看起来像
-/// 渲染错误，所以同一张图只留一次。
+/// [availableWidth] 是内容区宽度（屏宽减去左右内边距）。
 @visibleForTesting
-List<String> dailyBannerCovers(DailyRecommend daily) {
-  final urls = <String>[];
-  void add(String? url) {
-    if (url == null || url.isEmpty) return;
-    if (urls.contains(url)) return;
-    urls.add(url);
+DailyBannerMetrics dailyBannerMetrics(double availableWidth) {
+  if (!availableWidth.isFinite || availableWidth <= 0) {
+    return const DailyBannerMetrics(height: 168, columns: 1, compact: false);
   }
 
-  // 优先取歌曲自己的封面；不足两张时再用整张推荐列表的封面补齐。
+  // 两张卡并排的下限：每张卡至少要有「正方形封面 + 可读的文字区」。
+  // 低于这个宽度时两张卡会把文字压成几个字，不如回到单张。
+  const twoColumnMinWidth = 640.0;
+  final columns = availableWidth >= twoColumnMinWidth ? 2 : 1;
+
+  // 单张卡宽 = 可用宽度减去卡间距后的均分。
+  final cardWidth = columns == 2
+      ? (availableWidth - 12) / 2
+      : availableWidth;
+
+  // 卡高跟随卡片宽度变化，保证单卡内部仍然是「左封面 + 右信息」的横向比例，
+  // 而不是被拉成一条细线。夹在 148–188 之间：低于 148 文字放不下两行，
+  // 高于 188 首屏会被 Banner 吃掉太多。
+  final height = (cardWidth * 0.42).clamp(148.0, 188.0);
+
+  // 双栏时每张卡只有半宽，文字区更窄，降级为紧凑排版。
+  final compact = columns == 2 || availableWidth < 340;
+
+  return DailyBannerMetrics(
+    height: height.roundToDouble(),
+    columns: columns,
+    compact: compact,
+  );
+}
+
+/// Banner 上要展示的条目。
+///
+/// 每条对应一首歌曲：标题用歌名、副标题用歌手、封面用该曲封面。
+/// 封面缺失的条目会被跳过——没有封面的卡在拼贴里就是一块纯色，不如不展示。
+@visibleForTesting
+List<BannerItem> dailyBannerItems(DailyRecommend daily) {
+  final items = <BannerItem>[];
+  final seenCovers = <String>{};
+
   for (final song in daily.songs) {
-    if (urls.length >= 2) break;
-    add(song.coverUrl);
+    final cover = song.coverUrl;
+    if (cover == null || cover.isEmpty) continue;
+    if (!seenCovers.add(cover)) continue;
+    items.add(
+      BannerItem(title: song.title, artist: song.artist, coverUrl: cover),
+    );
+    if (items.length >= 2) break;
   }
-  add(daily.coverUrl);
-  return urls.take(2).toList(growable: false);
+
+  // 一首封面都没有时退回整张推荐列表的封面，保证至少有一张卡可展示。
+  if (items.isEmpty && daily.coverUrl != null && daily.coverUrl!.isNotEmpty) {
+    final first = daily.songs.isEmpty ? null : daily.songs.first;
+    items.add(
+      BannerItem(
+        title: first?.title ?? '每日推荐',
+        artist: first?.artist ?? '献给此刻迈步的你',
+        coverUrl: daily.coverUrl!,
+      ),
+    );
+  }
+
+  return items;
+}
+
+/// Banner 顶部的元信息行：日期 + 曲目数。
+@visibleForTesting
+String dailyBannerMetaLabel(String dateLabel, int songCount) {
+  if (songCount <= 0) return dateLabel;
+  return '$dateLabel   $songCount首';
+}
+
+/// Banner 上的一条推荐（对应一首每日推荐歌曲）。
+class BannerItem {
+  const BannerItem({
+    required this.title,
+    required this.artist,
+    required this.coverUrl,
+  });
+
+  final String title;
+  final String artist;
+  final String coverUrl;
+
+  @override
+  bool operator ==(Object other) =>
+      other is BannerItem &&
+      other.title == title &&
+      other.artist == artist &&
+      other.coverUrl == coverUrl;
+
+  @override
+  int get hashCode => Object.hash(title, artist, coverUrl);
 }
 
 /// 把「每日推荐 2026-11-17」这类标题里的日期取出来，只保留 M月d日。
@@ -1921,7 +2062,7 @@ class _HomeSkeleton extends StatelessWidget {
             const SizedBox(height: 14),
             const SkeletonBox(
               width: double.infinity,
-              height: dailyBannerHeight,
+              height: 168,
               radius: 16,
             ),
             const SizedBox(height: 28),

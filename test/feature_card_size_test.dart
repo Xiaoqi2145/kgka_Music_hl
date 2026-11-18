@@ -2,8 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kgka_music_hl/ui/pages/home_page.dart';
 
 void main() {
-  test('daily banner keeps a fixed height across screen widths', () {
-    expect(dailyBannerHeight, 168);
+  test('daily banner scales across screen widths', () {
+    expect(dailyBannerMetrics(354).columns, 1);
+    expect(dailyBannerMetrics(1114).columns, 2);
   });
 
   test('banner date label strips the year from the daily title', () {

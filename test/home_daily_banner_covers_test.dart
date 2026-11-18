@@ -6,12 +6,12 @@ Song _song(String title, String? cover) => Song(
   id: title,
   hash: title,
   title: title,
-  artist: 'artist',
+  artist: 'artist-$title',
   coverUrl: cover,
 );
 
 void main() {
-  test('banner uses the first two song covers', () {
+  test('banner items pair each song with its own cover and artist', () {
     final daily = DailyRecommend(
       title: '每日推荐 2026-11-17',
       songs: [
@@ -20,34 +20,49 @@ void main() {
         _song('c', 'https://x/c.jpg'),
       ],
     );
-    expect(dailyBannerCovers(daily), ['https://x/a.jpg', 'https://x/b.jpg']);
+    final items = dailyBannerItems(daily);
+    expect(items.length, 2);
+    expect(items[0].title, 'a');
+    expect(items[0].artist, 'artist-a');
+    expect(items[0].coverUrl, 'https://x/a.jpg');
+    expect(items[1].title, 'b');
   });
 
-  test('banner falls back to the daily cover when songs lack artwork', () {
+  test('songs without artwork are skipped rather than shown as blank cards', () {
     final daily = DailyRecommend(
-      title: '每日推荐 2026-11-17',
-      coverUrl: 'https://x/daily.jpg',
-      songs: [_song('a', null)],
+      title: '每日推荐',
+      songs: [_song('a', null), _song('b', 'https://x/b.jpg')],
     );
-    expect(dailyBannerCovers(daily), ['https://x/daily.jpg']);
+    final items = dailyBannerItems(daily);
+    expect(items.length, 1);
+    expect(items.single.title, 'b');
   });
 
   test('banner never repeats the same cover twice', () {
     final daily = DailyRecommend(
-      title: '每日推荐 2026-11-17',
+      title: '每日推荐',
       songs: [
         _song('a', 'https://x/same.jpg'),
         _song('b', 'https://x/same.jpg'),
       ],
     );
-    expect(dailyBannerCovers(daily), ['https://x/same.jpg']);
+    expect(dailyBannerItems(daily).length, 1);
   });
 
-  test('banner has no covers when nothing is available', () {
+  test('falls back to the daily cover when no song has artwork', () {
     final daily = DailyRecommend(
       title: '每日推荐',
+      coverUrl: 'https://x/daily.jpg',
       songs: [_song('a', null)],
     );
-    expect(dailyBannerCovers(daily), isEmpty);
+    final items = dailyBannerItems(daily);
+    expect(items.length, 1);
+    expect(items.single.coverUrl, 'https://x/daily.jpg');
+    expect(items.single.title, 'a');
+  });
+
+  test('no items when nothing is available', () {
+    final daily = DailyRecommend(title: '每日推荐', songs: [_song('a', null)]);
+    expect(dailyBannerItems(daily), isEmpty);
   });
 }
