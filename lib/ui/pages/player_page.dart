@@ -731,53 +731,58 @@ class _LandscapePlayerContent extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 350;
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            compact ? 14 : 24,
-            compact ? 4 : 10,
-            compact ? 16 : 30,
-            compact ? 8 : 14,
-          ),
-          child: Column(
-            children: [
-              _LandscapeHeader(
-                player: player,
-                auth: auth,
-                song: song,
-                excludeIds: excludeIds,
-                onStartEdit: onStartEdit,
-                editing: editing,
-                onClose: onClose,
-                compact: compact,
-                onArtistTap: onArtistTap,
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1180),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                compact ? 14 : 24,
+                compact ? 4 : 10,
+                compact ? 16 : 30,
+                compact ? 8 : 14,
               ),
-              SizedBox(height: compact ? 2 : 10),
-              Expanded(
-                child: Row(
-                  children: [
-                    Expanded(
-                      flex: 9,
-                      child: _LandscapeArtworkShowcase(
-                        player: player,
-                        song: song,
-                        compact: compact,
-                      ),
+              child: Column(
+                children: [
+                  _LandscapeHeader(
+                    player: player,
+                    auth: auth,
+                    song: song,
+                    excludeIds: excludeIds,
+                    onStartEdit: onStartEdit,
+                    editing: editing,
+                    onClose: onClose,
+                    compact: compact,
+                    onArtistTap: onArtistTap,
+                  ),
+                  SizedBox(height: compact ? 2 : 10),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 9,
+                          child: _LandscapeArtworkShowcase(
+                            player: player,
+                            song: song,
+                            compact: compact,
+                          ),
+                        ),
+                        SizedBox(width: compact ? 18 : 34),
+                        Expanded(
+                          flex: 12,
+                          child: _LandscapeRightPanel(
+                            player: player,
+                            resolution: resolution,
+                            editing: editing,
+                            onQueue: onQueue,
+                            compact: compact,
+                          ),
+                        ),
+                      ],
                     ),
-                    SizedBox(width: compact ? 18 : 34),
-                    Expanded(
-                      flex: 12,
-                      child: _LandscapeRightPanel(
-                        player: player,
-                        resolution: resolution,
-                        editing: editing,
-                        onQueue: onQueue,
-                        compact: compact,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         );
       },
@@ -995,8 +1000,9 @@ class _LandscapeArtworkShowcaseState extends State<_LandscapeArtworkShowcase>
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = math.min(constraints.maxWidth, constraints.maxHeight);
+        final maxDisc = AdaptiveLayout.isTablet(context) ? 470.0 : 330.0;
         final discSize = (available * (widget.compact ? .84 : .9))
-            .clamp(150.0, 330.0)
+            .clamp(150.0, maxDisc)
             .toDouble();
         final coverSize = discSize * (widget.compact ? .58 : .70);
 
