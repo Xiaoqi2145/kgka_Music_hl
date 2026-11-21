@@ -45,6 +45,8 @@ class ApiClient {
     Map<String, Object?> query = const {},
     Map<String, Object?>? body,
     bool allowRetry = false,
+    bool preserveEnvelope = false,
+    bool updateSession = true,
   }) {
     return _sendWithRetry(
       () => _client.post(
@@ -53,6 +55,8 @@ class ApiClient {
         body: body == null ? null : jsonEncode(body),
       ),
       allowRetry: allowRetry,
+      preserveEnvelope: preserveEnvelope,
+      updateSession: updateSession,
     );
   }
 
@@ -81,6 +85,8 @@ class ApiClient {
     Future<http.Response> Function() request, {
     int maxRetries = 2,
     bool allowRetry = true,
+    bool preserveEnvelope = false,
+    bool updateSession = true,
   }) async {
     const attemptTimeout = Duration(seconds: 15);
     const overallTimeout = Duration(seconds: 45);
@@ -105,7 +111,11 @@ class ApiClient {
           await _waitBeforeRetry(response, attempt, deadline);
           continue;
         }
-        return _processResponse(response);
+        return _processResponse(
+          response,
+          preserveEnvelope: preserveEnvelope,
+          updateSession: updateSession,
+        );
       } on TimeoutException {
         if (!allowRetry || attempt >= maxRetries) rethrow;
         await _waitBeforeRetry(null, attempt, deadline);
@@ -138,9 +148,15 @@ class ApiClient {
 
   /// 处理响应：更新 sessionId、校验状态码、解码 JSON。
   /// 必须同步：调用点位于 `_sendWithRetry` 的 try 内，返回 Future 会让异常逃逸出重试范围。
-  dynamic _processResponse(http.Response response) {
+  dynamic _processResponse(
+    http.Response response, {
+    required bool preserveEnvelope,
+    required bool updateSession,
+  }) {
     final responseSessionId = response.headers['x-kg-session-id'];
-    if (responseSessionId != null && responseSessionId.isNotEmpty) {
+    if (updateSession &&
+        responseSessionId != null &&
+        responseSessionId.isNotEmpty) {
       sessionId = responseSessionId;
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -151,7 +167,7 @@ class ApiClient {
     }
     try {
       final decoded = jsonDecode(response.body);
-      return unwrapData(decoded);
+      return preserveEnvelope ? decoded : unwrapData(decoded);
     } on FormatException {
       return response.body;
     }

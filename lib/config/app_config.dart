@@ -60,6 +60,10 @@ class AppConfig {
   /// The effective API base URL (custom if set, otherwise the default).
   static String get effectiveBaseUrl => _customBaseUrl ?? apiBaseUrl;
 
+  static bool get usesHostedApi =>
+      effectiveBaseUrl == _defaultApiBaseUrl ||
+      effectiveBaseUrl == '$_defaultApiBaseUrl/';
+
   /// Whether the user has set a custom API base URL.
   static bool get hasCustomBaseUrl => _customBaseUrl != null;
 

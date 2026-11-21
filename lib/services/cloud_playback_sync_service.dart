@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../config/app_config.dart';
 import '../controllers/auth_controller.dart';
+import '../core/api_client.dart';
 import '../models/music_models.dart';
 import '../services/music_api.dart';
 import '../services/playback_stats_service.dart';
@@ -55,12 +56,14 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     CloudHistoryUploader? historyUploader,
     CloudGradeUploader? gradeUploader,
     CloudTimeReader? gradeReader,
+    CloudTimeReader? legacyGradeUploader,
     Duration? retryUnit,
     Directory? directory,
     DateTime Function()? now,
   }) : _historyUploader = historyUploader ?? api.cloudUploadHistory,
        _gradeUploader = gradeUploader ?? api.cloudGradeUpdate,
        _gradeReader = gradeReader ?? api.cloudGradeInfo,
+       _legacyGradeUploader = legacyGradeUploader ?? api.cloudAddTime,
        _retryUnit = retryUnit ?? const Duration(minutes: 30),
        _directoryOverride = directory,
        _now = now ?? DateTime.now;
@@ -70,6 +73,7 @@ class CloudPlaybackSyncService extends ChangeNotifier {
   static const historyMaxAge = Duration(hours: 24);
   static const historyBatch = 20;
   static const gradeBatch = Duration(minutes: 30);
+  static const _gradeCheckpoint = Duration(minutes: 5);
   static const gradeMaxAge = Duration(hours: 24);
   static const unknownIsolation = Duration(hours: 6);
 
@@ -77,6 +81,7 @@ class CloudPlaybackSyncService extends ChangeNotifier {
   final CloudHistoryUploader _historyUploader;
   final CloudGradeUploader _gradeUploader;
   final CloudTimeReader _gradeReader;
+  final CloudTimeReader _legacyGradeUploader;
   final Duration _retryUnit;
   final Directory? _directoryOverride;
   final DateTime Function() _now;
@@ -84,9 +89,13 @@ class CloudPlaybackSyncService extends ChangeNotifier {
   bool _gradeEnabled = true;
   bool _foreground = true;
   Future<SyncOutcome>? _inFlight;
+  Future<void> _stateOperations = Future<void>.value();
+  final _bufferedGradeMicros = <String, int>{};
+  final _scheduledGradeCheckpoints = <String>{};
+  final _checkpointRetryAt = <String, DateTime>{};
+  int _gradeResetsPending = 0;
   CloudSyncSnapshot _snapshot = const CloudSyncSnapshot();
   int _historyFailureCount = 0;
-  int _gradeFailureCount = 0;
   String? _owner;
 
   CloudSyncSnapshot get snapshot => _snapshot;
@@ -96,7 +105,7 @@ class CloudPlaybackSyncService extends ChangeNotifier {
 
   String? get _storageKeyOwner {
     final userId = _auth.session?.userId?.trim();
-    if (userId == null || userId.isEmpty) return null;
+    if (!_auth.isLoggedIn || userId == null || userId.isEmpty) return null;
     return '${AppConfig.effectiveBaseUrl}|$userId';
   }
 
@@ -109,46 +118,63 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     _foreground = foreground;
   }
 
-  Future<void> setHistoryEnabled(bool enabled) async {
+  Future<void> setHistoryEnabled(bool enabled) {
     final owner = _storageKeyOwner;
-    if (owner == null) return;
-    await _ensureOwner(owner);
-    if (!_isKnownOwner(owner)) return;
-    _historyEnabled = enabled;
-    await _persist();
-    await _updateSnapshotFromDisk(owner);
-    notifySettingsChanged();
+    if (owner == null) return Future<void>.value();
+    return _withState(() async {
+      if (!_isKnownOwner(owner)) return;
+      await _ensureOwner(owner);
+      if (!_isKnownOwner(owner)) return;
+      final state = await _readState(owner);
+      _historyEnabled = enabled;
+      state['historyEnabled'] = enabled;
+      await _writeState(owner, state);
+      _updateSnapshot(owner, state);
+      if (_isKnownOwner(owner)) notifySettingsChanged();
+    });
   }
 
-  Future<void> setGradeEnabled(bool enabled) async {
-    final owner = _storageKeyOwner;
-    if (owner == null) return;
-    await _ensureOwner(owner);
-    if (!_isKnownOwner(owner)) return;
+  Future<void> setGradeEnabled(bool enabled) {
     _gradeEnabled = enabled;
-    await _persist();
-    await _updateSnapshotFromDisk(owner);
-    notifySettingsChanged();
+    final owner = _storageKeyOwner;
+    if (enabled || owner == null) return Future<void>.value();
+    _bufferedGradeMicros.remove(owner);
+    _gradeResetsPending++;
+    return _withState(() async {
+      try {
+        final state = await _readState(owner);
+        if (_gradePendingMicros(state) == 0 && state['gradeInFlight'] == null) {
+          return;
+        }
+        state['gradePendingMicros'] = 0;
+        state.remove('gradeInFlight');
+        await _writeState(owner, state);
+        _updateSnapshot(owner, state);
+      } finally {
+        _gradeResetsPending--;
+      }
+    });
   }
 
-  Future<void> restore() async {
-    final owner = _storageKeyOwner;
-    if (owner == null) return;
-    _owner = owner;
-    final raw = await _readStorage(owner);
-    if (raw == null) return;
-    final map = asMap(raw);
-    _historyEnabled = map['historyEnabled'] == true;
-    _gradeEnabled = map['gradeEnabled'] != false;
-    notifyListeners();
-  }
+  Future<void> restore() => onAccountChanged();
 
-  Future<void> enqueueHistory(Song song, {required DateTime playedAt}) async {
-    if (!_historyEnabled) return;
+  Future<void> enqueueHistory(Song song, {required DateTime playedAt}) {
+    if (!_historyEnabled) return Future<void>.value();
     final owner = _storageKeyOwner;
-    if (owner == null) return;
     final songId = cloudSongId(song);
-    if (songId == null || songId.isEmpty) return;
+    if (owner == null || songId == null || songId.isEmpty) {
+      return Future<void>.value();
+    }
+    return _withState(() => _enqueueHistory(owner, songId, song, playedAt));
+  }
+
+  Future<void> _enqueueHistory(
+    String owner,
+    String songId,
+    Song song,
+    DateTime playedAt,
+  ) async {
+    if (!_isKnownOwner(owner)) return;
     await _ensureOwner(owner);
     if (!_isKnownOwner(owner)) return;
     final state = await _readState(owner);
@@ -171,78 +197,136 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     }
     state['history'] = queue;
     await _writeState(owner, state);
-    _updateSnapshot(state);
+    _updateSnapshot(owner, state);
   }
 
-  Future<void> enqueueGradeTime(Duration duration) async {
+  void enqueueGradeTime(Duration duration) {
     if (!_gradeEnabled || duration <= Duration.zero) return;
     final owner = _storageKeyOwner;
     if (owner == null) return;
-    await _ensureOwner(owner);
-    if (!_isKnownOwner(owner)) return;
-    final restored = await _readState(owner);
-    if (_gradeEnabled != (restored['gradeEnabled'] != false)) return;
-    final state = restored;
-    final existing = asInt(state['gradePendingSeconds']) ?? 0;
-    final maxSeconds = gradeMaxAge.inSeconds;
-    state['gradePendingSeconds'] = (existing + duration.inSeconds).clamp(
-      0,
-      maxSeconds,
+    final buffered =
+        ((_bufferedGradeMicros[owner] ?? 0) + duration.inMicroseconds).clamp(
+          0,
+          gradeMaxAge.inMicroseconds,
+        );
+    _bufferedGradeMicros[owner] = buffered;
+    if (buffered < _gradeCheckpoint.inMicroseconds) return;
+    final retryAt = _checkpointRetryAt[owner];
+    if (retryAt != null && _now().isBefore(retryAt)) return;
+    if (!_scheduledGradeCheckpoints.add(owner)) return;
+    unawaited(
+      _withState(() async {
+        try {
+          if (_isKnownOwner(owner) && _foreground) {
+            await _syncOwner(owner, includeHistory: false);
+          } else {
+            await _checkpointGradeTime(owner);
+          }
+        } catch (error) {
+          _checkpointRetryAt[owner] = _now().add(_gradeCheckpoint);
+          debugPrint('[KA Music][cloud-sync] grade checkpoint failed: $error');
+        } finally {
+          _scheduledGradeCheckpoints.remove(owner);
+        }
+      }),
     );
-    await _writeState(owner, state);
-    _updateSnapshot(state);
   }
 
-  Future<void> onAccountChanged() async {
-    final owner = _storageKeyOwner;
-    if (owner == null) {
-      _owner = null;
-      _snapshot = const CloudSyncSnapshot();
-      notifyListeners();
-      return;
+  Future<void> flushGradeTime() => _withState(() async {
+    for (final owner in _bufferedGradeMicros.keys.toList()) {
+      try {
+        await _checkpointGradeTime(owner);
+      } catch (error) {
+        debugPrint('[KA Music][cloud-sync] grade checkpoint failed: $error');
+      }
     }
-    if (_owner == owner) return;
-    _owner = owner;
-    await restore();
-    await _updateSnapshotFromDisk(owner);
-    notifyListeners();
+  });
+
+  Future<void> onAccountChanged() {
+    final owner = _storageKeyOwner;
+    if (_owner == owner) return Future<void>.value();
+    return _withState(() async {
+      if (owner != _storageKeyOwner) return;
+      if (owner != null) {
+        await _ensureOwner(owner);
+      } else {
+        _owner = null;
+        _historyEnabled = false;
+        _snapshot = const CloudSyncSnapshot();
+      }
+      if (owner == _storageKeyOwner) notifyListeners();
+    });
   }
 
-  Future<SyncOutcome> maybeSync() async {
+  Future<Map<String, dynamic>> _checkpointGradeTime(String owner) async {
+    final state = await _readState(owner);
+    final buffered = _bufferedGradeMicros.remove(owner);
+    if (buffered == null) return state;
+    state['gradePendingMicros'] = (_gradePendingMicros(state) + buffered).clamp(
+      0,
+      gradeMaxAge.inMicroseconds,
+    );
+    try {
+      await _writeState(owner, state);
+      _checkpointRetryAt.remove(owner);
+    } catch (_) {
+      if (_gradeEnabled) {
+        _bufferedGradeMicros.update(
+          owner,
+          (value) => value + buffered,
+          ifAbsent: () => buffered,
+        );
+      }
+      rethrow;
+    }
+    _updateSnapshot(owner, state);
+    return state;
+  }
+
+  Future<T> _withState<T>(Future<T> Function() action) {
+    final result = _stateOperations.then((_) => action());
+    _stateOperations = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  Future<SyncOutcome> maybeSync() {
     final owner = _storageKeyOwner;
-    if (owner == null) return SyncOutcome.deferred;
-    await _ensureOwner(owner);
-    if (!_isKnownOwner(owner)) return SyncOutcome.deferred;
+    if (owner == null || !_foreground) {
+      return Future.value(SyncOutcome.deferred);
+    }
     final pending = _inFlight;
     if (pending != null) return pending;
-    if (!_foreground) {
-      return SyncOutcome.deferred;
-    }
-    final state = await _readState(owner);
-    final historyEnabled = state['historyEnabled'] == true;
-    final gradeEnabled = state['gradeEnabled'] != false;
-    if (!historyEnabled && !gradeEnabled) {
-      return SyncOutcome.deferred;
-    }
-    final future = _syncOwner(owner);
+    final future = _withState(() => _syncOwner(owner));
     _inFlight = future;
+    return _finishSync(future);
+  }
+
+  Future<SyncOutcome> _finishSync(Future<SyncOutcome> future) async {
     try {
       return await future;
+    } catch (error) {
+      debugPrint('[KA Music][cloud-sync] could not sync: $error');
+      return SyncOutcome.deferred;
     } finally {
       if (identical(_inFlight, future)) _inFlight = null;
     }
   }
 
-  Future<SyncOutcome> _syncOwner(String owner) async {
+  Future<SyncOutcome> _syncOwner(
+    String owner, {
+    bool includeHistory = true,
+  }) async {
     if (!_isKnownOwner(owner)) return SyncOutcome.deferred;
-    final state = await _readState(owner);
-    final last = asInt(state['lastSyncAt']);
-    if (last != null &&
-        _now().millisecondsSinceEpoch - last < syncWindow.inMilliseconds) {
-      return SyncOutcome.deferred;
-    }
+    await _ensureOwner(owner);
+    final state = await _checkpointGradeTime(owner);
+    if (!_isKnownOwner(owner) || !_foreground) return SyncOutcome.deferred;
     var outcome = SyncOutcome.idle;
-    if (state['historyEnabled'] == true) {
+    final lastHistory = asInt(state['historyLastSyncAt']);
+    final historyDue =
+        lastHistory == null ||
+        _now().millisecondsSinceEpoch - lastHistory >=
+            syncWindow.inMilliseconds;
+    if (includeHistory && historyDue && state['historyEnabled'] == true) {
       final result = await _syncHistory(owner, state);
       if (result == SyncOutcome.sent) {
         outcome = SyncOutcome.sent;
@@ -250,7 +334,10 @@ class CloudPlaybackSyncService extends ChangeNotifier {
         outcome = result;
       }
     }
-    if (state['gradeEnabled'] != false) {
+    if (_gradeEnabled &&
+        _gradeResetsPending == 0 &&
+        _foreground &&
+        _isKnownOwner(owner)) {
       final result = await _syncGrade(owner, state);
       if (result == SyncOutcome.sent) {
         if (outcome == SyncOutcome.idle) outcome = SyncOutcome.sent;
@@ -258,11 +345,7 @@ class CloudPlaybackSyncService extends ChangeNotifier {
         outcome = result;
       }
     }
-    if (outcome == SyncOutcome.sent || outcome == SyncOutcome.idle) {
-      state['lastSyncAt'] = _now().millisecondsSinceEpoch;
-    }
-    await _writeState(owner, state);
-    _updateSnapshot(state);
+    _updateSnapshot(owner, state);
     if (!_isKnownOwner(owner)) return SyncOutcome.deferred;
     return outcome;
   }
@@ -283,6 +366,7 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     if (inFlight is Map) {
       state['historyQuarantine'] = true;
       state['history'] = const <Map<String, dynamic>>[];
+      await _writeState(owner, state);
       return SyncOutcome.unknownResult;
     }
     final retryAt = asInt(state['historyRetryAt']);
@@ -298,6 +382,11 @@ class CloudPlaybackSyncService extends ChangeNotifier {
       'at': _now().millisecondsSinceEpoch,
     };
     await _writeState(owner, state);
+    if (!_foreground || !_isKnownOwner(owner)) {
+      state.remove('historyInFlight');
+      await _writeState(owner, state);
+      return SyncOutcome.deferred;
+    }
     try {
       final result = await _historyUploader(
         mxid: item['mxid'].toString(),
@@ -321,6 +410,9 @@ class CloudPlaybackSyncService extends ChangeNotifier {
       state['historyRetryAt'] = null;
       state['historyRetryTotal'] = 0;
       _historyFailureCount = 0;
+      final syncedAt = _now().millisecondsSinceEpoch;
+      state['historyLastSyncAt'] = syncedAt;
+      state['lastSyncAt'] = syncedAt;
       await _writeState(owner, state);
       return SyncOutcome.sent;
     } catch (error) {
@@ -338,55 +430,97 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     String owner,
     Map<String, dynamic> state,
   ) async {
-    final pending = asInt(state['gradePendingSeconds']) ?? 0;
-    if (pending <= 0) return SyncOutcome.idle;
-    final inFlight = state['gradeInFlight'];
-    if (inFlight is Map) {
-      state['gradeQuarantine'] = true;
-      state['gradePendingSeconds'] = 0;
+    final pending = _gradePendingMicros(state);
+    final interrupted = asMap(state['gradeInFlight']);
+    if (interrupted.isNotEmpty) {
+      final reserved =
+          asInt(interrupted['micros']) ?? gradeBatch.inMicroseconds;
+      state['gradePendingMicros'] = (pending - reserved).clamp(0, pending);
+      state.remove('gradeInFlight');
       await _writeState(owner, state);
       return SyncOutcome.unknownResult;
     }
+    if (pending == 0) return SyncOutcome.idle;
+    if (pending < gradeBatch.inMicroseconds) return SyncOutcome.deferred;
     final retryAt = asInt(state['gradeRetryAt']);
     if (retryAt != null && _now().millisecondsSinceEpoch < retryAt) {
       return SyncOutcome.backoff;
     }
-    if (pending < gradeBatch.inSeconds) return SyncOutcome.deferred;
-    final attempts = asInt(state['gradeRetryTotal']) ?? 0;
-    if (attempts >= 1) return SyncOutcome.deferred;
-    final batchSeconds = gradeBatch.inSeconds;
-    state['gradeInFlight'] = {
-      'seconds': batchSeconds,
-      'at': _now().millisecondsSinceEpoch,
-    };
-    await _writeState(owner, state);
-    try {
-      final baseline = _gradeBaseline(await _gradeReader());
-      final result = await _gradeUploader(
-        dSec: baseline,
-        diffSec: batchSeconds,
-      );
-      if (!_isAccepted(result)) {
-        state['gradeInFlight'] = null;
-        _gradeFailureCount++;
-        state['gradeRetryTotal'] = attempts + 1;
-        state['gradeRetryAt'] = _retryAt(
-          _gradeFailureCount,
-        ).millisecondsSinceEpoch;
+    final useLegacy = AppConfig.usesHostedApi;
+    final session = _auth.session;
+    int? baseline;
+    if (!useLegacy) {
+      try {
+        baseline = _gradeBaseline(await _gradeReader());
+      } catch (error) {
+        debugPrint('[KA Music][cloud-sync] grade baseline unavailable: $error');
+        state['gradeRetryAt'] = _now().add(syncWindow).millisecondsSinceEpoch;
         await _writeState(owner, state);
         return SyncOutcome.retryableFailure;
       }
-      state['gradeInFlight'] = null;
-      state['gradePendingSeconds'] = pending - batchSeconds;
-      state['gradeRetryAt'] = null;
-      state['gradeRetryTotal'] = 0;
-      _gradeFailureCount = 0;
-      await _writeState(owner, state);
-      return SyncOutcome.sent;
-    } catch (error) {
-      debugPrint('[KA Music][cloud-sync] grade result unknown: $error');
-      return SyncOutcome.unknownResult;
     }
+    if (!_canSendGrade(owner, session)) return SyncOutcome.deferred;
+
+    final batch = gradeBatch.inMicroseconds;
+    state['gradeInFlight'] = {'micros': batch};
+    state['gradeRetryAt'] = _now().add(syncWindow).millisecondsSinceEpoch;
+    await _writeState(owner, state);
+    if (!_canSendGrade(owner, session)) {
+      state.remove('gradeInFlight');
+      state.remove('gradeRetryAt');
+      await _writeState(owner, state);
+      return SyncOutcome.deferred;
+    }
+
+    SyncOutcome outcome;
+    try {
+      final result = useLegacy
+          ? await _legacyGradeUploader()
+          : await _gradeUploader(
+              dSec: baseline!,
+              diffSec: gradeBatch.inSeconds,
+            );
+      outcome = _gradeWriteAccepted(result)
+          ? SyncOutcome.sent
+          : SyncOutcome.retryableFailure;
+    } catch (error) {
+      final status = error is ApiException ? error.statusCode : null;
+      outcome = const {401, 403, 404, 405, 429}.contains(status)
+          ? SyncOutcome.retryableFailure
+          : SyncOutcome.unknownResult;
+      debugPrint('[KA Music][cloud-sync] grade $outcome (HTTP $status)');
+    }
+    state.remove('gradeInFlight');
+    if (outcome != SyncOutcome.retryableFailure) {
+      state['gradePendingMicros'] = pending - batch;
+    }
+    if (outcome == SyncOutcome.sent) {
+      state['lastSyncAt'] = _now().millisecondsSinceEpoch;
+    }
+    await _writeState(owner, state);
+    return outcome;
+  }
+
+  bool _canSendGrade(String owner, LoginSession? session) =>
+      _foreground &&
+      _gradeEnabled &&
+      _gradeResetsPending == 0 &&
+      _isKnownOwner(owner) &&
+      identical(session, _auth.session);
+
+  int _gradePendingMicros(Map<String, dynamic> state) =>
+      (asInt(state['gradePendingMicros']) ?? 0).clamp(
+        0,
+        gradeMaxAge.inMicroseconds,
+      );
+
+  bool _gradeWriteAccepted(dynamic value) {
+    if (value is! Map) return _isAccepted(value);
+    final fields = asMap(value);
+    final error = asInt(fields['error_code'] ?? fields['errcode']);
+    if (error != null && error != 0) return false;
+    final status = fields['status'] ?? fields['code'];
+    return status == null || _isAccepted({'status': status});
   }
 
   DateTime _retryAt(int failures) {
@@ -431,19 +565,18 @@ class CloudPlaybackSyncService extends ChangeNotifier {
 
   Future<void> _ensureOwner(String owner) async {
     if (_owner == owner) return;
+    final state = await _readState(owner);
+    if (!_isKnownOwner(owner)) return;
     _owner = owner;
-    await restore();
-    await _updateSnapshotFromDisk(owner);
+    _historyEnabled = state['historyEnabled'] == true;
+    _updateSnapshot(owner, state);
   }
 
-  Future<void> _updateSnapshotFromDisk(String owner) async {
-    _updateSnapshot(await _readState(owner));
-  }
-
-  void _updateSnapshot(Map<String, dynamic> state) {
+  void _updateSnapshot(String owner, Map<String, dynamic> state) {
+    if (!_isKnownOwner(owner)) return;
     _snapshot = CloudSyncSnapshot(
       historyPending: asList(state['history']).length,
-      gradePending: Duration(seconds: asInt(state['gradePendingSeconds']) ?? 0),
+      gradePending: Duration(microseconds: _gradePendingMicros(state)),
       lastSyncAt: _fromMillis(asInt(state['lastSyncAt'])),
       historyState: state['historyInFlight'] == null ? 'queued' : 'inFlight',
       gradeState: state['gradeInFlight'] == null ? 'queued' : 'inFlight',
@@ -455,7 +588,21 @@ class CloudPlaybackSyncService extends ChangeNotifier {
 
   Future<Map<String, dynamic>> _readState(String owner) async {
     final value = await _readStorage(owner);
-    return value == null ? <String, dynamic>{} : asMap(value);
+    final state = value == null ? <String, dynamic>{} : asMap(value);
+    // The old queue captured samples even with reporting disabled and did not
+    // record their source. Begin a new reporting window with eligible audio.
+    if (!state.containsKey('gradePendingMicros')) {
+      if (!state.containsKey('historyLastSyncAt') &&
+          state['lastSyncAt'] != null) {
+        state['historyLastSyncAt'] = state['lastSyncAt'];
+      }
+      state.remove('gradePendingSeconds');
+      state.remove('gradeInFlight');
+      state.remove('gradeRetryAt');
+      state.remove('gradeRetryTotal');
+      state.remove('gradeQuarantine');
+    }
+    return state;
   }
 
   Future<dynamic> _readStorage(String owner) async {
@@ -474,19 +621,8 @@ class CloudPlaybackSyncService extends ChangeNotifier {
     final temporary = File(
       '${file.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
     );
-    await temporary.writeAsString(jsonEncode(state));
-    if (file.existsSync()) await file.delete();
+    await temporary.writeAsString(jsonEncode(state), flush: true);
     await temporary.rename(file.path);
-  }
-
-  Future<void> _persist() async {
-    final owner = _storageKeyOwner;
-    if (owner == null) return;
-    if (!_isKnownOwner(owner)) return;
-    final state = await _readState(owner);
-    state['historyEnabled'] = _historyEnabled;
-    state['gradeEnabled'] = _gradeEnabled;
-    await _writeState(owner, state);
   }
 
   Future<File> _file(String owner) async {

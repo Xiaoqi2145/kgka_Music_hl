@@ -354,6 +354,7 @@ class PlayerController extends ChangeNotifier {
   final PlaybackStatsService _statsService = PlaybackStatsService();
   ListeningSessionTracker? _listeningTracker;
   Song? _listeningSong;
+  bool _listeningCanReport = false;
   DateTime? _listeningStartedAt;
 
   AudioPlayer get audioPlayer => _audioHandler.audioPlayer;
@@ -844,9 +845,11 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     addListeningTimeEnabled = enabled;
+    final updateCloudSetting = cloudPlaybackSync?.setGradeEnabled(enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_listenTimeSettingKey, enabled);
     notifyListeners();
+    await updateCloudSetting;
   }
 
   Future<void> playSong(Song song, {List<Song>? queue}) =>
@@ -2453,8 +2456,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> clearSessionForLogout() async {
     _cancelAutomaticResume();
     _settleListeningSession();
-    cloudPlaybackSync?.setForeground(true);
     unawaited(cloudPlaybackSync?.onAccountChanged());
+    unawaited(cloudPlaybackSync?.flushGradeTime());
     _cancelPendingPlaybackCache();
     _sessionSaveTimer?.cancel();
     _playbackSessionDirty = false;
@@ -3363,7 +3366,7 @@ class PlayerController extends ChangeNotifier {
     cloudPlaybackSync?.setForeground(isForeground);
     if (isForeground) {
       unawaited(cloudPlaybackSync?.onAccountChanged());
-      _maybeSyncCloudListening(force: true);
+      _maybeSyncCloudListening();
     }
     if (desktopLyricsEnabled) {
       _desktopLyrics.setAppForeground(isForeground: isForeground);
@@ -3375,7 +3378,6 @@ class PlayerController extends ChangeNotifier {
     final wasSessionActive = _listeningTracker != null;
     if (wasSessionActive) {
       _sampleListening(audioPlayer.position, canAdvance: _canAdvanceListening);
-      _maybeSyncCloudListening(force: true);
       _settleListeningSession();
     }
     final song = currentSong;
@@ -3385,6 +3387,7 @@ class PlayerController extends ChangeNotifier {
     await Future.wait([
       _historyService.flush(),
       _statsService.flush(),
+      if (cloudPlaybackSync case final sync?) sync.flushGradeTime(),
       if (downloadController case final downloads?) downloads.flush(),
       // 退出/切后台时立即落盘播放会话。
       _persistPlaybackSession(),
@@ -3664,6 +3667,7 @@ class PlayerController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     addListeningTimeEnabled =
         prefs.getBool(_listenTimeSettingKey) ?? addListeningTimeEnabled;
+    cloudPlaybackSync?.configure(gradeEnabled: addListeningTimeEnabled);
     audioQuality = AudioQuality.fromApiValue(
       prefs.getString(_audioQualitySettingKey),
     );
@@ -3837,6 +3841,7 @@ class PlayerController extends ChangeNotifier {
   void _beginListeningSession(Song song, {bool settle = true}) {
     if (settle) _settleListeningSession();
     _listeningSong = song;
+    _listeningCanReport = cloudSongId(song) != null;
     _listeningStartedAt = DateTime.now();
     _listeningTracker = ListeningSessionTracker();
   }
@@ -3871,16 +3876,17 @@ class PlayerController extends ChangeNotifier {
     if (verified <= Duration.zero) return;
 
     unawaited(_statsService.addListenTime(verified));
-    unawaited(cloudPlaybackSync?.enqueueGradeTime(verified));
+    if (_listeningCanReport && addListeningTimeEnabled) {
+      cloudPlaybackSync?.enqueueGradeTime(verified);
+    }
   }
 
-  void _maybeSyncCloudListening({bool force = false}) {
-    if (!force || !addListeningTimeEnabled || currentSong == null) {
+  void _maybeSyncCloudListening() {
+    final sync = cloudPlaybackSync;
+    if (sync == null || (!addListeningTimeEnabled && !sync.historyEnabled)) {
       return;
     }
-    final sync = cloudPlaybackSync;
-    if (sync == null) return;
-    unawaited(sync.onAccountChanged().then((_) => sync.maybeSync()));
+    unawaited(sync.maybeSync());
   }
 
   void _settleListeningSession() {

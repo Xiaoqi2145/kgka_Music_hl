@@ -327,11 +327,17 @@ class MusicApi {
         '/user/grade/info',
         body: {'d_sec': dSec, 'diff_sec': diffSec},
         allowRetry: false,
+        preserveEnvelope: true,
+        updateSession: false,
       );
 
   /// Legacy cumulative-time write; kept for servers without grade v2 writes.
-  Future<dynamic> cloudAddTime() =>
-      _client.post('/listen/timeadd', allowRetry: false);
+  Future<dynamic> cloudAddTime() => _client.post(
+    '/listen/timeadd',
+    allowRetry: false,
+    preserveEnvelope: true,
+    updateSession: false,
+  );
 
   Future<AppVersionInfo> latestAppVersion(AppUpdatePlatform platform) async {
     final json = asMap(

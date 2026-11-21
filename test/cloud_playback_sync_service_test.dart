@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:kgka_music_hl/config/app_config.dart';
 import 'package:kgka_music_hl/controllers/auth_controller.dart';
 import 'package:kgka_music_hl/core/api_client.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
@@ -19,8 +22,9 @@ void main() {
   late DateTime now;
   late Directory directory;
 
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    await AppConfig.loadCustomBaseUrl();
     directory = Directory.systemTemp.createTempSync('cloud_sync_test_');
     cache = CacheService(directory: directory);
     api = MusicApi(ApiClient());
@@ -49,13 +53,9 @@ void main() {
           calls.add(mxid);
           return {'status': 1};
         },
-        gradeReader: () async => {'d_sec': 0},
-        gradeUploader: ({required dSec, required diffSec}) async {
-          return {'status': 1};
-        },
+        legacyGradeUploader: () async => {'status': 1},
       );
       await service.setHistoryEnabled(true);
-      await service.enqueueGradeTime(const Duration(minutes: 30));
       const song = Song(
         id: 'catalog',
         title: 'A',
@@ -77,6 +77,7 @@ void main() {
   test(
     'grade requires a full 30 minute batch and uses read baseline',
     () async {
+      await AppConfig.saveCustomBaseUrl('https://custom.example');
       var uploads = 0;
       int? baseline;
       int? diff;
@@ -96,16 +97,106 @@ void main() {
           return {'status': 1};
         },
       );
-      await service.enqueueGradeTime(const Duration(minutes: 29));
+      service.enqueueGradeTime(const Duration(minutes: 29));
       now = now.add(const Duration(minutes: 29));
       expect(await service.maybeSync(), isNot(SyncOutcome.sent));
       expect(uploads, 0);
       now = now.add(const Duration(minutes: 1));
-      await service.enqueueGradeTime(const Duration(minutes: 1));
+      service.enqueueGradeTime(const Duration(minutes: 1));
       expect(await service.maybeSync(), SyncOutcome.sent);
       expect(uploads, 1);
       expect(baseline, 600);
       expect(diff, 1800);
+    },
+  );
+
+  test('hosted API posts one legacy batch from subsecond samples', () async {
+    final requests = <http.Request>[];
+    final hostedApi = MusicApi(
+      ApiClient(
+        client: MockClient((request) async {
+          requests.add(request);
+          return http.Response('{"status":1}', 200);
+        }),
+      ),
+    )..setSession(auth.session);
+    addTearDown(hostedApi.close);
+    final service = CloudPlaybackSyncService(
+      hostedApi,
+      auth,
+      directory: directory,
+      now: () => now,
+    );
+    addTearDown(service.dispose);
+    service.setForeground(false);
+    service.enqueueGradeTime(const Duration(milliseconds: 500));
+    expect(directory.listSync(), isEmpty);
+    for (var i = 1; i < 3600; i++) {
+      service.enqueueGradeTime(const Duration(milliseconds: 500));
+    }
+    await service.flushGradeTime();
+    expect(service.snapshot.gradePending, const Duration(minutes: 30));
+    expect(await service.maybeSync(), SyncOutcome.deferred);
+    expect(requests, isEmpty);
+
+    service.setForeground(true);
+    expect(await service.maybeSync(), SyncOutcome.sent);
+    expect(requests.single.method, 'POST');
+    expect(requests.single.url.path, '/listen/timeadd');
+    expect(requests.single.body, isEmpty);
+    expect(service.snapshot.gradePending, Duration.zero);
+    expect(await service.maybeSync(), SyncOutcome.idle);
+    expect(requests, hasLength(1));
+  });
+
+  test('uncertain legacy write consumes just its batch and waits', () async {
+    var requests = 0;
+    final service = CloudPlaybackSyncService(
+      api,
+      auth,
+      directory: directory,
+      now: () => now,
+      legacyGradeUploader: () async {
+        if (++requests == 1) throw TimeoutException('uncertain');
+        return {'status': 1};
+      },
+    );
+    addTearDown(service.dispose);
+    service.setForeground(false);
+    service.enqueueGradeTime(const Duration(hours: 1));
+    await service.flushGradeTime();
+    service.setForeground(true);
+    expect(await service.maybeSync(), SyncOutcome.unknownResult);
+    expect(service.snapshot.gradePending, const Duration(minutes: 30));
+    expect(await service.maybeSync(), SyncOutcome.backoff);
+    now = now.add(const Duration(minutes: 30));
+    expect(await service.maybeSync(), SyncOutcome.sent);
+    expect(service.snapshot.gradePending, Duration.zero);
+    expect(requests, 2);
+  });
+
+  test(
+    'foreground playback checkpoints trigger a full batch automatically',
+    () async {
+      var requests = 0;
+      final service = CloudPlaybackSyncService(
+        api,
+        auth,
+        directory: directory,
+        now: () => now,
+        legacyGradeUploader: () async {
+          requests++;
+          return {'status': 1};
+        },
+      );
+      addTearDown(service.dispose);
+      for (var i = 0; i < 6; i++) {
+        now = now.add(const Duration(minutes: 5));
+        service.enqueueGradeTime(const Duration(minutes: 5));
+        await service.flushGradeTime();
+        expect(requests, i < 5 ? 0 : 1);
+      }
+      expect(service.snapshot.gradePending, Duration.zero);
     },
   );
 
