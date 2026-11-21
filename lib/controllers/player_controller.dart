@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/loudness_data.dart';
 import '../models/music_models.dart';
+import '../models/personal_fm_models.dart';
 import '../services/audio_effects_service.dart';
 import '../services/artwork_cache_service.dart';
 import '../services/cache_service.dart';
@@ -23,6 +24,7 @@ import '../services/playback_failure.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_loudness.dart';
 import '../services/playback_phase.dart';
+import '../services/personal_fm_session.dart';
 import '../services/playback_stats_service.dart';
 import '../services/transition_coordinator.dart';
 import '../services/volume_normalization_service.dart';
@@ -60,6 +62,13 @@ class SleepTimerUiState {
       Object.hash(remaining, finishCurrentSong, finishOption, sheetFinishSong);
 }
 
+/// 一次即将提交的 FM 候选。提交成功前不消耗候选、不发反馈。
+typedef _FmPending = ({
+  PersonalFmSession session,
+  PersonalFmTrack track,
+  PersonalFmTrackSource source,
+});
+
 class _PreparedNextSource {
   const _PreparedNextSource({
     required this.song,
@@ -70,6 +79,7 @@ class _PreparedNextSource {
     required this.requestedQuality,
     required this.url,
     required this.quality,
+    this.fm,
     this.loudness,
     this.isLocal = false,
   });
@@ -82,6 +92,7 @@ class _PreparedNextSource {
   final AudioQuality requestedQuality;
   final String url;
   final AudioQuality quality;
+  final _FmPending? fm;
   final LoudnessData? loudness;
 
   /// 地址来自本地文件（已下载 / 播放缓存 / 本地音乐）而非网络。
@@ -103,6 +114,7 @@ class _ArmedNextSource {
     required this.requestedQuality,
     required this.quality,
     required this.url,
+    this.fm,
     this.loudness,
     this.isLocal = false,
   });
@@ -115,6 +127,7 @@ class _ArmedNextSource {
   final AudioQuality requestedQuality;
   final AudioQuality quality;
   final String url;
+  final _FmPending? fm;
   final LoudnessData? loudness;
 
   /// 地址来自本地文件（已下载 / 播放缓存 / 本地音乐）而非网络。
@@ -354,6 +367,23 @@ class PlayerController extends ChangeNotifier {
   final PlaybackStatsService _statsService = PlaybackStatsService();
   ListeningSessionTracker? _listeningTracker;
   Song? _listeningSong;
+
+  // ===== 私人 FM / 红心电台 =====
+  /// 当前会话。null 表示普通播放，没有任何 FM 状态。
+  PersonalFmSession? _fmSession;
+
+  /// 已提交的 FM 曲目。离曲时据此捕获「哪一首、第几秒、是否自然完播」。
+  PersonalFmTrack? _fmCurrent;
+
+  /// 已提交 FM 曲目对应的播放实例号。离曲时清空，天然完成一次上报去重。
+  int? _fmEntry;
+
+  /// 已登记的「不喜欢」：离曲时用 `garbage` 代替该次 `play`。
+  bool _fmDislikedCurrent = false;
+
+  /// 「添加到播放队列」在 FM 期间进站的那一首；播完回到 FM。
+  Song? _fmManualNext;
+
   bool _listeningCanReport = false;
   DateTime? _listeningStartedAt;
 
@@ -465,7 +495,7 @@ class PlayerController extends ChangeNotifier {
       gaplessPlaybackEnabled &&
       !kIsWeb &&
       defaultTargetPlatform == TargetPlatform.android &&
-      playbackMode != PlaybackMode.singleLoop;
+      (isPersonalFmActive || playbackMode != PlaybackMode.singleLoop);
 
   final _transitions = TransitionCoordinator();
   int? get currentEntryId => _transitions.committedEntry?.id;
@@ -908,10 +938,18 @@ class PlayerController extends ChangeNotifier {
     bool preserveProgress = false,
     AudioQuality? quality,
     bool forceNetwork = false,
+    _FmPending? fm,
+    bool fmNatural = false,
   }) async {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
     // ── intent：作废旧意图，此刻绝不触碰播放器 ──
+    // FM 期间显式点播普通歌曲：等这次加载真正提交后再退出 FM。加载失败则
+    // 原会话继续可用，对应「普通播放成功后退出 FM」。
+    final fmToLeave = fm == null && !_fmCommitKeepsSession(reason)
+        ? _fmSession
+        : null;
+    final previousQueue = fmToLeave == null ? null : this.queue;
     prepared ??= _consumePreparedNext(song);
     _clearPreparedNext();
     final serial = ++_loadSerial;
@@ -928,6 +966,7 @@ class PlayerController extends ChangeNotifier {
     bool alive(String stage) {
       final ok =
           !_disposed &&
+          (fm == null || identical(fm.session, _fmSession)) &&
           serial == _loadSerial &&
           generation == _playRequestGeneration &&
           _transitions.isCurrentIntent(intent);
@@ -948,7 +987,7 @@ class PlayerController extends ChangeNotifier {
       this.queue = List.of(queue);
       ++_queueRevision;
       _queueExpansionFuture = null;
-    } else if (this.queue.isEmpty) {
+    } else if (fm == null && this.queue.isEmpty) {
       this.queue = [song];
     }
     // 队列上下文按歌曲 key 定位：歌单刷新后同一首歌是新实例。
@@ -1023,6 +1062,7 @@ class PlayerController extends ChangeNotifier {
             queueIndex: targetIndex,
             start: start,
             serial: serial,
+            fmSong: fm?.track.song,
           );
           replaced = true;
           break;
@@ -1049,6 +1089,10 @@ class PlayerController extends ChangeNotifier {
       final committed = resolved;
       if (!replaced || committed == null) {
         if (!alive('failure')) return;
+        if (previousQueue != null) {
+          this.queue = previousQueue;
+          ++_queueRevision;
+        }
         _traceTransition(
           'load_fail',
           detail:
@@ -1076,12 +1120,18 @@ class PlayerController extends ChangeNotifier {
               identical(this.queue[targetIndex], song)
           ? targetIndex
           : _indexInQueue(song);
+      if (fmToLeave != null && identical(fmToLeave, _fmSession)) {
+        _departFmTrack(fmToLeave, natural: false);
+        _clearPersonalFm();
+      }
       _commitPlayback(
         song,
         committed.quality,
         committed.loudness,
         reason: reason,
         start: start,
+        fm: fm,
+        fmNatural: fmNatural,
       );
       downloadController?.setActivePlaybackPath(
         committed.isLocal ? committed.url : null,
@@ -1134,6 +1184,8 @@ class PlayerController extends ChangeNotifier {
     LoudnessData? loudness, {
     required String reason,
     Duration start = Duration.zero,
+    _FmPending? fm,
+    bool fmNatural = false,
   }) {
     _transitions.commit(_playlistLoadRevision);
     // 错误恢复的「同一首歌只自动恢复一次」标记：仅在播放实例换成**别的**
@@ -1145,6 +1197,8 @@ class PlayerController extends ChangeNotifier {
     }
     currentSong = song;
     _lastCommittedSong = song;
+    // FM 的候选消耗与离曲反馈只在这里发生：提交之前一律不消耗候选。
+    if (fm != null) _commitFmTrack(fm, natural: fmNatural);
     _selectNormalizationSource(song, quality, force: true);
     _rememberLoudness(song, quality, loudness);
     lyrics = const [];
@@ -1283,8 +1337,9 @@ class PlayerController extends ChangeNotifier {
     required int queueIndex,
     required Duration start,
     required int serial,
+    Song? fmSong,
   }) {
-    final queueSnapshot = List<Song>.of(queue);
+    final queueSnapshot = fmSong == null ? List<Song>.of(queue) : [fmSong];
     final index = queueIndex >= 0 && queueIndex < queueSnapshot.length
         ? queueIndex
         : 0;
@@ -1560,6 +1615,10 @@ class PlayerController extends ChangeNotifier {
 
     queue = nextQueue;
     ++_queueRevision;
+    // FM 期间的「添加到播放队列」：记下这首插播曲，播完回到 FM 推荐。
+    if (_fmSession?.isActive == true) {
+      _fmManualNext = song;
+    }
     // 插播改变了"下一曲"，预选与旧完成租约作废；在途的播放意图不受影响。
     _clearPreparedNext();
     _cancelLoadIntentIfSongLeftQueue();
@@ -1964,7 +2023,7 @@ class PlayerController extends ChangeNotifier {
     if (_disposed ||
         _preparedNext != null ||
         _preparingNextSource ||
-        playbackMode == PlaybackMode.singleLoop ||
+        (!isPersonalFmActive && playbackMode == PlaybackMode.singleLoop) ||
         !isPlaying ||
         isPreparing ||
         currentSong == null) {
@@ -1990,7 +2049,8 @@ class PlayerController extends ChangeNotifier {
     final requestedQuality = audioQuality;
     var nextKey = '';
     try {
-      final next = await _nextSong();
+      final fm = _peekFmNext();
+      final next = isPersonalFmActive ? fm?.track.song : await _nextSong();
       if (serial != _prepareNextSerial || next == null || currentSong == null) {
         return;
       }
@@ -2079,6 +2139,7 @@ class PlayerController extends ChangeNotifier {
         requestedQuality: requestedQuality,
         url: url,
         quality: quality,
+        fm: fm,
         loudness: loudness,
         isLocal: next.source == SongSource.local || local != null,
       );
@@ -2196,6 +2257,7 @@ class PlayerController extends ChangeNotifier {
       url: prepared.url,
       loudness: prepared.loudness,
       isLocal: prepared.isLocal,
+      fm: prepared.fm,
     );
     _armedAtUs = _transitionClock.elapsedMicroseconds;
     // 武装即保护：本地候选要等最多 30 秒才过界，而 `_schedulePlaybackCache`
@@ -2286,6 +2348,8 @@ class PlayerController extends ChangeNotifier {
         armed.quality,
         armed.loudness,
         reason: 'native_auto_advance',
+        fm: armed.fm,
+        fmNatural: true,
       );
       // 提交之后才摘除已播完的首个子源，回到单子源。
       final promoted = await _audioHandler.promoteArmedNext();
@@ -2395,7 +2459,7 @@ class PlayerController extends ChangeNotifier {
     final song = currentSong;
     final cache = cacheService;
     if (song == null || cache == null || !resumePlaybackEnabled) return;
-    final songs = queue.isEmpty ? <Song>[song] : queue;
+    final songs = isPersonalFmActive || queue.isEmpty ? <Song>[song] : queue;
     var index = songs.indexWhere((item) => _songKey(item) == _songKey(song));
     if (index < 0) index = 0;
     try {
@@ -2456,6 +2520,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> clearSessionForLogout() async {
     _cancelAutomaticResume();
     _settleListeningSession();
+    // 账号离开：清掉 FM 候选并撤下预备源，不留下上一账号的推荐。
+    await _invalidatePersonalFm();
     unawaited(cloudPlaybackSync?.onAccountChanged());
     unawaited(cloudPlaybackSync?.flushGradeTime());
     _cancelPendingPlaybackCache();
@@ -2896,6 +2962,10 @@ class PlayerController extends ChangeNotifier {
     _cancelAutomaticResume();
     _audioHandler.invalidatePendingPlay();
     final generation = ++_playRequestGeneration;
+    if (isPersonalFmActive) {
+      await _advancePersonalFm(generation, natural: false);
+      return;
+    }
     final selected =
         _preparedNext?.song ??
         (playbackMode == PlaybackMode.shuffle &&
@@ -2942,6 +3012,24 @@ class PlayerController extends ChangeNotifier {
     _audioHandler.invalidatePendingPlay();
     ++_playRequestGeneration;
     _clearPreparedNext();
+    if (isPersonalFmActive) {
+      final session = _fmSession!;
+      final previous = session.peekPrevious();
+      if (previous == null) {
+        await seek(Duration.zero);
+      } else {
+        await _playSong(
+          previous.song,
+          fm: (
+            session: session,
+            track: previous,
+            source: PersonalFmTrackSource.history,
+          ),
+          reason: 'manual_previous',
+        );
+      }
+      return;
+    }
     final index = currentIndex;
     if (index > 0) {
       await _playSong(
@@ -2978,6 +3066,10 @@ class PlayerController extends ChangeNotifier {
         notifyListeners();
         _setSleepTimerUiState();
         unawaited(_audioHandler.pause());
+        return;
+      }
+      if (isPersonalFmActive) {
+        await _advancePersonalFm(generation, natural: true);
         return;
       }
       final nextSong = playbackMode == PlaybackMode.singleLoop
@@ -3838,6 +3930,118 @@ class PlayerController extends ChangeNotifier {
       currentSong != null &&
       _ownsPlaybackWindow;
 
+  // ===== 私人 FM / 红心电台 =====
+
+  /// 有已提交曲目时，系统媒体控制才进入 FM 路径。
+  bool get isPersonalFmActive => _fmCurrent != null;
+
+  PersonalFmSession? get personalFmSession => _fmSession;
+
+  PersonalFmTrack? get personalFmCurrentTrack => _fmCurrent;
+
+  bool get personalFmCurrentDisliked => _fmDislikedCurrent;
+
+  /// 先列出用户手动安排的下一首，再按实际播放顺序列出推荐。
+  Iterable<Song> get upcomingPersonalFmSongs sync* {
+    final manual = _fmManualNext;
+    if (manual != null) yield manual;
+    final session = _fmSession;
+    if (session == null) return;
+    for (final track in session.upcoming) {
+      if (manual == null || _songKey(manual) != _songKey(track.song)) {
+        yield track.song;
+      }
+    }
+  }
+
+  Future<PersonalFmStartOutcome> startPersonalFm({
+    required String ownerKey,
+  }) async {
+    if (_disposed) return PersonalFmStartOutcome.failed;
+    if (_fmSession?.ownerKey != ownerKey) _clearPersonalFm();
+    final session = _fmSession ??= PersonalFmSession(
+      api,
+      ownerKey: ownerKey,
+      launchId: DateTime.now().microsecondsSinceEpoch.toString(),
+    );
+    if (isPersonalFmActive) {
+      if (!audioPlayer.playing) await togglePlay();
+      return PersonalFmStartOutcome.started;
+    }
+    final generation = ++_playRequestGeneration;
+    final outcome = await session.start();
+    if (_disposed ||
+        !identical(_fmSession, session) ||
+        generation != _playRequestGeneration) {
+      return PersonalFmStartOutcome.cancelled;
+    }
+    if (outcome != PersonalFmStartOutcome.started) {
+      notifyListeners();
+      return outcome;
+    }
+
+    final first = session.peekNext();
+    if (first == null) return PersonalFmStartOutcome.empty;
+    await _playSong(
+      first.song,
+      fm: (
+        session: session,
+        track: first,
+        source: PersonalFmTrackSource.candidate,
+      ),
+      reason: 'personal_fm_start',
+    );
+    if (!identical(_fmSession, session) ||
+        _disposed ||
+        _playRequestGeneration != generation + 1) {
+      return PersonalFmStartOutcome.cancelled;
+    }
+    if (!isPersonalFmActive) {
+      _clearPersonalFm();
+      notifyListeners();
+      return PersonalFmStartOutcome.failed;
+    }
+    return PersonalFmStartOutcome.started;
+  }
+
+  Future<void> stopPersonalFm() async {
+    final session = _fmSession;
+    if (session == null) return;
+    final current = currentSong;
+    final wasActive = isPersonalFmActive;
+    _departFmTrack(session, natural: false);
+    await _invalidatePersonalFm();
+    if (wasActive && current != null && identical(currentSong, current)) {
+      await updateQueueContext([current]);
+    }
+  }
+
+  Future<void> dislikePersonalFmCurrent() async {
+    final session = _fmSession;
+    if (session?.current == null || _fmDislikedCurrent) return;
+    _fmDislikedCurrent = true;
+    session!.dislikeCurrent();
+    notifyListeners();
+    await next();
+  }
+
+  void _clearPersonalFm() {
+    _fmSession?.dispose();
+    _fmSession = null;
+    _fmCurrent = null;
+    _fmEntry = null;
+    _fmDislikedCurrent = false;
+    _fmManualNext = null;
+  }
+
+  Future<void> _invalidatePersonalFm() async {
+    if (_fmSession == null) return;
+    _clearPersonalFm();
+    _clearPreparedNext();
+    await _dropArmedNext();
+    if (!_disposed) notifyListeners();
+  }
+
   void _beginListeningSession(Song song, {bool settle = true}) {
     if (settle) _settleListeningSession();
     _listeningSong = song;
@@ -3909,6 +4113,128 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  _FmPending? _peekFmNext() {
+    final session = _fmSession;
+    if (!isPersonalFmActive || session == null) return null;
+    final manual = _fmManualNext;
+    if (manual != null) {
+      return (
+        session: session,
+        track: PersonalFmTrack(song: manual),
+        source: PersonalFmTrackSource.manual,
+      );
+    }
+    final track = session.peekNext();
+    if (track == null) return null;
+    return (
+      session: session,
+      track: track,
+      source: session.canGoForward
+          ? PersonalFmTrackSource.restored
+          : PersonalFmTrackSource.candidate,
+    );
+  }
+
+  Future<void> _advancePersonalFm(
+    int generation, {
+    required bool natural,
+    bool retry = false,
+  }) async {
+    final session = _fmSession!;
+    final entry = currentEntryId;
+    bool ownsAdvance() =>
+        !_disposed &&
+        identical(_fmSession, session) &&
+        currentEntryId == entry &&
+        _playRequestGeneration == generation;
+
+    var fm = _peekFmNext();
+    if (fm == null) {
+      // 空池时先利用离曲反馈取推荐，其返回为空时再补拉一次。
+      _departFmTrack(session, natural: natural);
+      if (retry) {
+        await session.retry();
+      } else {
+        await session.ensureNextTrack();
+      }
+      if (!ownsAdvance()) return;
+      fm = _peekFmNext();
+    }
+    if (fm == null) {
+      if (natural || _fmDislikedCurrent) await _audioHandler.pause();
+      return;
+    }
+
+    await _playSong(
+      fm.track.song,
+      fm: fm,
+      fmNatural: natural,
+      reason: natural ? 'native_completed' : 'manual_next',
+    );
+  }
+
+  Future<void> retryPersonalFm() async {
+    if (!isPersonalFmActive) return;
+    final generation = ++_playRequestGeneration;
+    await _advancePersonalFm(generation, natural: false, retry: true);
+  }
+
+  void _commitFmTrack(_FmPending fm, {required bool natural}) {
+    final session = fm.session;
+    if (!identical(session, _fmSession)) return;
+    final outgoing = _fmCurrent;
+    final wasDisliked = _fmDislikedCurrent;
+    if (fm.source == PersonalFmTrackSource.manual &&
+        identical(fm.track.song, _fmManualNext)) {
+      _fmManualNext = null;
+    }
+    session.commit(fm.track, fm.source);
+    if (outgoing != null) {
+      _departFmTrack(session, natural: natural, disliked: wasDisliked);
+    }
+    _fmCurrent = fm.track;
+    _fmEntry = fm.source == PersonalFmTrackSource.manual
+        ? null
+        : currentEntryId;
+    _fmDislikedCurrent = false;
+    queue = [fm.track.song, ...upcomingPersonalFmSongs];
+    _committedQueueIndex = 0;
+    ++_queueRevision;
+  }
+
+  bool _fmCommitKeepsSession(String reason) =>
+      reason == 'quality' ||
+      reason == 'error_recover' ||
+      reason == 'recover' ||
+      reason == 'replay' ||
+      reason == 'manual_next' ||
+      reason == 'native_completed' ||
+      reason == 'manual_previous';
+
+  void _departFmTrack(
+    PersonalFmSession session, {
+    required bool natural,
+    bool? disliked,
+  }) {
+    final track = _fmCurrent;
+    if (track == null || _fmEntry == null) return;
+    _fmEntry = null;
+    final isDisliked = disliked ?? _fmDislikedCurrent;
+    final seconds = natural && duration > Duration.zero
+        ? duration.inSeconds
+        : position.inSeconds;
+    unawaited(
+      session.reportDeparture(
+        track,
+        action: isDisliked ? PersonalFmAction.garbage : PersonalFmAction.play,
+        playtimeSeconds: seconds,
+        isOverplay: natural && !isDisliked,
+        canRefill: () =>
+            !_disposed && identical(_fmSession, session) && audioPlayer.playing,
+      ),
+    );
+  }
+
   Future<Song?> _nextSong() async {
     final entry = currentEntryId;
     final generation = _playRequestGeneration;
@@ -3957,6 +4283,7 @@ class PlayerController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _clearPersonalFm();
     ++_volumeNormApplySerial;
     _volNormService.invalidatePending();
     _settleListeningSession();

@@ -6,6 +6,7 @@ import '../config/app_config.dart';
 import '../core/api_client.dart';
 import '../models/app_version.dart';
 import '../models/music_models.dart';
+import '../models/personal_fm_models.dart';
 
 class MusicApi {
   MusicApi(this._client);
@@ -221,64 +222,68 @@ class MusicApi {
         .toList();
   }
 
-  Future<List<FmStation>> fmRecommendedStations() async {
-    final raw = await _client.get('/fm/recommend');
-    final items = raw is List ? raw : asList(asMap(raw)['data']);
-    return items
-        .whereType<Map>()
-        .map((item) => FmStation.fromJson(asMap(item)))
-        .where((station) => station.id.isNotEmpty)
-        .toList();
-  }
+  // ===== 私人 FM / 红心电台 =====
 
-  Future<List<FmClassGroup>> fmClassGroups() async {
-    final raw = await _client.get('/fm/class');
-    final json = asMap(raw);
-    return asList(json['class_list'] ?? json['data'])
-        .whereType<Map>()
-        .map((item) => FmClassGroup.fromJson(asMap(item)))
-        .where((group) => group.stations.isNotEmpty)
-        .toList();
-  }
-
-  Future<List<Song>> fmSongs(
-    FmStation station, {
-    int offset = -1,
-    int size = 20,
+  /// 获取一批私人 FM 推荐。
+  ///
+  /// [action] 恒为 `play`：推荐与「本曲已播」在同一接口，首播传空曲目，
+  /// 离曲时带上当前曲目与秒数。反馈请求一律走 [personalFmFeedback]，
+  /// 那里不带重试，避免同一行为被发两次。
+  ///
+  /// 使用 [ApiClient.getOnce]：推荐 GET 幂等，但带曲目的 `play` 会推进服务端
+  /// 状态，通用重试可能在同一行为上叠加副作用。
+  Future<PersonalFmBatch> personalFm({
+    PersonalFmMode mode = PersonalFmMode.normal,
+    int songPoolId = 0,
+    String? hash,
+    String? songId,
+    int? playtimeSeconds,
+    bool isOverplay = false,
+    int remainSongCount = 0,
   }) async {
-    final raw = await _client.get('/fm/songs', {
-      'fmid': station.id,
-      'type': station.type,
-      'offset': offset,
-      'size': size,
+    final raw = await _client.getOnce('/personal/fm', {
+      'mode': mode.apiValue,
+      'action': PersonalFmAction.play.apiValue,
+      'songPoolId': songPoolId,
+      'remainSongCnt': remainSongCount,
+      'isOverplay': isOverplay,
+      if (hash != null && hash.isNotEmpty) 'hash': hash,
+      if (songId != null && songId.isNotEmpty) 'songid': songId,
+      if (playtimeSeconds != null)
+        'playtime': playtimeSeconds < 0 ? 0 : playtimeSeconds,
     });
-    final items = raw is List ? raw : asList(asMap(raw)['data']);
-    final pages = items
-        .whereType<Map>()
-        .map((item) => FmSongPage.fromJson(asMap(item)))
-        .toList();
-    if (pages.isEmpty) {
-      return const [];
-    }
-    return pages.expand((page) => page.songs).toList();
+    return PersonalFmBatch.fromJson(asMap(raw));
   }
 
-  Future<Map<String, FmImage>> fmImages(List<String> fmids) async {
-    final ids = fmids.where((id) => id.isNotEmpty).toSet().join(',');
-    if (ids.isEmpty) {
-      return const {};
-    }
-    final raw = await _client.get('/fm/image', {'fmid': ids});
-    final items = raw is List ? raw : asList(asMap(raw)['data']);
-    return {
-      for (final image
-          in items
-              .whereType<Map>()
-              .map((item) => FmImage.fromJson(asMap(item)))
-              .where((image) => image.fmid.isNotEmpty))
-        image.fmid: image,
-    };
+  /// 上报一次离曲反馈（`play` 或 `garbage`）。
+  ///
+  /// 语义要点：
+  /// - 反馈 URL 走 GET，但**有副作用**，因此不重试、不改参数重发；
+  /// - `remainSongCnt` 传剩余可播候选数，服务端据此决定是否继续返回推荐；
+  /// - 返回批次只在本机合并进候选池，不参与 HTTP 层缓存或重试。
+  Future<PersonalFmBatch> personalFmFeedback({
+    required PersonalFmAction action,
+    required String hash,
+    String? songId,
+    required int playtimeSeconds,
+    required int remainSongCount,
+    bool isOverplay = false,
+    PersonalFmMode mode = PersonalFmMode.normal,
+    int songPoolId = 0,
+  }) async {
+    final raw = await _client.getOnce('/personal/fm', {
+      'mode': mode.apiValue,
+      'action': action.apiValue,
+      'songPoolId': songPoolId,
+      'remainSongCnt': remainSongCount,
+      'isOverplay': isOverplay,
+      'hash': hash,
+      if (songId != null && songId.isNotEmpty) 'songid': songId,
+      'playtime': playtimeSeconds < 0 ? 0 : playtimeSeconds,
+    });
+    return PersonalFmBatch.fromJson(asMap(raw));
   }
+
 
   Future<VipReceiveHistory> vipReceiveHistory() async {
     final json = asMap(await _client.get('/youth/month/vip/record'));

@@ -10,6 +10,7 @@ import 'package:kgka_music_hl/controllers/download_controller.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
 import 'package:kgka_music_hl/models/loudness_data.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
+import 'package:kgka_music_hl/models/personal_fm_models.dart';
 import 'package:kgka_music_hl/services/download_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/services/music_audio_handler.dart';
@@ -356,6 +357,42 @@ class _Handler implements MusicAudioHandler {
 class _Api implements MusicApi {
   final requests = <String>[];
   final responses = <String, Completer<PlayUrl>>{};
+  final fmBatches = <PersonalFmBatch>[];
+  final fmDepartures = <({String hash, int remain, bool completed})>[];
+  int fmFetches = 0;
+
+  @override
+  Future<PersonalFmBatch> personalFm({
+    PersonalFmMode mode = PersonalFmMode.normal,
+    int songPoolId = 0,
+    String? hash,
+    String? songId,
+    int? playtimeSeconds,
+    bool isOverplay = false,
+    int remainSongCount = 0,
+  }) async {
+    fmFetches++;
+    return fmBatches.isEmpty ? PersonalFmBatch.empty : fmBatches.removeAt(0);
+  }
+
+  @override
+  Future<PersonalFmBatch> personalFmFeedback({
+    required PersonalFmAction action,
+    required String hash,
+    String? songId,
+    required int playtimeSeconds,
+    required int remainSongCount,
+    bool isOverplay = false,
+    PersonalFmMode mode = PersonalFmMode.normal,
+    int songPoolId = 0,
+  }) async {
+    fmDepartures.add((
+      hash: hash,
+      remain: remainSongCount,
+      completed: isOverplay,
+    ));
+    return PersonalFmBatch.empty;
+  }
 
   /// Hashes whose songUrl() rejects, for prefetch cooldown coverage.
   final failures = <String>{};
@@ -1535,6 +1572,61 @@ void main() {
   }
 
   int sourceCount() => handler.audioPlayer.sequenceState.sequence.length;
+
+  PersonalFmBatch fmBatch(int first, int count) => PersonalFmBatch(
+    status: 1,
+    tracks: List.generate(count, (index) {
+      final id = 'fm${first + index}';
+      return PersonalFmTrack(
+        song: Song(id: id, title: id, artist: 'FM', hash: id),
+      );
+    }),
+  );
+
+  test('FM advances beyond five tracks when departure returns no batch', () async {
+    await setup();
+    api.fmBatches.addAll([fmBatch(1, 5), fmBatch(6, 5)]);
+    await controller.startPersonalFm(ownerKey: 'account');
+    expect(controller.currentSong?.id, 'fm1');
+    expect(
+      controller.upcomingPersonalFmSongs.map((song) => song.id),
+      ['fm2', 'fm3', 'fm4', 'fm5'],
+    );
+
+    await arm();
+    await controller.next();
+    await drain();
+    expect(controller.currentSong?.id, 'fm2');
+    expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
+    for (var number = 3; number <= 6; number++) {
+      await controller.next();
+      await drain();
+      expect(controller.currentSong?.id, 'fm$number');
+    }
+    expect(api.fmFetches, 2);
+    expect(
+      api.fmDepartures.map((item) => item.hash),
+      ['fm1', 'fm2', 'fm3', 'fm4', 'fm5'],
+    );
+    expect(api.fmDepartures.first.remain, 3);
+    expect(controller.upcomingPersonalFmSongs.first.id, 'fm7');
+  });
+
+  test('FM native boundary consumes the same candidate the page previews', () async {
+    await setup();
+    api.fmBatches.add(fmBatch(1, 5));
+    await controller.startPersonalFm(ownerKey: 'account');
+    await arm();
+    expect(sourceCount(), 2);
+    handler.emitNativeBoundary();
+    await drain();
+
+    expect(controller.currentSong?.id, 'fm2');
+    expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
+    expect(controller.upcomingPersonalFmSongs.first.id, 'fm3');
+    expect(api.fmDepartures.single.hash, 'fm1');
+    expect(api.fmDepartures.single.completed, isTrue);
+  });
 
   test('arming appends a second source without committing', () async {
     await setup();
