@@ -1,5 +1,3 @@
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/material.dart';
 
 import '../../controllers/auth_controller.dart';
@@ -21,47 +19,46 @@ import 'settings_page.dart';
 import 'local_songs_page.dart';
 import '../../controllers/local_music_controller.dart';
 
-/// 「我的」页磨砂外观，仅在全局自定义背景开启时生效。
+/// 「我的」页半透明外观，仅在全局自定义背景开启时生效。
 ///
-/// 背景图开启后，原本不透明的纯白卡片会像补丁一样钉在背景上（底部导航
-/// 栏早已是磨砂玻璃）。这里把页内容器统一成同一种语言：静态小容器
-/// （快捷卡、Tab 栏）用模糊 + 较低不透明度；虚拟化列表行只用较高不透
-/// 明度——逐行 BackdropFilter 在低端机上太贵，实色半透已足够。
+/// 背景图开启后，原本不透明的纯色卡片会像补丁一样钉在背景上。这里把页内
+/// 容器统一成「同一材质感的半透明片」，让背景能透过来，与底部导航栏的观
+/// 感对齐。
+///
+/// 刻意不使用 [BackdropFilter]：背景图开启时快捷卡与 Tab 栏都处在可滚动
+/// 容器里，滚动过程中背景每帧都在变，每个 BackdropFilter 都要重新
+/// saveLayer + 高斯模糊。实测 6 个就足以让滚动帧率明显下滑，而前景只是一
+/// 片单色半透明，模糊带来的收益远小于代价。需要更强的「毛玻璃」观感时，
+/// 应把模糊施加在背景图本身（一次成本），而不是逐个容器叠加。
 @visibleForTesting
 bool libraryFrostedActive({required bool enabled, String? imagePath}) =>
     enabled && imagePath != null;
 
-/// 磨砂容器底色（配合 BackdropFilter 使用）。
+/// 快捷卡 / Tab 栏底色。
 @visibleForTesting
 Color libraryFrostedCardColor(ColorScheme scheme, {required bool active}) {
   if (!active) return scheme.surfaceContainer;
   final dark = scheme.brightness == Brightness.dark;
   return (dark ? scheme.surfaceContainerHighest : scheme.surfaceContainer)
-      .withValues(alpha: dark ? .55 : .58);
+      .withValues(alpha: dark ? .68 : .72);
 }
 
-/// 列表行底色：无模糊，靠较高不透明度压住背景、保住文字可读性。
+/// 列表行底色：行内文字密集，不透明度再高一些，保证可读性。
 @visibleForTesting
 Color libraryFrostedRowColor(ColorScheme scheme, {required bool active}) {
   if (!active) return scheme.surfaceContainer;
   final dark = scheme.brightness == Brightness.dark;
-  return scheme.surfaceContainer.withValues(alpha: dark ? .72 : .68);
+  return scheme.surfaceContainer.withValues(alpha: dark ? .78 : .80);
 }
 
-/// 静态容器的磨砂外壳：active 时裁圆 + 高斯模糊，否则原样返回。
+/// 只做裁圆，不加任何滤镜——纯 CPU 裁剪，滚动时无额外开销。
 Widget _frostedClip({
   required bool active,
   required BorderRadius radius,
   required Widget child,
 }) {
   if (!active) return child;
-  return ClipRRect(
-    borderRadius: radius,
-    child: BackdropFilter(
-      filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-      child: child,
-    ),
-  );
+  return ClipRRect(borderRadius: radius, child: child);
 }
 
 class LibraryPage extends StatefulWidget {

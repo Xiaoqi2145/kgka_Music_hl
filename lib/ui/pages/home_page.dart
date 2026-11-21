@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../config/app_config.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
+import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
@@ -21,6 +22,23 @@ import 'artist_detail_page.dart';
 import 'playlist_detail_page.dart';
 import 'search_page.dart';
 
+/// 每日推荐 Banner 在自定义背景下的底色：半透明，让背景透出来。
+///
+/// 与「我的」页同一套做法——只做纯色半透明，不加 [BackdropFilter]。Banner
+/// 位于可滚动页面的顶端，背景图开启时滚动过程中背景每帧都在变，逐个容器
+/// 上模糊的代价远大于收益。未开启背景图时返回原色，行为完全不变。
+@visibleForTesting
+Color homeBannerCardColor(ColorScheme scheme, {required bool frosted}) {
+  if (!frosted) return scheme.surfaceContainer;
+  final dark = scheme.brightness == Brightness.dark;
+  return scheme.surfaceContainer.withValues(alpha: dark ? .68 : .72);
+}
+
+/// 自定义背景是否生效——开关打开且确实选了图才算，与「我的」页判据一致。
+@visibleForTesting
+bool homeBannerFrostedActive(ThemeController theme) =>
+    theme.backgroundEnabled && theme.backgroundImagePath != null;
+
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
@@ -28,12 +46,14 @@ class HomePage extends StatefulWidget {
     required this.auth,
     required this.player,
     required this.cache,
+    required this.theme,
   });
 
   final MusicApi api;
   final AuthController auth;
   final PlayerController player;
   final CacheService cache;
+  final ThemeController theme;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -274,6 +294,7 @@ class _HomePageState extends State<HomePage> {
                   child: _RecommendHeader(
                     auth: widget.auth,
                     daily: data!.daily,
+                    theme: widget.theme,
                     sectionIndex: _sectionIndex,
                     onSectionChanged: (value) {
                       setState(() => _sectionIndex = value);
@@ -338,6 +359,7 @@ class _RecommendHeader extends StatelessWidget {
   const _RecommendHeader({
     required this.auth,
     required this.daily,
+    required this.theme,
     required this.sectionIndex,
     required this.onSectionChanged,
     required this.onDailyPlay,
@@ -347,6 +369,7 @@ class _RecommendHeader extends StatelessWidget {
 
   final AuthController auth;
   final DailyRecommend daily;
+  final ThemeController theme;
   final int sectionIndex;
   final ValueChanged<int> onSectionChanged;
   final VoidCallback onDailyPlay;
@@ -399,7 +422,7 @@ class _RecommendHeader extends StatelessWidget {
               ),
               if (sectionIndex == 0) ...[
                 const SizedBox(height: 14),
-                _DailyBanner(daily: daily, onPlay: onDailyPlay),
+                _DailyBanner(daily: daily, theme: theme, onPlay: onDailyPlay),
               ],
             ],
           ),
@@ -584,23 +607,26 @@ class _SmartSearch extends StatelessWidget {
 /// 推荐无关，只是借首屏黄金位做一个商城入口。Banner 把日期、今日首曲与
 /// 播放入口收进一张横向卡片，只保留一次呈现。
 class _DailyBanner extends StatelessWidget {
-  const _DailyBanner({required this.daily, required this.onPlay});
+  const _DailyBanner({
+    required this.daily,
+    required this.theme,
+    required this.onPlay,
+  });
 
   final DailyRecommend daily;
+  final ThemeController theme;
   final VoidCallback onPlay;
 
   @override
   Widget build(BuildContext context) {
     final songs = daily.songs;
-    final metrics = dailyBannerMetrics(
-      MediaQuery.sizeOf(context).width - 36,
-    );
+    final metrics = dailyBannerMetrics(MediaQuery.sizeOf(context).width - 36);
     final items = dailyBannerItems(daily).take(metrics.columns).toList();
 
     if (items.isEmpty) {
       return Padding(
         padding: const EdgeInsets.only(right: 18),
-        child: _BannerEmpty(height: metrics.height),
+        child: _BannerEmpty(height: metrics.height, theme: theme),
       );
     }
 
@@ -620,6 +646,7 @@ class _DailyBanner extends StatelessWidget {
                 child: _BannerCard(
                   item: item,
                   metaLabel: metaLabel,
+                  theme: theme,
                   compact: metrics.compact,
                   onPlay: item == items.first ? onPlay : null,
                 ),
@@ -637,17 +664,26 @@ class _BannerCard extends StatelessWidget {
   const _BannerCard({
     required this.item,
     required this.metaLabel,
+    required this.theme,
     required this.compact,
     required this.onPlay,
   });
 
   final BannerItem item;
   final String metaLabel;
+  final ThemeController theme;
   final bool compact;
   final VoidCallback? onPlay;
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) => _buildCard(context),
+    );
+  }
+
+  Widget _buildCard(BuildContext context) {
     final cover = item.coverUrl;
     final colorScheme = Theme.of(context).colorScheme;
     return Semantics(
@@ -659,9 +695,13 @@ class _BannerCard extends StatelessWidget {
         child: DecoratedBox(
           // 不再使用品牌蓝渐变填充：首屏其它卡片（歌单、电台）都是中性底色
           // + 灰黑文字，Banner 独自撑一块高饱和蓝面会显得像是另一个应用的
-          // 插入件。这里统一到 surfaceContainer。
+          // 插入件。这里统一到中性底色；开启自定义背景图后改为半透明，
+          // 让背景透出来（参数与「我的」页快捷卡一致）。
           decoration: BoxDecoration(
-            color: colorScheme.surfaceContainer,
+            color: homeBannerCardColor(
+              colorScheme,
+              frosted: homeBannerFrostedActive(theme),
+            ),
             borderRadius: BorderRadius.circular(16),
           ),
           child: ClipRRect(
@@ -804,17 +844,28 @@ class _BannerInfo extends StatelessWidget {
 }
 
 class _BannerEmpty extends StatelessWidget {
-  const _BannerEmpty({required this.height});
+  const _BannerEmpty({required this.height, required this.theme});
 
   final double height;
+  final ThemeController theme;
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) => _buildCard(context),
+    );
+  }
+
+  Widget _buildCard(BuildContext context) {
     return SizedBox(
       height: height,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainer,
+          color: homeBannerCardColor(
+            Theme.of(context).colorScheme,
+            frosted: homeBannerFrostedActive(theme),
+          ),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Padding(
@@ -916,9 +967,7 @@ DailyBannerMetrics dailyBannerMetrics(double availableWidth) {
   final columns = availableWidth >= twoColumnMinWidth ? 2 : 1;
 
   // 单张卡宽 = 可用宽度减去卡间距后的均分。
-  final cardWidth = columns == 2
-      ? (availableWidth - 12) / 2
-      : availableWidth;
+  final cardWidth = columns == 2 ? (availableWidth - 12) / 2 : availableWidth;
 
   // 卡高跟随卡片宽度变化，保证单卡内部仍然是「左封面 + 右信息」的横向比例，
   // 而不是被拉成一条细线。夹在 148–188 之间：低于 148 文字放不下两行，
@@ -2060,11 +2109,7 @@ class _HomeSkeleton extends StatelessWidget {
             const SizedBox(height: 28),
             const SkeletonBox(width: double.infinity, height: 44, radius: 9),
             const SizedBox(height: 14),
-            const SkeletonBox(
-              width: double.infinity,
-              height: 168,
-              radius: 16,
-            ),
+            const SkeletonBox(width: double.infinity, height: 168, radius: 16),
             const SizedBox(height: 28),
             const SkeletonBox(width: 128, height: 24, radius: 8),
             const SizedBox(height: 18),

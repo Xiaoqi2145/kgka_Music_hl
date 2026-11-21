@@ -61,6 +61,7 @@ class _AppShellState extends State<AppShell> {
         auth: widget.auth,
         player: widget.player,
         cache: widget.cache,
+        theme: widget.theme,
       ),
       LibraryPage(
         api: widget.api,

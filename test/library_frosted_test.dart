@@ -35,14 +35,14 @@ void main() {
     const dark = ColorScheme.dark();
     final lightCard = libraryFrostedCardColor(light, active: true);
     final darkCard = libraryFrostedCardColor(dark, active: true);
-    expect(lightCard.a, closeTo(.58, .001));
-    expect(darkCard.a, closeTo(.55, .001));
+    expect(lightCard.a, closeTo(.72, .001));
+    expect(darkCard.a, closeTo(.68, .001));
   });
 
   test('active row color keeps higher opacity for readability', () {
     const light = ColorScheme.light();
     const dark = ColorScheme.dark();
-    expect(libraryFrostedRowColor(light, active: true).a, closeTo(.68, .001));
-    expect(libraryFrostedRowColor(dark, active: true).a, closeTo(.72, .001));
+    expect(libraryFrostedRowColor(light, active: true).a, closeTo(.80, .001));
+    expect(libraryFrostedRowColor(dark, active: true).a, closeTo(.78, .001));
   });
 }
