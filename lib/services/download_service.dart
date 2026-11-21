@@ -427,6 +427,7 @@ class DownloadService {
         publishedPath = targetPath;
       }
       checkCancelled();
+      if (task.kind != DownloadTaskKind.download) return targetPath;
       await _writeTags(targetPath, task.song);
       checkCancelled();
       return await _publishDownload(
