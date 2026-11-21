@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 
 import '../../controllers/auth_controller.dart';
@@ -16,6 +18,49 @@ import 'playlist_detail_page.dart';
 import 'settings_page.dart';
 import 'local_songs_page.dart';
 import '../../controllers/local_music_controller.dart';
+
+/// 「我的」页磨砂外观，仅在全局自定义背景开启时生效。
+///
+/// 背景图开启后，原本不透明的纯白卡片会像补丁一样钉在背景上（底部导航
+/// 栏早已是磨砂玻璃）。这里把页内容器统一成同一种语言：静态小容器
+/// （快捷卡、Tab 栏）用模糊 + 较低不透明度；虚拟化列表行只用较高不透
+/// 明度——逐行 BackdropFilter 在低端机上太贵，实色半透已足够。
+@visibleForTesting
+bool libraryFrostedActive({required bool enabled, String? imagePath}) =>
+    enabled && imagePath != null;
+
+/// 磨砂容器底色（配合 BackdropFilter 使用）。
+@visibleForTesting
+Color libraryFrostedCardColor(ColorScheme scheme, {required bool active}) {
+  if (!active) return scheme.surfaceContainer;
+  final dark = scheme.brightness == Brightness.dark;
+  return (dark ? scheme.surfaceContainerHighest : scheme.surfaceContainer)
+      .withValues(alpha: dark ? .55 : .58);
+}
+
+/// 列表行底色：无模糊，靠较高不透明度压住背景、保住文字可读性。
+@visibleForTesting
+Color libraryFrostedRowColor(ColorScheme scheme, {required bool active}) {
+  if (!active) return scheme.surfaceContainer;
+  final dark = scheme.brightness == Brightness.dark;
+  return scheme.surfaceContainer.withValues(alpha: dark ? .72 : .68);
+}
+
+/// 静态容器的磨砂外壳：active 时裁圆 + 高斯模糊，否则原样返回。
+Widget _frostedClip({
+  required bool active,
+  required BorderRadius radius,
+  required Widget child,
+}) {
+  if (!active) return child;
+  return ClipRRect(
+    borderRadius: radius,
+    child: BackdropFilter(
+      filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+      child: child,
+    ),
+  );
+}
 
 class LibraryPage extends StatefulWidget {
   const LibraryPage({
@@ -392,6 +437,7 @@ class _LibraryPageState extends State<LibraryPage>
               // Quick action cards (horizontal scrollable)
               SliverToBoxAdapter(
                 child: _QuickActionRow(
+                  theme: widget.theme,
                   auth: widget.auth,
                   downloads: widget.downloads,
                   player: widget.player,
@@ -425,12 +471,14 @@ class _LibraryPageState extends State<LibraryPage>
                 child: _PlaylistTabBar(
                   controller: _tabController,
                   auth: widget.auth,
+                  theme: widget.theme,
                   onSelect: _selectTab,
                 ),
               ),
               // 当前 Tab 对应的歌单列表（虚拟化 sliver）。
               _ListenableSliver(
-                listenables: [widget.auth, _tabController],
+                // theme 也在此订阅：背景图开关切换时列表行要随之磨砂/还原。
+                listenables: [widget.auth, _tabController, widget.theme],
                 builder: _buildPlaylistSection,
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 160)),
@@ -451,6 +499,10 @@ class _LibraryPageState extends State<LibraryPage>
     // 宽屏，手机横屏（最短边约 360~430）仍走单列。
     final isWide = MediaQuery.sizeOf(context).shortestSide >= 600;
     final colorScheme = Theme.of(context).colorScheme;
+    final frosted = libraryFrostedActive(
+      enabled: widget.theme.backgroundEnabled,
+      imagePath: widget.theme.backgroundImagePath,
+    );
     final listOpacity = Tween<double>(
       begin: _listFadeFrom,
       end: 1,
@@ -524,6 +576,7 @@ class _LibraryPageState extends State<LibraryPage>
           sorted: sorted,
           isWide: isWide,
           colorScheme: colorScheme,
+          frosted: frosted,
           opacity: listOpacity,
         ),
       ],
@@ -534,6 +587,7 @@ class _LibraryPageState extends State<LibraryPage>
     required List<PlaylistSummary> sorted,
     required bool isWide,
     required ColorScheme colorScheme,
+    required bool frosted,
     required Animation<double> opacity,
   }) {
     final Widget content;
@@ -554,6 +608,7 @@ class _LibraryPageState extends State<LibraryPage>
             return _PlaylistGroupTile(
               key: ValueKey(_playlistKey(playlist)),
               playlist: playlist,
+              frosted: frosted,
               selected: _multiSelectMode && _selectedIndices.contains(index),
               multiSelectMode: _multiSelectMode,
               onTap: _multiSelectMode
@@ -570,7 +625,7 @@ class _LibraryPageState extends State<LibraryPage>
         sliver: SliverList.separated(
           itemCount: sorted.length,
           separatorBuilder: (_, _) => ColoredBox(
-            color: colorScheme.surfaceContainer,
+            color: libraryFrostedRowColor(colorScheme, active: frosted),
             child: Divider(
               height: 1,
               indent: 62,
@@ -592,7 +647,7 @@ class _LibraryPageState extends State<LibraryPage>
             return DecoratedBox(
               key: ValueKey(_playlistKey(playlist)),
               decoration: BoxDecoration(
-                color: colorScheme.surfaceContainer,
+                color: libraryFrostedRowColor(colorScheme, active: frosted),
                 borderRadius: radius,
               ),
               child: _PlaylistRow(
@@ -752,6 +807,7 @@ class _AccountRow extends StatelessWidget {
 
 class _QuickActionRow extends StatelessWidget {
   const _QuickActionRow({
+    required this.theme,
     required this.auth,
     required this.downloads,
     required this.player,
@@ -762,6 +818,7 @@ class _QuickActionRow extends StatelessWidget {
     required this.onOpenCloudDrive,
   });
 
+  final ThemeController theme;
   final AuthController auth;
   final DownloadController downloads;
   final PlayerController player;
@@ -787,6 +844,7 @@ class _QuickActionRow extends StatelessWidget {
               builder: (context, _) {
                 final liked = auth.likedPlaylist;
                 return _QuickActionCard(
+                  theme: theme,
                   icon: Icons.favorite_rounded,
                   iconColor: const Color.fromARGB(176, 255, 99, 151),
                   subtitle: '${auth.likedCount} 首歌曲',
@@ -806,6 +864,7 @@ class _QuickActionRow extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             _QuickActionCard(
+              theme: theme,
               icon: Icons.cloud_rounded,
               iconColor: const Color.fromARGB(200, 88, 156, 245),
               subtitle: '云盘音乐',
@@ -817,6 +876,7 @@ class _QuickActionRow extends StatelessWidget {
               animation: downloads,
               builder: (context, _) {
                 return _QuickActionCard(
+                  theme: theme,
                   icon: Icons.download_rounded,
                   iconColor: Theme.of(context).colorScheme.primary,
                   subtitle: '${downloads.downloadedSongs.length} 首歌曲',
@@ -830,6 +890,7 @@ class _QuickActionRow extends StatelessWidget {
               animation: localMusic,
               builder: (context, _) {
                 return _QuickActionCard(
+                  theme: theme,
                   icon: Icons.computer_rounded,
                   iconColor: const Color.fromARGB(200, 76, 175, 80),
                   subtitle: '${localMusic.songs.length} 首歌曲',
@@ -847,6 +908,7 @@ class _QuickActionRow extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             _QuickActionCard(
+              theme: theme,
               icon: Icons.history_rounded,
               iconColor: const Color.fromARGB(200, 255, 167, 38),
               subtitle: '最近播放',
@@ -867,6 +929,7 @@ class _QuickActionRow extends StatelessWidget {
 
 class _QuickActionCard extends StatelessWidget {
   const _QuickActionCard({
+    required this.theme,
     required this.icon,
     required this.iconColor,
     required this.subtitle,
@@ -874,6 +937,7 @@ class _QuickActionCard extends StatelessWidget {
     required this.onTap,
   });
 
+  final ThemeController theme;
   final IconData icon;
   final Color iconColor;
   final String subtitle;
@@ -884,52 +948,63 @@ class _QuickActionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Container(
-      width: 93,
-      margin: const EdgeInsets.only(right: 0),
-      child: Material(
-        color: colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(14),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: iconColor,
-                    borderRadius: BorderRadius.circular(11),
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) {
+        final frosted = libraryFrostedActive(
+          enabled: theme.backgroundEnabled,
+          imagePath: theme.backgroundImagePath,
+        );
+        const radius = BorderRadius.all(Radius.circular(14));
+        final card = Material(
+          color: libraryFrostedCardColor(colorScheme, active: frosted),
+          borderRadius: radius,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: iconColor,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Icon(icon, color: Colors.white, size: 20),
                   ),
-                  child: Icon(icon, color: Colors.white, size: 20),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
+                  const SizedBox(height: 8),
+                  Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
+                  const SizedBox(height: 2),
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-      ),
+        );
+        return Container(
+          width: 93,
+          margin: const EdgeInsets.only(right: 0),
+          child: _frostedClip(active: frosted, radius: radius, child: card),
+        );
+      },
     );
   }
 }
@@ -940,59 +1015,75 @@ class _PlaylistTabBar extends StatelessWidget {
   const _PlaylistTabBar({
     required this.controller,
     required this.auth,
+    required this.theme,
     required this.onSelect,
   });
 
   final TabController controller;
   final AuthController auth;
+  final ThemeController theme;
   final ValueChanged<int> onSelect;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 22, 18, 0),
-      child: Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainer,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: ListenableBuilder(
-          listenable: Listenable.merge([controller, auth]),
-          builder: (context, _) {
-            return Row(
-              children: [
-                Expanded(
-                  child: _TabItem(
-                    label: '创建',
-                    count: auth.createdPlaylists.length,
-                    selected: controller.index == 0,
-                    onTap: () => onSelect(0),
-                  ),
-                ),
-                Expanded(
-                  child: _TabItem(
-                    label: '收藏',
-                    count: auth.collectedPlaylists.length,
-                    selected: controller.index == 1,
-                    onTap: () => onSelect(1),
-                  ),
-                ),
-                Expanded(
-                  child: _TabItem(
-                    label: '专辑',
-                    count: auth.collectedAlbums.length,
-                    selected: controller.index == 2,
-                    onTap: () => onSelect(2),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) {
+        final frosted = libraryFrostedActive(
+          enabled: theme.backgroundEnabled,
+          imagePath: theme.backgroundImagePath,
+        );
+        const radius = BorderRadius.all(Radius.circular(12));
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(18, 22, 18, 0),
+          child: _frostedClip(
+            active: frosted,
+            radius: radius,
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: libraryFrostedCardColor(colorScheme, active: frosted),
+                borderRadius: radius,
+              ),
+              child: ListenableBuilder(
+                listenable: Listenable.merge([controller, auth]),
+                builder: (context, _) {
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: _TabItem(
+                          label: '创建',
+                          count: auth.createdPlaylists.length,
+                          selected: controller.index == 0,
+                          onTap: () => onSelect(0),
+                        ),
+                      ),
+                      Expanded(
+                        child: _TabItem(
+                          label: '收藏',
+                          count: auth.collectedPlaylists.length,
+                          selected: controller.index == 1,
+                          onTap: () => onSelect(1),
+                        ),
+                      ),
+                      Expanded(
+                        child: _TabItem(
+                          label: '专辑',
+                          count: auth.collectedAlbums.length,
+                          selected: controller.index == 2,
+                          onTap: () => onSelect(2),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1185,6 +1276,7 @@ class _PlaylistGroupTile extends StatelessWidget {
   const _PlaylistGroupTile({
     super.key,
     required this.playlist,
+    required this.frosted,
     required this.selected,
     required this.multiSelectMode,
     required this.onTap,
@@ -1192,6 +1284,7 @@ class _PlaylistGroupTile extends StatelessWidget {
   });
 
   final PlaylistSummary playlist;
+  final bool frosted;
   final bool selected;
   final bool multiSelectMode;
   final VoidCallback onTap;
@@ -1202,7 +1295,7 @@ class _PlaylistGroupTile extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainer,
+        color: libraryFrostedRowColor(colorScheme, active: frosted),
         borderRadius: BorderRadius.circular(14),
       ),
       child: ClipRRect(
