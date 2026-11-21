@@ -20,6 +20,7 @@ class PlaybackStats {
     this.songTitles = const {},
     this.artistNames = const {},
     this.firstPlayDate,
+    this.legacyReadonly = false,
   });
 
   /// 累计播放次数（每次调用 recordPlay +1）。
@@ -43,6 +44,9 @@ class PlaybackStats {
   /// 首次播放时间（本地统计）。
   final DateTime? firstPlayDate;
 
+  /// 旧版只含播放次数；单独保留为升级前快照。
+  final bool legacyReadonly;
+
   factory PlaybackStats.fromJson(Map<String, dynamic> json) {
     return PlaybackStats(
       totalPlays: json['totalPlays'] as int? ?? 0,
@@ -64,6 +68,7 @@ class PlaybackStats {
       firstPlayDate: json['firstPlayDate'] != null
           ? DateTime.fromMillisecondsSinceEpoch(json['firstPlayDate'] as int)
           : null,
+      legacyReadonly: json['legacyReadonly'] == true,
     );
   }
 
@@ -75,6 +80,7 @@ class PlaybackStats {
     'songTitles': songTitles,
     'artistNames': artistNames,
     'firstPlayDate': firstPlayDate?.millisecondsSinceEpoch,
+    if (legacyReadonly) 'legacyReadonly': true,
   };
 
   /// 格式化听歌时长为 "x小时y分钟" 或 "y分钟"。
@@ -118,6 +124,7 @@ class PlaybackStatsService {
   static const _prefsKey = 'playback_stats';
   static const _legacyKey = 'playback_stats_legacy_v1';
   static const _checkpointDuration = Duration(minutes: 5);
+
   PlaybackStats? _stats;
   Future<void>? _loadFuture;
   Timer? _persistTimer;
@@ -148,16 +155,29 @@ class PlaybackStatsService {
     try {
       if (file.existsSync()) {
         final raw = await file.readAsString();
-        _stats = PlaybackStats.fromJson(asMap(jsonDecode(raw)));
+        final storedJson = asMap(jsonDecode(raw));
+        final stored = PlaybackStats.fromJson(storedJson);
+        if (stored.legacyReadonly) {
+          await _preserveLegacy(prefs, stored);
+          _stats = const PlaybackStats();
+        } else if (_isLegacy(storedJson)) {
+          await _preserveLegacy(prefs, stored);
+          _stats = const PlaybackStats();
+          _dirty = true;
+        } else {
+          _stats = stored;
+        }
       } else {
         final raw = prefs.getString(_prefsKey);
         if (raw != null) {
           final json = jsonDecode(raw);
           if (json is Map<String, dynamic>) {
             _stats = PlaybackStats.fromJson(json);
-            _legacyStats =
-                json['totalListenMs'] == null &&
-                (json['totalPlays'] as num? ?? 0) > 0;
+            _legacyStats = _isLegacy(json);
+            if (_legacyStats) {
+              await _preserveLegacy(prefs, _stats!);
+              _stats = const PlaybackStats();
+            }
             _dirty = true;
           }
         }
@@ -179,14 +199,6 @@ class PlaybackStatsService {
   /// 记录一次播放：累加播放次数，统计歌手/歌曲计数。
   Future<void> recordPlay(Song song) async {
     await _ensureLoaded();
-    if (_legacyStats) {
-      if (!_legacySaved) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_legacyKey, jsonEncode(_stats!.toJson()));
-        _legacySaved = true;
-      }
-      _legacyStats = false;
-    }
     final stats = _stats!;
     final artistCount = Map<String, int>.of(stats.artistPlayCount);
     final songCount = Map<String, int>.of(stats.songPlayCount);
@@ -252,12 +264,8 @@ class PlaybackStatsService {
 
   Future<void> _save(PlaybackStats stats, int version) async {
     if (version != _dataVersion) return;
-    if (_legacyStats && !_legacySaved) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_legacyKey, jsonEncode(stats.toJson()));
-      _legacySaved = true;
-      _legacyStats = false;
-    }
+    final prefs = await SharedPreferences.getInstance();
+    if (_legacyStats) await _preserveLegacy(prefs, stats);
     if (version != _dataVersion) return;
     final file = await _file();
     await file.parent.create(recursive: true);
@@ -267,7 +275,6 @@ class PlaybackStatsService {
     await temporary.writeAsString(jsonEncode(stats.toJson()));
     if (file.existsSync()) await file.delete();
     await temporary.rename(file.path);
-    final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_prefsKey);
   }
 
@@ -325,6 +332,30 @@ class PlaybackStatsService {
   Future<File> _file() async {
     final directory = await getApplicationSupportDirectory();
     return File('${directory.path}/playback_stats.json');
+  }
+
+  static bool _isLegacy(Map<String, dynamic> json) =>
+      json['legacyReadonly'] == true ||
+      (json['totalListenMs'] == null && (json['totalPlays'] as num? ?? 0) > 0);
+
+  Future<void> _preserveLegacy(
+    SharedPreferences prefs,
+    PlaybackStats stats,
+  ) async {
+    if (_legacySaved) return;
+    final legacy = PlaybackStats(
+      totalPlays: stats.totalPlays,
+      totalListenTime: stats.totalListenTime,
+      artistPlayCount: stats.artistPlayCount,
+      songPlayCount: stats.songPlayCount,
+      songTitles: stats.songTitles,
+      artistNames: stats.artistNames,
+      firstPlayDate: stats.firstPlayDate,
+      legacyReadonly: true,
+    );
+    await prefs.setString(_legacyKey, jsonEncode(legacy.toJson()));
+    _legacySaved = true;
+    _legacyStats = true;
   }
 }
 
