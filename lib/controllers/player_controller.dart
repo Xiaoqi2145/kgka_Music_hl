@@ -62,6 +62,23 @@ class SleepTimerUiState {
       Object.hash(remaining, finishCurrentSong, finishOption, sheetFinishSong);
 }
 
+/// 待播列表的一行：歌曲，以及它来自手动插播、回听暂存还是候选池。
+class PersonalFmUpcomingItem {
+  const PersonalFmUpcomingItem({
+    required this.song,
+    this.isManual = false,
+    this.isFromHistory = false,
+  });
+
+  final Song song;
+
+  /// 用户用「添加到播放队列」临时插入的歌曲。
+  final bool isManual;
+
+  /// 回听后暂存的前进项，播完这一条才回到候选池。
+  final bool isFromHistory;
+}
+
 /// 一次即将提交的 FM 候选。提交成功前不消耗候选、不发反馈。
 typedef _FmPending = ({
   PersonalFmSession session,
@@ -3943,14 +3960,27 @@ class PlayerController extends ChangeNotifier {
 
   /// 先列出用户手动安排的下一首，再按实际播放顺序列出推荐。
   Iterable<Song> get upcomingPersonalFmSongs sync* {
+    for (final entry in upcomingPersonalFmEntries) {
+      yield entry.song;
+    }
+  }
+
+  /// 与 [upcomingPersonalFmSongs] 同序，但带回听 / 候选的区分。
+  Iterable<PersonalFmUpcomingItem> get upcomingPersonalFmEntries sync* {
     final manual = _fmManualNext;
-    if (manual != null) yield manual;
     final session = _fmSession;
+    if (manual != null) {
+      yield PersonalFmUpcomingItem(song: manual, isManual: true);
+    }
     if (session == null) return;
-    for (final track in session.upcoming) {
-      if (manual == null || _songKey(manual) != _songKey(track.song)) {
-        yield track.song;
+    for (final entry in session.upcomingEntries) {
+      if (manual != null && _songKey(manual) == _songKey(entry.track.song)) {
+        continue;
       }
+      yield PersonalFmUpcomingItem(
+        song: entry.track.song,
+        isFromHistory: entry.isFromHistory,
+      );
     }
   }
 

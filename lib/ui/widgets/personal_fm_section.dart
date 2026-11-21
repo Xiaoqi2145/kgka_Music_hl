@@ -138,7 +138,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
   Widget build(BuildContext context) {
     final player = widget.player;
     final current = player.personalFmCurrentTrack;
-    final upcoming = player.upcomingPersonalFmSongs.take(5).toList();
+    final upcoming = player.upcomingPersonalFmEntries.take(5).toList();
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
       child: Column(
@@ -331,27 +331,50 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
   }
 
   /// 接下来：与「今日推荐」同样的行样式，标题用区块头字重。
-  Widget _upNext(BuildContext context, List<Song> songs) {
+  ///
+  /// 列表区分三种来源：手动插播、回听暂存、候选池。数量说明放在标题右侧，
+  /// 让「还有几首」在不滚动的情况下可知。
+  Widget _upNext(BuildContext context, List<PersonalFmUpcomingItem> entries) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final loading = _session?.isLoadingRecommendations == true;
-    final exhausted = _session?.isExhausted == true;
+    final session = _session;
+    final loading = session?.isLoadingRecommendations == true;
+    final exhausted = session?.isExhausted == true;
+    final total = session?.pendingCount ?? 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '接下来',
-          style: theme.textTheme.titleMedium?.copyWith(
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-            color: scheme.onSurface,
-          ),
+        Row(
+          children: [
+            Text(
+              '接下来',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: scheme.onSurface,
+              ),
+            ),
+            if (entries.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Text(
+                '共 $total 首',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+            const Spacer(),
+            if (loading)
+              const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+          ],
         ),
         const SizedBox(height: 6),
-        if (songs.isNotEmpty)
-          for (final song in songs) _UpNextRow(song: song),
-        if (songs.isEmpty && loading) const LinearProgressIndicator(),
-        if (songs.isEmpty && !loading) ...[
+        if (entries.isNotEmpty)
+          for (final entry in entries) _UpNextRow(item: entry),
+        if (entries.isEmpty && !loading) ...[
           Text(
             exhausted ? '候选已用完' : '暂时没有接下来的推荐',
             style: theme.textTheme.bodyMedium?.copyWith(
@@ -406,24 +429,26 @@ class _GhostAction extends StatelessWidget {
 /// 「接下来」列表的一行。只展示，不提供点播入口：推荐顺序由会话决定，
 /// 直接点播会让候选消耗与实际播放脱节。
 class _UpNextRow extends StatelessWidget {
-  const _UpNextRow({required this.song});
+  const _UpNextRow({required this.item});
 
-  final Song song;
+  final PersonalFmUpcomingItem item;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final song = item.song;
+    final badge = switch (item) {
+      PersonalFmUpcomingItem(isManual: true) => '插播',
+      PersonalFmUpcomingItem(isFromHistory: true) => '回听',
+      _ => null,
+    };
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
       child: Row(
         children: [
-          Icon(
-            Icons.music_note_rounded,
-            size: 20,
-            color: scheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 10),
+          Artwork(url: song.coverUrl, size: 44, borderRadius: 8),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -449,6 +474,23 @@ class _UpNextRow extends StatelessWidget {
               ],
             ),
           ),
+          if (badge != null) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                badge,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSecondaryContainer,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -20,6 +20,18 @@ enum PersonalFmTrackSource {
   manual,
 }
 
+/// 一条待播来源。[isFromHistory] 为真表示它是回听后暂存的前进项，
+/// 播完这一批就会重新消耗候选。
+class PersonalFmUpcomingEntry {
+  const PersonalFmUpcomingEntry({
+    required this.track,
+    required this.isFromHistory,
+  });
+
+  final PersonalFmTrack track;
+  final bool isFromHistory;
+}
+
 /// 首播的三种结果，供页面区分空曲库与失败。
 enum PersonalFmStartOutcome { started, empty, failed, cancelled }
 
@@ -96,9 +108,28 @@ class PersonalFmSession extends ChangeNotifier {
 
   bool get isLoadingRecommendations => _refill != null || _feedback != null;
 
+  /// 按实际播放顺序列出待播来源：先是回听暂存的前进栈，再是候选池。
+  ///
+  /// 回听项与候选项在界面上要分开表达（「回听」标记、数量边界），所以这里
+  /// 一并给出区分它们的 [PersonalFmUpcomingEntry]，而不是只给歌曲。
+  Iterable<PersonalFmUpcomingEntry> get upcomingEntries sync* {
+    for (final track in _forward.reversed) {
+      yield PersonalFmUpcomingEntry(
+        track: track,
+        isFromHistory: true,
+      );
+    }
+    for (final track in _candidates) {
+      if (_isExcluded(track)) continue;
+      yield PersonalFmUpcomingEntry(track: track, isFromHistory: false);
+    }
+  }
+
+  /// 候选池中实际可播的曲目（不含回听暂存项）。
   Iterable<PersonalFmTrack> get upcoming sync* {
-    yield* _forward.reversed;
-    yield* _candidates.where((track) => !_isExcluded(track));
+    for (final entry in upcomingEntries) {
+      yield entry.track;
+    }
   }
 
   /// 最近一次请求的错误描述，供页面显示。

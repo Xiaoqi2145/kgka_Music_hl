@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kgka_music_hl/controllers/player_controller.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/models/personal_fm_models.dart';
 import 'package:kgka_music_hl/services/personal_fm_session.dart';
+import 'package:kgka_music_hl/ui/widgets/artwork.dart';
 import 'package:kgka_music_hl/ui/widgets/personal_fm_section.dart';
 
 import 'player_quick_actions_test_support.dart';
@@ -36,6 +38,19 @@ class _RadioPlayer extends FakePlayer {
 
   @override
   Iterable<Song> get upcomingPersonalFmSongs => songs.skip(index + 1);
+
+  @override
+  Iterable<PersonalFmUpcomingItem> get upcomingPersonalFmEntries sync* {
+    final rest = songs.skip(index + 1).toList();
+    for (var i = 0; i < rest.length; i++) {
+      // 第 1 项模拟回听暂存，第 2 项模拟手动插播，其余是普通候选。
+      yield PersonalFmUpcomingItem(
+        song: rest[i],
+        isFromHistory: i == 0,
+        isManual: i == 1,
+      );
+    }
+  }
 
   @override
   String? get errorMessage => null;
@@ -136,6 +151,26 @@ void main() {
     expect(find.text('电台曲目 1'), findsOneWidget);
   });
 
+
+  testWidgets('待播列表区分回听与插播来源', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player);
+
+    expect(find.text('回听'), findsOneWidget);
+    expect(find.text('插播'), findsOneWidget);
+  });
+
+  testWidgets('待播列表每一项都有封面', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player);
+
+    // 5 行待播 + 1 张当前曲目封面。
+    expect(find.byType(Artwork), findsNWidgets(6));
+  });
   testWidgets('候选耗尽时给出重新获取入口', (tester) async {
     final player = _RadioPlayer();
     addTearDown(player.dispose);
