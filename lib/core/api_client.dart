@@ -30,6 +30,16 @@ class ApiClient {
     );
   }
 
+  /// Idempotent GET without the generic retry loop.
+  Future<dynamic> getOnce(
+    String path, [
+    Map<String, Object?> query = const {},
+  ]) => _sendWithRetry(
+    () => _client.get(AppConfig.apiUri(path, query), headers: _headers),
+    maxRetries: 0,
+    allowRetry: false,
+  );
+
   Future<dynamic> post(
     String path, {
     Map<String, Object?> query = const {},

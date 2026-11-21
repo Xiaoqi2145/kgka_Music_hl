@@ -308,6 +308,31 @@ class MusicApi {
   /// upstream endpoint is loosely documented.
   Future<dynamic> cloudListenRank() => _client.get('/user/listen');
 
+  /// Low-frequency history write. EchoMusic's compatibility proxy accepts GET
+  /// and KAmusic's API description accepts POST; use the method either can
+  /// route without any automatic retry.
+  Future<dynamic> cloudUploadHistory({
+    required String mxid,
+    required int time,
+    int pc = 1,
+  }) => _client.getOnce('/playhistory/upload', {
+    'mxid': mxid,
+    'time': time,
+    'pc': pc,
+  });
+
+  /// Dedicated grade baseline and incremental write (lite/v2).
+  Future<dynamic> cloudGradeUpdate({required int dSec, required int diffSec}) =>
+      _client.post(
+        '/user/grade/info',
+        body: {'d_sec': dSec, 'diff_sec': diffSec},
+        allowRetry: false,
+      );
+
+  /// Legacy cumulative-time write; kept for servers without grade v2 writes.
+  Future<dynamic> cloudAddTime() =>
+      _client.post('/listen/timeadd', allowRetry: false);
+
   Future<AppVersionInfo> latestAppVersion(AppUpdatePlatform platform) async {
     final json = asMap(
       await _client.get('/mobile/app/versions/latest', {

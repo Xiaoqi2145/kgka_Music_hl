@@ -16,6 +16,7 @@ import 'core/api_client.dart';
 import 'services/artwork_cache_service.dart';
 import 'services/cache_service.dart';
 import 'services/cloud_listening_service.dart';
+import 'services/cloud_playback_sync_service.dart';
 import 'services/download_service.dart';
 import 'services/music_audio_handler.dart';
 import 'services/music_api.dart';
@@ -86,6 +87,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   late final ThemeController _theme;
   late final LocalMusicController _localMusic;
   late final CloudListeningService _cloudListening;
+  late final CloudPlaybackSyncService _cloudPlaybackSync;
   bool _orientationPolicyReady = false;
   bool _orientationSyncScheduled = false;
 
@@ -100,11 +102,14 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _downloads = DownloadController(_downloadService, _api);
     _auth = AuthController(_api, _cacheService);
     _cloudListening = CloudListeningService(_api, _auth, _cacheService);
+    _cloudPlaybackSync = CloudPlaybackSyncService(_api, _auth);
+    unawaited(_cloudPlaybackSync.restore());
     _localMusic = LocalMusicController();
     _player = PlayerController(
       _api,
       widget.audioHandler,
       cloudListening: _cloudListening,
+      cloudPlaybackSync: _cloudPlaybackSync,
     )
       ..downloadController = _downloads
       ..cacheService = _cacheService;
@@ -149,6 +154,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _auth.dispose();
     _player.dispose();
+    _cloudPlaybackSync.dispose();
     _downloads.dispose();
     _localMusic.dispose();
     _downloadService.dispose();
@@ -211,6 +217,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
                 theme: _theme,
                 localMusic: _localMusic,
                 cloudListening: _cloudListening,
+                cloudPlaybackSync: _cloudPlaybackSync,
               );
             },
           ),

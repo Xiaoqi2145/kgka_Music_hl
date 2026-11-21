@@ -9,6 +9,7 @@ import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/cloud_listening_service.dart';
+import '../../services/cloud_playback_sync_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
 import '../widgets/toast.dart';
@@ -74,6 +75,7 @@ class LibraryPage extends StatefulWidget {
     required this.theme,
     required this.localMusic,
     this.cloudListening,
+    this.cloudPlaybackSync,
   });
 
   final MusicApi api;
@@ -84,6 +86,7 @@ class LibraryPage extends StatefulWidget {
   final ThemeController theme;
   final LocalMusicController localMusic;
   final CloudListeningService? cloudListening;
+  final CloudPlaybackSyncService? cloudPlaybackSync;
 
   @override
   State<LibraryPage> createState() => _LibraryPageState();
@@ -334,6 +337,7 @@ class _LibraryPageState extends State<LibraryPage>
           cache: widget.player.cacheService,
           localMusic: widget.localMusic,
           cloudListening: widget.cloudListening,
+          cloudPlaybackSync: widget.cloudPlaybackSync,
         ),
       ),
     );

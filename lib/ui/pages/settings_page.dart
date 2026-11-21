@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
-
 import '../../config/app_config.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/download_controller.dart';
@@ -11,6 +12,7 @@ import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/cloud_listening_service.dart';
+import '../../services/cloud_playback_sync_service.dart';
 import '../../models/music_models.dart';
 import '../../services/download_options.dart';
 import '../../services/music_api.dart';
@@ -46,6 +48,7 @@ class SettingsPage extends StatelessWidget {
     this.cache,
     this.downloads,
     this.cloudListening,
+    this.cloudPlaybackSync,
   });
 
   final MusicApi api;
@@ -56,6 +59,7 @@ class SettingsPage extends StatelessWidget {
   final CacheService? cache;
   final DownloadController? downloads;
   final CloudListeningService? cloudListening;
+  final CloudPlaybackSyncService? cloudPlaybackSync;
 
   @override
   Widget build(BuildContext context) {
@@ -80,6 +84,7 @@ class SettingsPage extends StatelessWidget {
             localMusic,
             theme,
             ?downloads,
+            ?cloudPlaybackSync,
           ]),
           builder: (context, _) {
             return AdaptiveContentPadding(
@@ -250,6 +255,17 @@ class SettingsPage extends StatelessWidget {
                         subtitle: '每播放 30 分钟自动同步一次',
                         value: player.addListeningTimeEnabled,
                         onChanged: player.setAddListeningTimeEnabled,
+                      ),
+                      _SettingsDivider(),
+                      _SettingsSwitchTile(
+                        icon: Icons.cloud_upload_outlined,
+                        iconColor: colorScheme.primary,
+                        title: '同步播放历史',
+                        subtitle: '低频提交到酷狗，默认关闭',
+                        value: cloudPlaybackSync?.historyEnabled ?? false,
+                        onChanged: (value) => unawaited(
+                          cloudPlaybackSync?.setHistoryEnabled(value),
+                        ),
                       ),
                       if (player.isDesktopLyricsSupported) ...[
                         _SettingsDivider(),

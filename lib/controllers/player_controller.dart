@@ -14,6 +14,7 @@ import '../services/audio_effects_service.dart';
 import '../services/artwork_cache_service.dart';
 import '../services/cache_service.dart';
 import '../services/cloud_listening_service.dart';
+import '../services/cloud_playback_sync_service.dart';
 import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
@@ -44,8 +45,7 @@ class SleepTimerUiState {
   bool get active =>
       (remaining != null && remaining! > Duration.zero) || finishCurrentSong;
   bool get finishSongSelected => finishCurrentSong || finishOption;
-  bool get sheetSelection =>
-      finishSongSelected || (!active && sheetFinishSong);
+  bool get sheetSelection => finishSongSelected || (!active && sheetFinishSong);
 
   @override
   bool operator ==(Object other) =>
@@ -56,12 +56,8 @@ class SleepTimerUiState {
       other.sheetFinishSong == sheetFinishSong;
 
   @override
-  int get hashCode => Object.hash(
-    remaining,
-    finishCurrentSong,
-    finishOption,
-    sheetFinishSong,
-  );
+  int get hashCode =>
+      Object.hash(remaining, finishCurrentSong, finishOption, sheetFinishSong);
 }
 
 class _PreparedNextSource {
@@ -227,7 +223,12 @@ class PlayerController extends ChangeNotifier {
   /// 单调时钟：所有超时/冷却都用它，避免系统时间跳变改变行为。
   final Stopwatch _transitionClock = Stopwatch()..start();
 
-  PlayerController(this._api, this._audioHandler, {this.cloudListening}) {
+  PlayerController(
+    this._api,
+    this._audioHandler, {
+    this.cloudListening,
+    this.cloudPlaybackSync,
+  }) {
     unawaited(_restoreSettings());
     _audioHandler.attachTransportControls(
       onNext: next,
@@ -257,9 +258,7 @@ class PlayerController extends ChangeNotifier {
       // 宽判据：武装后原生是两子源，严格单子源判据会让整个窗口停摆。
       if (isPlaying && !_isSeeking && !isPreparing && _ownsPlaybackWindow) {
         unawaited(
-          _prepareNextSourceIfNeeded().then(
-            (_) => _armNextSourceIfNeeded(),
-          ),
+          _prepareNextSourceIfNeeded().then((_) => _armNextSourceIfNeeded()),
         );
       }
       // 兜底：just_audio 在 seek 窗口内会丢弃**所有**位置不连续事件（含真实
@@ -348,13 +347,14 @@ class PlayerController extends ChangeNotifier {
   final MusicApi _api;
   final MusicAudioHandler _audioHandler;
   final CloudListeningService? cloudListening;
+  final CloudPlaybackSyncService? cloudPlaybackSync;
   final AudioEffectsService _audioEffects = AudioEffectsService();
   final DesktopLyricsService _desktopLyrics = DesktopLyricsService();
   final PlaybackHistoryService _historyService = PlaybackHistoryService();
   final PlaybackStatsService _statsService = PlaybackStatsService();
   ListeningSessionTracker? _listeningTracker;
   Song? _listeningSong;
-  Duration _unreportedListenTime = Duration.zero;
+  DateTime? _listeningStartedAt;
 
   AudioPlayer get audioPlayer => _audioHandler.audioPlayer;
 
@@ -505,7 +505,6 @@ class PlayerController extends ChangeNotifier {
   AudioQuality? _pendingPlayCacheQuality;
   String? _pendingPlayCacheUrl;
   LoudnessData? _pendingPlayCacheLoudness;
-  bool _isReportingListenTime = false;
   int _seekSerial = 0;
   bool _isSeeking = false;
   bool _isScrubbing = false;
@@ -1918,7 +1917,8 @@ class PlayerController extends ChangeNotifier {
       if (_disposed) return;
       _traceTransition(
         'error_recover',
-        detail: 'stage=armed song=${armed.songKey} local=${armed.isLocal} '
+        detail:
+            'stage=armed song=${armed.songKey} local=${armed.isLocal} '
             'code=${error.code}',
       );
       // 原生因错误停摆时按「下一曲」显式续播；若上一首仍在正常播放，
@@ -2081,7 +2081,8 @@ class PlayerController extends ChangeNotifier {
       );
       _traceTransition(
         'prefetch_ready',
-        detail: 'next=$nextKey local=${next.source == SongSource.local || local != null}',
+        detail:
+            'next=$nextKey local=${next.source == SongSource.local || local != null}',
       );
     } catch (_) {
       // 预解析失败：对该**下一曲**冷却 15 秒后重试，避免窗口内每个刻度都重试。
@@ -2161,10 +2162,7 @@ class PlayerController extends ChangeNotifier {
     }
     _armingNextSource = true;
     try {
-      await _audioHandler.armNextSource(
-        song: prepared.song,
-        url: prepared.url,
-      );
+      await _audioHandler.armNextSource(song: prepared.song, url: prepared.url);
     } catch (error) {
       // 追加失败：保持单子源，静默降级（下一次过界走正常解析路径）。
       _traceTransition('arm_failed', detail: 'error=$error');
@@ -2250,9 +2248,9 @@ class PlayerController extends ChangeNotifier {
     }
     final sequence = audioPlayer.sequenceState;
     // 事件优先（实时值）；兜底路径读 sequenceState。
-    final newIndex =
-        discontinuity?.event.currentIndex ?? sequence.currentIndex;
-    final newSource = (newIndex != null &&
+    final newIndex = discontinuity?.event.currentIndex ?? sequence.currentIndex;
+    final newSource =
+        (newIndex != null &&
             newIndex >= 0 &&
             newIndex < sequence.sequence.length)
         ? sequence.sequence[newIndex]
@@ -2293,7 +2291,9 @@ class PlayerController extends ChangeNotifier {
       // 本地候选（已下载 / 播放缓存 / 本地音乐）提交后必须保护它不被 LRU 删掉：
       // 此时 `_schedulePlaybackCache` 不会介入（没有网络地址），若不显式登记，
       // 正在播放的文件会被当作普通缓存条目清理。
-      downloadController?.setActivePlaybackPath(armed.isLocal ? armed.url : null);
+      downloadController?.setActivePlaybackPath(
+        armed.isLocal ? armed.url : null,
+      );
       downloadController?.setArmedNextPath(null);
       _committedLocalPath = armed.isLocal ? armed.url : null;
       // 过界提交不走 `_playSong`，必须在这里补齐它在提交后的两项动作：
@@ -2341,11 +2341,16 @@ class PlayerController extends ChangeNotifier {
   /// 只有在「确实存在第二子源」时才清理，其余情况（例如我们自己的 seek/
   /// 替换引发的噪声）一律忽略。索引以事件自带的快照为准，原因同
   /// [_onNativeBoundary]。
-  Future<void> _rejectUnownedBoundary(PositionDiscontinuity discontinuity) async {
+  Future<void> _rejectUnownedBoundary(
+    PositionDiscontinuity discontinuity,
+  ) async {
     final sequence = audioPlayer.sequenceState;
     if (sequence.sequence.length != 2) return;
     if (discontinuity.event.currentIndex != 1) return;
-    _traceTransition('boundary_unclaimed', detail: 'dropping stray second source');
+    _traceTransition(
+      'boundary_unclaimed',
+      detail: 'dropping stray second source',
+    );
     await _dropArmedNext();
   }
 
@@ -2448,7 +2453,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> clearSessionForLogout() async {
     _cancelAutomaticResume();
     _settleListeningSession();
-    _unreportedListenTime = Duration.zero;
+    cloudPlaybackSync?.setForeground(true);
+    unawaited(cloudPlaybackSync?.onAccountChanged());
     _cancelPendingPlaybackCache();
     _sessionSaveTimer?.cancel();
     _playbackSessionDirty = false;
@@ -3354,7 +3360,11 @@ class PlayerController extends ChangeNotifier {
   void setAppForeground(bool isForeground) {
     if (_isAppForeground == isForeground) return;
     _isAppForeground = isForeground;
-    if (isForeground) _maybeReportLegacyListeningTime(force: true);
+    cloudPlaybackSync?.setForeground(isForeground);
+    if (isForeground) {
+      unawaited(cloudPlaybackSync?.onAccountChanged());
+      _maybeSyncCloudListening(force: true);
+    }
     if (desktopLyricsEnabled) {
       _desktopLyrics.setAppForeground(isForeground: isForeground);
       unawaited(_syncDesktopLyricsVisibility());
@@ -3365,7 +3375,7 @@ class PlayerController extends ChangeNotifier {
     final wasSessionActive = _listeningTracker != null;
     if (wasSessionActive) {
       _sampleListening(audioPlayer.position, canAdvance: _canAdvanceListening);
-      _maybeReportLegacyListeningTime(force: true);
+      _maybeSyncCloudListening(force: true);
       _settleListeningSession();
     }
     final song = currentSong;
@@ -3827,6 +3837,7 @@ class PlayerController extends ChangeNotifier {
   void _beginListeningSession(Song song, {bool settle = true}) {
     if (settle) _settleListeningSession();
     _listeningSong = song;
+    _listeningStartedAt = DateTime.now();
     _listeningTracker = ListeningSessionTracker();
   }
 
@@ -3860,24 +3871,16 @@ class PlayerController extends ChangeNotifier {
     if (verified <= Duration.zero) return;
 
     unawaited(_statsService.addListenTime(verified));
-    if (!addListeningTimeEnabled) return;
-    _unreportedListenTime += verified;
-    if (_unreportedListenTime >= const Duration(seconds: 30) &&
-        !_isReportingListenTime &&
-        _isAppForeground) {
-      unawaited(_reportLegacyListeningTime());
-    }
+    unawaited(cloudPlaybackSync?.enqueueGradeTime(verified));
   }
 
-  void _maybeReportLegacyListeningTime({bool force = false}) {
-    if (!force ||
-        _isReportingListenTime ||
-        !addListeningTimeEnabled ||
-        currentSong == null ||
-        _unreportedListenTime < const Duration(seconds: 30)) {
+  void _maybeSyncCloudListening({bool force = false}) {
+    if (!force || !addListeningTimeEnabled || currentSong == null) {
       return;
     }
-    unawaited(_reportLegacyListeningTime());
+    final sync = cloudPlaybackSync;
+    if (sync == null) return;
+    unawaited(sync.onAccountChanged().then((_) => sync.maybeSync()));
   }
 
   void _settleListeningSession() {
@@ -3885,31 +3888,18 @@ class PlayerController extends ChangeNotifier {
     if (tracker == null) return;
     tracker.breakContinuity();
     final song = _listeningSong;
+    final startedAt = _listeningStartedAt;
     _listeningTracker = null;
     _listeningSong = null;
+    _listeningStartedAt = null;
     if (tracker.qualified && song != null) {
       unawaited(_statsService.recordPlay(song));
-    }
-  }
-
-  Future<void> _reportLegacyListeningTime() async {
-    if (_isReportingListenTime ||
-        !addListeningTimeEnabled ||
-        _unreportedListenTime < const Duration(seconds: 30) ||
-        currentSong == null) {
-      return;
-    }
-    _isReportingListenTime = true;
-    var sent = Duration.zero;
-    try {
-      sent = _unreportedListenTime;
-      _unreportedListenTime = Duration.zero;
-      await _api.addListeningTime();
-    } catch (error) {
-      _unreportedListenTime += sent;
-      debugPrint('[KA Music][listen-time] report failed: $error');
-    } finally {
-      _isReportingListenTime = false;
+      unawaited(
+        cloudPlaybackSync?.enqueueHistory(
+          song,
+          playedAt: startedAt ?? DateTime.now(),
+        ),
+      );
     }
   }
 
