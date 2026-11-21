@@ -434,6 +434,7 @@ class Song {
     this.artists = const [],
     this.isCloudDrive = false,
     this.source = SongSource.kugou,
+    this.catalogId,
   });
 
   final String id;
@@ -452,6 +453,9 @@ class Song {
 
   /// 歌曲来源平台。
   final SongSource source;
+
+  /// 明确来自酷狗曲库的 ID；仅保存来源字段本身，不从 hash 等回退值推断。
+  final String? catalogId;
 
   factory Song.fromSearch(Map<String, dynamic> json) {
     final songId =
@@ -502,6 +506,11 @@ class Song {
       albumName: asString(json['AlbumName']) ?? asString(json['album_name']),
       coverUrl: normalizeImageUrl(imageUrl),
       artists: artists,
+      catalogId:
+          asString(json['MixSongID']) ??
+          asString(json['mixsongid']) ??
+          asString(json['SongID']) ??
+          asString(json['songid']),
       duration:
           durationFromSeconds(json['Duration']) ??
           durationFromMilliseconds(json['timelen']) ??
@@ -534,6 +543,7 @@ class Song {
       albumName: asString(json['album_name']),
       coverUrl: normalizeImageUrl(asString(json['sizable_cover'])),
       artists: artists,
+      catalogId: asString(json['mixsongid']),
       duration: durationFromSeconds(json['time_length']),
     );
   }
@@ -599,6 +609,7 @@ class Song {
             asString(json['cover']),
       ),
       artists: artists,
+      catalogId: asString(json['mixsongid']) ?? asString(json['songid']),
       duration:
           durationFromMilliseconds(json['timelength']) ??
           durationFromMilliseconds(json['timelen']),
@@ -711,6 +722,7 @@ class Song {
         .toList(),
     if (isCloudDrive) 'isCloudDrive': true,
     if (source != SongSource.kugou) 'source': source.name,
+    if (catalogId != null) 'catalogId': catalogId,
   };
 
   factory Song.fromCache(Map<String, dynamic> json) {
@@ -738,6 +750,7 @@ class Song {
           .toList(),
       isCloudDrive: json['isCloudDrive'] == true,
       source: SongSource.values.asNameMap()[sourceName] ?? SongSource.kugou,
+      catalogId: asString(json['catalogId']),
     );
   }
 }

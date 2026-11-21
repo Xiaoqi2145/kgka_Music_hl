@@ -16,6 +16,7 @@ import '../services/cache_service.dart';
 import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
+import '../services/listening_session.dart';
 import '../services/playback_failure.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_loudness.dart';
@@ -187,8 +188,6 @@ class PlayerController extends ChangeNotifier {
       'settings.volume_normalization_ref_lufs';
   static const _manualLyricCandidatesSettingKey =
       'settings.manual_lyric_candidates';
-  static const _listenTimeReportInterval = Duration(minutes: 30);
-  static const _listenTimeCheckInterval = Duration(minutes: 1);
   static const _defaultEqualizerLevels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   static const equalizerPresets = [
     AudioEffectPreset(name: '平直', levels: _defaultEqualizerLevels),
@@ -250,6 +249,7 @@ class PlayerController extends ChangeNotifier {
       if (!_isSeeking && !isPreparing && _ownsPlaybackWindow) {
         _setPositionBase(audioPlayer.position, playing: isPlaying);
       }
+      _sampleListening(value, canAdvance: _canAdvanceListening);
       _noteProgressTick(value);
       _maybeSyncDesktopLyricFromPosition();
       // 预加载歌曲：临近结束（≤30s）时后台预解析下一曲播放地址。
@@ -293,7 +293,16 @@ class PlayerController extends ChangeNotifier {
           value.processingState == ProcessingState.ready) {
         _playbackLoudness.startPlayback();
       }
-      _syncListeningTimeTracker();
+      _sampleListening(
+        audioPlayer.position,
+        canAdvance:
+            value.playing &&
+            value.processingState == ProcessingState.ready &&
+            !_isSeeking &&
+            !_isScrubbing &&
+            !isPreparing &&
+            _ownsPlaybackWindow,
+      );
       if (isPlaying) {
         _resumePendingPlaybackCache();
       } else {
@@ -341,6 +350,9 @@ class PlayerController extends ChangeNotifier {
   final DesktopLyricsService _desktopLyrics = DesktopLyricsService();
   final PlaybackHistoryService _historyService = PlaybackHistoryService();
   final PlaybackStatsService _statsService = PlaybackStatsService();
+  ListeningSessionTracker? _listeningTracker;
+  Song? _listeningSong;
+  Duration _unreportedListenTime = Duration.zero;
 
   AudioPlayer get audioPlayer => _audioHandler.audioPlayer;
 
@@ -491,9 +503,6 @@ class PlayerController extends ChangeNotifier {
   AudioQuality? _pendingPlayCacheQuality;
   String? _pendingPlayCacheUrl;
   LoudnessData? _pendingPlayCacheLoudness;
-  Timer? _listenTimeTimer;
-  DateTime? _listenTimeStartedAt;
-  Duration _pendingListenTime = Duration.zero;
   bool _isReportingListenTime = false;
   int _seekSerial = 0;
   bool _isSeeking = false;
@@ -836,11 +845,6 @@ class PlayerController extends ChangeNotifier {
     addListeningTimeEnabled = enabled;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_listenTimeSettingKey, enabled);
-    if (!enabled) {
-      _resetListeningTimeTracker();
-    } else {
-      _syncListeningTimeTracker();
-    }
     notifyListeners();
   }
 
@@ -1179,7 +1183,7 @@ class PlayerController extends ChangeNotifier {
     unawaited(loadLyrics(song));
     unawaited(_syncDesktopLyricsVisibility());
     unawaited(_historyService.record(song));
-    unawaited(_statsService.recordPlay(song));
+    _beginListeningSession(song);
     _scheduleSessionPersist();
   }
 
@@ -2441,6 +2445,8 @@ class PlayerController extends ChangeNotifier {
   /// Drop account-specific playback state and its persistent snapshot on logout.
   Future<void> clearSessionForLogout() async {
     _cancelAutomaticResume();
+    _settleListeningSession();
+    _unreportedListenTime = Duration.zero;
     _cancelPendingPlaybackCache();
     _sessionSaveTimer?.cancel();
     _playbackSessionDirty = false;
@@ -2577,6 +2583,7 @@ class PlayerController extends ChangeNotifier {
     if ((playbackSpeed - clamped).abs() < 0.001) {
       return;
     }
+    _breakListeningContinuity();
     playbackSpeed = clamped;
     await audioPlayer.setSpeed(clamped);
     final prefs = await SharedPreferences.getInstance();
@@ -2801,6 +2808,7 @@ class PlayerController extends ChangeNotifier {
   void previewSeek(Duration position) {
     _transitions.seek();
     _invalidateNavigation();
+    _breakListeningContinuity();
     _isScrubbing = true;
     _isSeeking = true;
     // 拖拽预览只更新进度/歌词监听器，避免每个 pointer move 重建整个播放器。
@@ -2815,6 +2823,7 @@ class PlayerController extends ChangeNotifier {
     _traceTransition('seek_start');
     final target = _clampPosition(position);
     seekRevision++;
+    _breakListeningContinuity();
     _isScrubbing = false;
     _isSeeking = true;
     _resetProgressWatch();
@@ -3325,6 +3334,7 @@ class PlayerController extends ChangeNotifier {
   void setAppForeground(bool isForeground) {
     if (_isAppForeground == isForeground) return;
     _isAppForeground = isForeground;
+    if (isForeground) _maybeReportLegacyListeningTime(force: true);
     if (desktopLyricsEnabled) {
       _desktopLyrics.setAppForeground(isForeground: isForeground);
       unawaited(_syncDesktopLyricsVisibility());
@@ -3332,6 +3342,16 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> flushPersistence() async {
+    final wasSessionActive = _listeningTracker != null;
+    if (wasSessionActive) {
+      _sampleListening(audioPlayer.position, canAdvance: _canAdvanceListening);
+      _maybeReportLegacyListeningTime(force: true);
+      _settleListeningSession();
+    }
+    final song = currentSong;
+    if (wasSessionActive && isPlaying && song != null) {
+      _beginListeningSession(song);
+    }
     await Future.wait([
       _historyService.flush(),
       _statsService.flush(),
@@ -3692,7 +3712,6 @@ class PlayerController extends ChangeNotifier {
     if (desktopLyricsEnabled) {
       unawaited(_desktopLyrics.updateSettings(desktopLyricsSettings));
     }
-    _syncListeningTimeTracker();
     unawaited(_refreshEqualizerConfig());
     unawaited(_applyEqualizer());
     unawaited(_applyBassBoost());
@@ -3775,70 +3794,99 @@ class PlayerController extends ChangeNotifier {
     );
   }
 
-  void _syncListeningTimeTracker() {
-    final shouldTrack =
-        addListeningTimeEnabled && isPlaying && currentSong != null;
-    if (shouldTrack) {
-      _listenTimeStartedAt ??= DateTime.now();
-      _listenTimeTimer ??= Timer.periodic(
-        _listenTimeCheckInterval,
-        (_) => unawaited(_maybeReportListeningTime()),
-      );
+  bool get _canAdvanceListening =>
+      isPlaying &&
+      !isBuffering &&
+      !isPreparing &&
+      !isStalled &&
+      !_isSeeking &&
+      !_isScrubbing &&
+      currentSong != null &&
+      _ownsPlaybackWindow;
+
+  void _beginListeningSession(Song song, {bool settle = true}) {
+    if (settle) _settleListeningSession();
+    _listeningSong = song;
+    _listeningTracker = ListeningSessionTracker();
+  }
+
+  void _breakListeningContinuity() {
+    _listeningTracker?.restartAt(
+      ListeningSample(
+        position: audioPlayer.position,
+        elapsed: _transitionClock.elapsed,
+        canAdvance: _canAdvanceListening,
+        speed: playbackSpeed,
+      ),
+    );
+  }
+
+  void _sampleListening(Duration position, {required bool canAdvance}) {
+    final tracker = _listeningTracker;
+    if (tracker == null) return;
+    tracker.expireIfOlderThan(_transitionClock.elapsed);
+    if (!canAdvance) {
+      tracker.breakContinuity();
       return;
     }
+    final verified = tracker.add(
+      ListeningSample(
+        position: position,
+        elapsed: _transitionClock.elapsed,
+        canAdvance: canAdvance,
+        speed: playbackSpeed,
+      ),
+    );
+    if (verified <= Duration.zero) return;
 
-    _pauseListeningTimeTracker();
-  }
-
-  void _pauseListeningTimeTracker() {
-    final startedAt = _listenTimeStartedAt;
-    if (startedAt != null) {
-      _pendingListenTime += DateTime.now().difference(startedAt);
-      _listenTimeStartedAt = null;
+    unawaited(_statsService.addListenTime(verified));
+    if (!addListeningTimeEnabled) return;
+    _unreportedListenTime += verified;
+    if (_unreportedListenTime >= const Duration(seconds: 30) &&
+        !_isReportingListenTime &&
+        _isAppForeground) {
+      unawaited(_reportLegacyListeningTime());
     }
-    _listenTimeTimer?.cancel();
-    _listenTimeTimer = null;
   }
 
-  void _resetListeningTimeTracker() {
-    _listenTimeStartedAt = null;
-    _pendingListenTime = Duration.zero;
-    _listenTimeTimer?.cancel();
-    _listenTimeTimer = null;
-  }
-
-  Duration _trackedListeningTime() {
-    final startedAt = _listenTimeStartedAt;
-    if (startedAt == null) {
-      return _pendingListenTime;
-    }
-    return _pendingListenTime + DateTime.now().difference(startedAt);
-  }
-
-  Future<void> _maybeReportListeningTime() async {
-    if (_isReportingListenTime || !addListeningTimeEnabled) {
+  void _maybeReportLegacyListeningTime({bool force = false}) {
+    if (!force ||
+        _isReportingListenTime ||
+        !addListeningTimeEnabled ||
+        currentSong == null ||
+        _unreportedListenTime < const Duration(seconds: 30)) {
       return;
     }
-    if (_trackedListeningTime() < _listenTimeReportInterval) {
+    unawaited(_reportLegacyListeningTime());
+  }
+
+  void _settleListeningSession() {
+    final tracker = _listeningTracker;
+    if (tracker == null) return;
+    tracker.breakContinuity();
+    final song = _listeningSong;
+    _listeningTracker = null;
+    _listeningSong = null;
+    if (tracker.qualified && song != null) {
+      unawaited(_statsService.recordPlay(song));
+    }
+  }
+
+  Future<void> _reportLegacyListeningTime() async {
+    if (_isReportingListenTime ||
+        !addListeningTimeEnabled ||
+        _unreportedListenTime < const Duration(seconds: 30) ||
+        currentSong == null) {
       return;
     }
-
     _isReportingListenTime = true;
+    var sent = Duration.zero;
     try {
+      sent = _unreportedListenTime;
+      _unreportedListenTime = Duration.zero;
       await _api.addListeningTime();
-      // 上报成功，同步记录本地统计的听歌时长
-      unawaited(_statsService.addListenTime(_listenTimeReportInterval));
-      final stillPlaying = isPlaying && currentSong != null;
-      final remainder = _trackedListeningTime() - _listenTimeReportInterval;
-      _pendingListenTime = remainder > Duration.zero
-          ? remainder
-          : Duration.zero;
-      _listenTimeStartedAt = stillPlaying ? DateTime.now() : null;
-      if (!stillPlaying) {
-        _listenTimeTimer?.cancel();
-        _listenTimeTimer = null;
-      }
     } catch (error) {
+      _unreportedListenTime += sent;
       debugPrint('[KA Music][listen-time] report failed: $error');
     } finally {
       _isReportingListenTime = false;
@@ -3895,8 +3943,8 @@ class PlayerController extends ChangeNotifier {
     _disposed = true;
     ++_volumeNormApplySerial;
     _volNormService.invalidatePending();
+    _settleListeningSession();
     unawaited(flushPersistence());
-    _pauseListeningTimeTracker();
     _cancelPendingPlaybackCache();
     _autoResumeTimer?.cancel();
     _sessionSaveTimer?.cancel();
