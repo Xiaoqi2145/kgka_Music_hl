@@ -37,6 +37,8 @@ class MusicApi {
     }
   }
 
+  void close() => _client.close();
+
   Future<void> sendLoginCode(String mobile) async {
     final json = asMap(
       await _client.post('/captcha/sent', query: {'mobile': mobile}),
@@ -296,6 +298,15 @@ class MusicApi {
   Future<void> addListeningTime() async {
     await _client.post('/listen/timeadd');
   }
+
+  /// Account grade and cumulative listening seconds. Not every compatible
+  /// server exposes this endpoint, so callers must treat failure as absence.
+  Future<Map<String, dynamic>> cloudGradeInfo() async =>
+      asMap(await _client.get('/user/grade/info'));
+
+  /// Account listening ranking. Shape is normalized by the caller because the
+  /// upstream endpoint is loosely documented.
+  Future<dynamic> cloudListenRank() => _client.get('/user/listen');
 
   Future<AppVersionInfo> latestAppVersion(AppUpdatePlatform platform) async {
     final json = asMap(

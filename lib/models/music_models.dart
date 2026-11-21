@@ -145,6 +145,148 @@ class UserProfile {
   }
 }
 
+/// 酷狗账号侧只读听歌统计。缺失字段保持为空，页面不臆造等级或排行。
+class CloudListeningSummary {
+  const CloudListeningSummary({
+    this.level,
+    this.levelName,
+    this.totalSeconds,
+    this.nextLevelSeconds,
+    this.rank = const [],
+    this.refreshedAt,
+    this.gradeError,
+    this.rankError,
+  });
+
+  final int? level;
+  final String? levelName;
+  final int? totalSeconds;
+  final int? nextLevelSeconds;
+  final List<CloudListenRank> rank;
+  final DateTime? refreshedAt;
+  final String? gradeError;
+  final String? rankError;
+
+  bool get hasGrade => totalSeconds != null || level != null;
+  bool get hasRank => rank.isNotEmpty;
+
+  Duration? get totalTime =>
+      totalSeconds == null ? null : Duration(seconds: totalSeconds!);
+  Duration? get nextLevelTime =>
+      nextLevelSeconds == null ? null : Duration(seconds: nextLevelSeconds!);
+
+  factory CloudListeningSummary.fromJson(Map<String, dynamic> json) {
+    final grade = asMap(json['grade']);
+    final rankJson = asList(json['rank']);
+    return CloudListeningSummary(
+      level: asInt(grade['level'] ?? grade['grade']),
+      levelName: asString(grade['level_name'] ?? grade['grade_name']),
+      totalSeconds: asInt(grade['d_sec'] ?? grade['total_seconds']),
+      nextLevelSeconds: asInt(
+        grade['next_level_seconds'] ?? grade['upgrade_seconds'],
+      ),
+      rank: rankJson
+          .whereType<Map>()
+          .map((item) => CloudListenRank.fromJson(asMap(item)))
+          .where((item) => item.title.isNotEmpty)
+          .toList(growable: false),
+      refreshedAt: _parseCloudTime(json['refreshed_at']),
+      gradeError: asString(json['grade_error']),
+      rankError: asString(json['rank_error']),
+    );
+  }
+
+  Map<String, dynamic> toCache() => {
+    'grade': {
+      if (level != null) 'level': level,
+      if (levelName != null) 'level_name': levelName,
+      if (totalSeconds != null) 'd_sec': totalSeconds,
+      if (nextLevelSeconds != null) 'next_level_seconds': nextLevelSeconds,
+    },
+    'rank': rank.map((item) => item.toCache()).toList(),
+    'refreshed_at': refreshedAt?.millisecondsSinceEpoch,
+    if (gradeError != null) 'grade_error': gradeError,
+    if (rankError != null) 'rank_error': rankError,
+  };
+
+  static DateTime? _parseCloudTime(Object? value) {
+    if (value is num) {
+      return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    }
+    return DateTime.tryParse(asString(value) ?? '');
+  }
+}
+
+/// Raw grade fields used before the two read-only endpoints are merged.
+class CloudListeningGrade {
+  const CloudListeningGrade({
+    this.level,
+    this.levelName,
+    this.totalSeconds,
+    this.nextLevelSeconds,
+  });
+
+  final int? level;
+  final String? levelName;
+  final int? totalSeconds;
+  final int? nextLevelSeconds;
+
+  factory CloudListeningGrade.fromJson(Map<String, dynamic> json) {
+    return CloudListeningGrade(
+      level: asInt(json['level'] ?? json['grade']),
+      levelName: asString(json['level_name'] ?? json['grade_name']),
+      totalSeconds: asInt(json['d_sec'] ?? json['total_seconds']),
+      nextLevelSeconds: asInt(
+        json['next_level_seconds'] ?? json['upgrade_seconds'],
+      ),
+    );
+  }
+}
+
+class CloudListenRank {
+  const CloudListenRank({
+    required this.title,
+    this.artist,
+    this.count,
+    this.coverUrl,
+  });
+
+  final String title;
+  final String? artist;
+  final int? count;
+  final String? coverUrl;
+
+  factory CloudListenRank.fromJson(Map<String, dynamic> json) {
+    final title =
+        asString(json['songname']) ??
+        asString(json['song_name']) ??
+        asString(json['name']) ??
+        asString(json['audio_name']) ??
+        '';
+    final artist =
+        asString(json['singername']) ??
+        asString(json['singer_name']) ??
+        asString(json['author_name']);
+    return CloudListenRank(
+      title: title,
+      artist: artist,
+      count: asInt(json['count'] ?? json['play_count'] ?? json['listen_num']),
+      coverUrl: normalizeImageUrl(
+        asString(json['cover']) ??
+            asString(json['sizable_cover']) ??
+            asString(json['img']),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toCache() => {
+    'songname': title,
+    if (artist != null) 'singername': artist,
+    if (count != null) 'count': count,
+    if (coverUrl != null) 'cover': coverUrl,
+  };
+}
+
 class VipReceiveItem {
   const VipReceiveItem({this.day, this.receiveVip, this.vipType});
 

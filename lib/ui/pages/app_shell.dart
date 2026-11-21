@@ -10,6 +10,7 @@ import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/cache_service.dart';
+import '../../services/cloud_listening_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/mini_player.dart';
 import '../adaptive_layout.dart';
@@ -26,6 +27,7 @@ class AppShell extends StatefulWidget {
     required this.downloads,
     required this.theme,
     required this.localMusic,
+    this.cloudListening,
   });
 
   final MusicApi api;
@@ -35,6 +37,7 @@ class AppShell extends StatefulWidget {
   final DownloadController downloads;
   final ThemeController theme;
   final LocalMusicController localMusic;
+  final CloudListeningService? cloudListening;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -64,6 +67,7 @@ class _AppShellState extends State<AppShell> {
         downloads: widget.downloads,
         theme: widget.theme,
         localMusic: widget.localMusic,
+        cloudListening: widget.cloudListening,
       ),
     ];
   }

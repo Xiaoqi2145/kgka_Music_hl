@@ -10,6 +10,7 @@ import '../../controllers/theme_controller.dart';
 import '../../controllers/local_music_controller.dart';
 import '../../services/app_update_service.dart';
 import '../../services/cache_service.dart';
+import '../../services/cloud_listening_service.dart';
 import '../../models/music_models.dart';
 import '../../services/download_options.dart';
 import '../../services/music_api.dart';
@@ -44,6 +45,7 @@ class SettingsPage extends StatelessWidget {
     required this.localMusic,
     this.cache,
     this.downloads,
+    this.cloudListening,
   });
 
   final MusicApi api;
@@ -53,6 +55,7 @@ class SettingsPage extends StatelessWidget {
   final LocalMusicController localMusic;
   final CacheService? cache;
   final DownloadController? downloads;
+  final CloudListeningService? cloudListening;
 
   @override
   Widget build(BuildContext context) {
@@ -204,7 +207,10 @@ class SettingsPage extends StatelessWidget {
                         subtitle: '听歌时长、最常听歌手等',
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => PlaybackStatsPage(player: player),
+                            builder: (_) => PlaybackStatsPage(
+                              player: player,
+                              cloudListening: cloudListening,
+                            ),
                           ),
                         ),
                       ),

@@ -15,6 +15,7 @@ import 'controllers/theme_controller.dart';
 import 'core/api_client.dart';
 import 'services/artwork_cache_service.dart';
 import 'services/cache_service.dart';
+import 'services/cloud_listening_service.dart';
 import 'services/download_service.dart';
 import 'services/music_audio_handler.dart';
 import 'services/music_api.dart';
@@ -84,6 +85,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   late final PlayerController _player;
   late final ThemeController _theme;
   late final LocalMusicController _localMusic;
+  late final CloudListeningService _cloudListening;
   bool _orientationPolicyReady = false;
   bool _orientationSyncScheduled = false;
 
@@ -97,8 +99,13 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
     _downloadService = DownloadService();
     _downloads = DownloadController(_downloadService, _api);
     _auth = AuthController(_api, _cacheService);
+    _cloudListening = CloudListeningService(_api, _auth, _cacheService);
     _localMusic = LocalMusicController();
-    _player = PlayerController(_api, widget.audioHandler)
+    _player = PlayerController(
+      _api,
+      widget.audioHandler,
+      cloudListening: _cloudListening,
+    )
       ..downloadController = _downloads
       ..cacheService = _cacheService;
     _auth.onLogout = _player.clearSessionForLogout;
@@ -203,6 +210,7 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
                 downloads: _downloads,
                 theme: _theme,
                 localMusic: _localMusic,
+                cloudListening: _cloudListening,
               );
             },
           ),

@@ -13,6 +13,7 @@ import '../models/music_models.dart';
 import '../services/audio_effects_service.dart';
 import '../services/artwork_cache_service.dart';
 import '../services/cache_service.dart';
+import '../services/cloud_listening_service.dart';
 import '../services/desktop_lyrics_service.dart';
 import '../services/music_api.dart';
 import '../services/music_audio_handler.dart';
@@ -226,7 +227,7 @@ class PlayerController extends ChangeNotifier {
   /// 单调时钟：所有超时/冷却都用它，避免系统时间跳变改变行为。
   final Stopwatch _transitionClock = Stopwatch()..start();
 
-  PlayerController(this._api, this._audioHandler) {
+  PlayerController(this._api, this._audioHandler, {this.cloudListening}) {
     unawaited(_restoreSettings());
     _audioHandler.attachTransportControls(
       onNext: next,
@@ -346,6 +347,7 @@ class PlayerController extends ChangeNotifier {
 
   final MusicApi _api;
   final MusicAudioHandler _audioHandler;
+  final CloudListeningService? cloudListening;
   final AudioEffectsService _audioEffects = AudioEffectsService();
   final DesktopLyricsService _desktopLyrics = DesktopLyricsService();
   final PlaybackHistoryService _historyService = PlaybackHistoryService();
@@ -2568,8 +2570,26 @@ class PlayerController extends ChangeNotifier {
   /// 读取本地播放统计。
   Future<PlaybackStats> getPlaybackStats() => _statsService.getStats();
 
+  Future<CloudListeningSummary> getCloudListeningStats({
+    bool refresh = false,
+  }) async {
+    final service = cloudListening;
+    if (service == null) return const CloudListeningSummary();
+    return service.load(force: refresh);
+  }
+
   /// 清空本地播放统计。
-  Future<void> clearPlaybackStats() => _statsService.clear();
+  Future<void> clearPlaybackStats() async {
+    clearPlaybackStatsLocally();
+    await _statsService.clear();
+  }
+
+  /// Immediately hide cleared values while the asynchronous disk removal runs.
+  void clearPlaybackStatsLocally() {
+    _listeningTracker = null;
+    _listeningSong = null;
+    notifyListeners();
+  }
 
   /// 读取播放历史。
   Future<List<Song>> getPlaybackHistory({int limit = 100}) =>
