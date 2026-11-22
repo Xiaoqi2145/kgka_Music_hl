@@ -1628,6 +1628,43 @@ void main() {
     expect(api.fmDepartures.single.completed, isTrue);
   });
 
+  test('a normal playlist click exits FM', () async {
+    await setup();
+    api.fmBatches.add(fmBatch(1, 2));
+    await controller.startPersonalFm(ownerKey: 'account');
+    expect(controller.isPersonalFmActive, isTrue);
+
+    await controller.playSong(c, queue: [c, d]);
+    await drain();
+
+    expect(controller.currentSong?.id, '3');
+    expect(controller.isPersonalFmActive, isFalse);
+    expect(controller.personalFmSession, isNull);
+  });
+
+  test(
+    'switching inside the FM queue keeps FM and refills after the queue ends',
+    () async {
+      await setup();
+      api.fmBatches.addAll([fmBatch(1, 2), fmBatch(3, 1)]);
+      await controller.startPersonalFm(ownerKey: 'account');
+      final fmQueue = List<Song>.of(controller.queue);
+
+      await controller.playSong(fmQueue[1], queue: fmQueue);
+      await drain();
+
+      expect(controller.currentSong?.id, 'fm2');
+      expect(controller.isPersonalFmActive, isTrue);
+
+      await controller.next();
+      await drain();
+
+      expect(controller.currentSong?.id, 'fm3');
+      expect(controller.isPersonalFmActive, isTrue);
+      expect(api.fmFetches, 2);
+    },
+  );
+
   test('arming appends a second source without committing', () async {
     await setup();
     final entry = controller.currentEntryId;

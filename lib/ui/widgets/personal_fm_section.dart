@@ -139,18 +139,337 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     final player = widget.player;
     final current = player.personalFmCurrentTrack;
     final upcoming = player.upcomingPersonalFmEntries.take(5).toList();
+    final wide =
+        MediaQuery.orientationOf(context) == Orientation.landscape &&
+        MediaQuery.sizeOf(context).width >= 900;
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 0, 18, 24),
+      child: wide
+          ? _wideLayout(context, current, upcoming)
+          : _compactLayout(context, current, upcoming),
+    );
+  }
+
+  Widget _compactLayout(
+    BuildContext context,
+    PersonalFmTrack? current,
+    List<PersonalFmUpcomingItem> upcoming,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _hero(context, compact: true),
+        if (current == null)
+          _startCard(context)
+        else ...[
+          _nowPlaying(context, current),
+          const SizedBox(height: 20),
+          _upNext(context, upcoming),
+        ],
+      ],
+    );
+  }
+
+  Widget _wideLayout(
+    BuildContext context,
+    PersonalFmTrack? current,
+    List<PersonalFmUpcomingItem> upcoming,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _hero(context),
+        if (current == null)
+          _startCard(context)
+        else ...[
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 5, child: _wideCurrent(context, current)),
+              const SizedBox(width: 18),
+              Expanded(flex: 4, child: _wideRail(context, upcoming)),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _upNext(context, upcoming),
+        ],
+      ],
+    );
+  }
+
+  Widget _hero(BuildContext context, {bool compact = false}) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 12 : 2),
+      child: Row(
+        children: [
+          Container(
+            width: compact ? 42 : 56,
+            height: compact ? 42 : 56,
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer,
+              borderRadius: BorderRadius.circular(compact ? 13 : 16),
+            ),
+            child: Icon(
+              Icons.favorite_rounded,
+              size: compact ? 23 : 30,
+              color: scheme.onPrimaryContainer,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '私人 FM',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: scheme.onSurface,
+                  ),
+                ),
+                Text(
+                  '按你的口味持续推荐，边播边补',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!compact) _modeStrip(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _modeStrip(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _modeButton(context, '红心', selected: true),
+        _modeButton(context, '小众'),
+        _modeButton(context, '速览'),
+        _modeButton(context, '电台'),
+      ],
+    );
+  }
+
+  Widget _modeButton(
+    BuildContext context,
+    String label, {
+    bool selected = false,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Container(
+      margin: const EdgeInsets.only(left: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: selected ? scheme.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        label,
+        style: textTheme.labelMedium?.copyWith(
+          color: selected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant,
+          fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _wideCurrent(BuildContext context, PersonalFmTrack track) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final song = track.song;
+    final player = widget.player;
+    final liked = widget.auth.isLiked(song);
+    final canAct = !player.isPreparing;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: _cardColor(context),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Row(
+        children: [
+          Artwork(url: song.coverUrl, size: 176, borderRadius: 18),
+          const SizedBox(width: 18),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '当前播放',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  song.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: scheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  song.artist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                if (track.recommendDesc case final reason?) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    reason,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    _GhostAction(
+                      tooltip: player.personalFmCurrentDisliked
+                          ? '已标记不喜欢'
+                          : '不喜欢',
+                      icon: Icons.thumb_down_alt_outlined,
+                      onPressed: canAct && !player.personalFmCurrentDisliked
+                          ? player.dislikePersonalFmCurrent
+                          : null,
+                    ),
+                    IconButton.filled(
+                      tooltip: player.isPlaying ? '暂停' : '播放',
+                      onPressed: canAct ? player.togglePlay : null,
+                      icon: Icon(
+                        player.isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                      ),
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size.square(52),
+                        shape: const CircleBorder(),
+                      ),
+                    ),
+                    _GhostAction(
+                      tooltip: '下一首',
+                      icon: Icons.skip_next_rounded,
+                      onPressed: canAct ? player.next : null,
+                    ),
+                    _GhostAction(
+                      tooltip: liked ? '取消喜欢' : '喜欢',
+                      icon: liked
+                          ? Icons.favorite_rounded
+                          : Icons.favorite_border_rounded,
+                      color: liked ? scheme.primary : scheme.onSurface,
+                      onPressed: _liking || song.source != SongSource.kugou
+                          ? null
+                          : () => _toggleLike(song),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _wideRail(BuildContext context, List<PersonalFmUpcomingItem> entries) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final items = entries.take(4).toList();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      decoration: BoxDecoration(
+        color: _cardColor(context),
+        borderRadius: BorderRadius.circular(22),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (current == null)
-            _startCard(context)
-          else ...[
-            _nowPlaying(context, current),
-            const SizedBox(height: 20),
-            _upNext(context, upcoming),
-          ],
+          Text(
+            '即将播放',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (items.isEmpty)
+            Text(
+              '正在准备推荐',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            )
+          else
+            SizedBox(
+              height: 156,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: items.length,
+                separatorBuilder: (_, index) => const SizedBox(width: 14),
+                itemBuilder: (context, index) =>
+                    _circleRecommendation(context, items[index]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _circleRecommendation(
+    BuildContext context,
+    PersonalFmUpcomingItem item,
+  ) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final song = item.song;
+    return SizedBox(
+      width: 116,
+      child: Column(
+        children: [
+          Artwork(url: song.coverUrl, size: 96, borderRadius: 48),
+          const SizedBox(height: 8),
+          Text(
+            song.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            item.isManual
+                ? '插播'
+                : item.isFromHistory
+                ? '回听'
+                : '推荐',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
         ],
       ),
     );

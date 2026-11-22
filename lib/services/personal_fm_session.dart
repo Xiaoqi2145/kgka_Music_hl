@@ -114,10 +114,7 @@ class PersonalFmSession extends ChangeNotifier {
   /// 一并给出区分它们的 [PersonalFmUpcomingEntry]，而不是只给歌曲。
   Iterable<PersonalFmUpcomingEntry> get upcomingEntries sync* {
     for (final track in _forward.reversed) {
-      yield PersonalFmUpcomingEntry(
-        track: track,
-        isFromHistory: true,
-      );
+      yield PersonalFmUpcomingEntry(track: track, isFromHistory: true);
     }
     for (final track in _candidates) {
       if (_isExcluded(track)) continue;
@@ -248,7 +245,7 @@ class PersonalFmSession extends ChangeNotifier {
         _candidates.removeWhere((candidate) => candidate.dedupeKey == key);
         _forward.removeWhere((candidate) => candidate.dedupeKey == key);
     }
-    _current = source == PersonalFmTrackSource.manual ? null : track;
+    _current = track;
     // 任何一次有效切歌都解除补池退避：下一位听众（或同一用户下一首）值得
     // 重新尝试，而不是被上一次失败永久卡住。
     _blockedEpoch = -1;
@@ -369,7 +366,7 @@ class PersonalFmSession extends ChangeNotifier {
 
   /// 结束会话并清空本次会话的全部缓冲。
   ///
-  /// 账号 / API 切换、主动点播普通歌曲、用户手动停止都会走到这里。
+  /// 账号 / API 切换与用户手动结束电台都会走到这里。
   void stop() {
     if (_disposed) return;
     _active = false;
