@@ -84,6 +84,9 @@ class FakePlayer extends ChangeNotifier implements PlayerController {
 
 class FakeAuth extends ChangeNotifier implements AuthController {
   @override
+  LoginSession? session;
+
+  @override
   bool isLiked(Song song) => false;
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

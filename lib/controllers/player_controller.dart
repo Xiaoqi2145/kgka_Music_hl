@@ -1203,6 +1203,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   bool _fmCommitKeepsSession(String reason) =>
+      reason == 'personal_fm_select' ||
       reason == 'quality' ||
       reason == 'error_recover' ||
       reason == 'recover' ||
@@ -4047,6 +4048,77 @@ class PlayerController extends ChangeNotifier {
         isFromHistory: entry.isFromHistory,
       );
     }
+  }
+
+  /// 电台页进入时准备候选：只取推荐，**不自动开播**。
+  ///
+  /// 单飞、退避与归属都由会话负责；这里只决定「取哪一次结果」以及是否
+  /// 顺手把会话激活成可浏览状态。返回空 / 失败只影响页面状态，不碰当前
+  /// 正在播放的内容。
+  Future<PersonalFmStartOutcome> preparePersonalFm({
+    required String ownerKey,
+    bool retry = false,
+  }) async {
+    if (_disposed) return PersonalFmStartOutcome.failed;
+    if (_fmSession?.ownerKey != ownerKey) _clearPersonalFm();
+    final session = _fmSession ??= PersonalFmSession(
+      api,
+      ownerKey: ownerKey,
+      launchId: DateTime.now().microsecondsSinceEpoch.toString(),
+    );
+    // 会话已就绪（有候选或正在播放）且不是用户点重试：不重复请求。
+    if (!retry && (session.hasCandidates || isPersonalFmActive)) {
+      session.activateForBrowsing();
+      notifyListeners();
+      return PersonalFmStartOutcome.started;
+    }
+    final ok = retry
+        ? await session.retryRecommendations()
+        : await session.ensureRecommendations();
+    if (_disposed || !identical(_fmSession, session)) {
+      return PersonalFmStartOutcome.cancelled;
+    }
+    if (ok && session.activateForBrowsing()) {
+      notifyListeners();
+      return PersonalFmStartOutcome.started;
+    }
+    notifyListeners();
+    return session.lastError == null
+        ? PersonalFmStartOutcome.empty
+        : PersonalFmStartOutcome.failed;
+  }
+
+  /// 电台页点播一首候选：立即播放，成功后提交候选并沿用同一 FM 会话。
+  ///
+  /// 点的是当前正在播放的歌时不重复解析音源；解析失败时候选不消耗，
+  /// 当前播放状态与会话保持可用。
+  Future<void> playPersonalFmSong(Song song) async {
+    if (_disposed) return;
+    final current = currentSong;
+    if (current != null && _songKey(current) == _songKey(song)) {
+      // 同一首：不重新加载；暂停中则继续播放当前曲目。
+      if (!audioPlayer.playing && !isPreparing) await togglePlay();
+      return;
+    }
+    if (isPreparing || isPreparingSong(song)) return;
+    final session = _fmSession;
+    if (session == null) {
+      await _playSong(song, queue: [song], reason: 'personal_fm_select');
+      return;
+    }
+    // 候选已取到但会话尚未激活：先激活，再按推荐路径提交。
+    if (!session.isActive && !session.activateForBrowsing()) {
+      await _playSong(song, queue: [song], reason: 'personal_fm_select');
+      return;
+    }
+    final pending =
+        _fmPendingForQueueSong(song) ??
+        (
+          session: session,
+          track: PersonalFmTrack(song: song),
+          source: PersonalFmTrackSource.candidate,
+        );
+    await _playSong(song, fm: pending, reason: 'personal_fm_select');
   }
 
   Future<PersonalFmStartOutcome> startPersonalFm({

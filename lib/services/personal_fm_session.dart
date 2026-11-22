@@ -100,6 +100,24 @@ class PersonalFmSession extends ChangeNotifier {
   int get pendingCount =>
       _candidates.where((track) => !_isExcluded(track)).length;
 
+  /// 候选池里是否已有可播推荐。电台页据此决定是否需要补一轮请求。
+  bool get hasCandidates => pendingCount > 0;
+
+  /// 只把会话标记为「已准备」而不选曲：电台页先取候选、不自动开播。
+  ///
+  /// 返回 false 表示当前没有可播候选，会话保持未启动——调用方应请求一批
+  /// 推荐后再试，而不是让 [peekNext] 在未启动的会话上永远返回 null。
+  bool activateForBrowsing() {
+    if (_disposed) return false;
+    if (_active) return true;
+    if (!hasCandidates) return false;
+    _active = true;
+    // 准备候选本身就是一次有效的状态变化，解除上一次补池退避。
+    _blockedEpoch = -1;
+    _notify();
+    return true;
+  }
+
   /// 可回听的条数。
   int get backCount => _back.length;
 
@@ -185,9 +203,15 @@ class PersonalFmSession extends ChangeNotifier {
   /// 首次开播：请求首批推荐并选定第一首。
   Future<PersonalFmStartOutcome> start() async {
     if (_disposed) return PersonalFmStartOutcome.failed;
-    if (_active) return PersonalFmStartOutcome.started;
+    if (_active) {
+      // 电台页已经准备过候选：直接开始播放，不重复请求。
+      return hasCandidates
+          ? PersonalFmStartOutcome.started
+          : PersonalFmStartOutcome.empty;
+    }
     _lastError = null;
-    final ok = await _refillCandidates();
+    // 候选已由页面准备过就不再请求；只有空池才拉一批。
+    final ok = hasCandidates ? true : await _refillCandidates();
     if (_disposed) return PersonalFmStartOutcome.failed;
     if (!ok) {
       final error = _lastError;
@@ -217,7 +241,7 @@ class PersonalFmSession extends ChangeNotifier {
           _pushBack(outgoing);
         }
         _forward.clear();
-        _candidates.removeWhere((item) => item.dedupeKey == track.dedupeKey);
+        _adoptCandidate(track);
         _remember(track);
       case PersonalFmTrackSource.history:
         if (_back.isNotEmpty && identical(_back.last, track)) {
@@ -364,6 +388,30 @@ class PersonalFmSession extends ChangeNotifier {
     return ok && peekNext() != null;
   }
 
+  /// 取一批推荐，**不选曲、不激活会话**。
+  ///
+  /// 电台页进入且候选为空时用它准备歌曲；是否补池仍由 [refillThreshold]
+  /// 等低水位策略决定，页面不会为了打开而反复请求。上次失败且状态未变时
+  /// 沿用退避直接返回 false，用户点重试才走 [retry]。
+  Future<bool> ensureRecommendations() {
+    if (_disposed) return Future<bool>.value(false);
+    if (hasCandidates) return Future<bool>.value(true);
+    if (_blockedEpoch == _refillEpoch) return Future<bool>.value(false);
+    return _refillCandidates();
+  }
+
+  /// 用户主动重试推荐：清退避后重新补池，**不要求会话已激活**。
+  ///
+  /// 与 [retry] 的区别只在于返回值判据：这里看的是候选池是否真的有歌，
+  /// 而不是 [peekNext]——电台页准备候选时会话还没被激活。
+  Future<bool> retryRecommendations() async {
+    if (_disposed) return false;
+    _blockedEpoch = -1;
+    _lastError = null;
+    await _refillCandidates();
+    return hasCandidates;
+  }
+
   /// 结束会话并清空本次会话的全部缓冲。
   ///
   /// 账号 / API 切换与用户手动结束电台都会走到这里。
@@ -450,6 +498,26 @@ class PersonalFmSession extends ChangeNotifier {
       known.add(key);
       _candidates.add(track);
     }
+  }
+
+  /// 点选候选后的待播顺序：被选歌曲之后的候选排在它后面，原本位于它
+  /// 前面的未播放候选移到队列末尾。
+  ///
+  /// 这样点选靠后的歌不会立刻跳回列表更前面的歌，也不会悄悄丢掉还没播的
+  /// 推荐。只调整顺序，不消耗任何候选。
+  void _adoptCandidate(PersonalFmTrack track) {
+    final key = track.dedupeKey;
+    final index = _candidates.indexWhere((item) => item.dedupeKey == key);
+    if (index < 0) {
+      // 不在候选池里（例如由「插播」路径进来的同一首歌）：保持原状。
+      return;
+    }
+    final later = _candidates.sublist(index + 1);
+    final earlier = _candidates.sublist(0, index);
+    _candidates
+      ..clear()
+      ..addAll(later)
+      ..addAll(earlier);
   }
 
   void _pushBack(PersonalFmTrack track) {
