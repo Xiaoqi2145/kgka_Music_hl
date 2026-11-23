@@ -11,6 +11,7 @@ import 'package:kgka_music_hl/services/cache_service.dart';
 import 'package:kgka_music_hl/services/download_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/ui/pages/cache_management_page.dart';
+import 'package:kgka_music_hl/ui/pages/cached_songs_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _UnusedApi implements MusicApi {
@@ -29,7 +30,12 @@ class _FakeDownloads extends DownloadController {
   final entries = <PlayCacheEntry>[
     PlayCacheEntry(
       cacheKey: 'song_flac',
-      song: const Song(id: '1', title: '缓存歌曲', artist: '测试歌手', hash: 'hash'),
+      song: const Song(
+        id: '1',
+        title: '缓存歌曲',
+        artist: '测试歌手',
+        hash: 'hash',
+      ),
       quality: AudioQuality.lossless,
       filePath: '/cache/song.flac',
       size: 1024 * 1024,
@@ -123,9 +129,7 @@ void main() {
   late _FakeDownloads downloads;
 
   setUpAll(() async {
-    directory = await Directory.systemTemp.createTemp(
-      'cache_management_widget',
-    );
+    directory = await Directory.systemTemp.createTemp('cache_management_widget');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('plugins.flutter.io/path_provider'),
@@ -171,12 +175,23 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// 向下滚动直到目标被构建出来（列表是懒构建的）。
   Future<void> reveal(WidgetTester tester, Finder finder) async {
-    await tester.scrollUntilVisible(
-      finder,
-      280,
-      scrollable: find.byType(Scrollable).first,
-    );
+    for (var i = 0; i < 20 && finder.evaluate().isEmpty; i++) {
+      await tester.drag(find.byType(Scrollable).first, const Offset(0, -280));
+      await tester.pumpAndSettle();
+    }
+    await tester.pumpAndSettle();
+  }
+
+  /// 从「缓存歌曲」卡进入列表页。
+  Future<void> openSongsPage(WidgetTester tester) async {
+    final entry = find.byKey(const ValueKey('open-cached-songs'));
+    await reveal(tester, entry);
+    // 大字体 / 窄屏下卡片可能只露出一部分，用 ensureVisible 保证点击落在卡内。
+    await tester.ensureVisible(entry);
+    await tester.pumpAndSettle();
+    await tester.tap(entry);
     await tester.pumpAndSettle();
   }
 
@@ -193,7 +208,7 @@ void main() {
     expect(opened, 1);
   });
 
-  testWidgets('窄屏与大字体下可编辑上限并滚动到歌曲列表', (tester) async {
+  testWidgets('窄屏与大字体下可编辑上限并进入歌曲列表', (tester) async {
     tester.view.physicalSize = const Size(320, 640);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -210,71 +225,40 @@ void main() {
     await tester.tap(find.byTooltip('保存播放缓存上限'));
     await tester.pumpAndSettle();
     expect(downloads.playCacheMaxBytes, 200 * 1024 * 1024);
-    await reveal(tester, find.text('缓存歌曲'));
+    await openSongsPage(tester);
+    expect(find.byType(CachedSongsPage), findsOneWidget);
     expect(find.text('测试歌手 · 无损音质 · 1.0 MB'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('保存到下载沿用缓存音质并显示下载状态', (tester) async {
+  testWidgets('缓存歌曲作为与三张缓存卡同级的入口进入独立页面', (tester) async {
+    downloads.entries.addAll([
+      PlayCacheEntry(
+        cacheKey: 'song2_high',
+        song: const Song(
+          id: '2',
+          title: '第二首缓存',
+          artist: '另一位歌手',
+          hash: 'hash2',
+        ),
+        quality: AudioQuality.high,
+        filePath: '/cache/song2.mp3',
+        size: 3 * 1024 * 1024,
+        cachedAt: DateTime(2026),
+        lastAccessedAt: DateTime(2025),
+      ),
+    ]);
     await open(tester);
-    await reveal(tester, find.text('保存到下载'));
-    await tester.tap(find.text('保存到下载'));
-    await tester.pumpAndSettle();
-    expect(downloads.savedSong?.hash, 'hash');
-    expect(downloads.savedQuality, AudioQuality.lossless);
-    expect(find.text('已保存到下载'), findsOneWidget);
-    expect(find.text('已下载'), findsOneWidget);
-  });
-
-  testWidgets('保存失败会显示错误并允许重试', (tester) async {
-    downloads.failSave = true;
-    await open(tester);
-    await reveal(tester, find.text('保存到下载'));
-    await tester.tap(find.text('保存到下载'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('磁盘空间不足'), findsOneWidget);
-    expect(find.text('已保存到下载'), findsNothing);
-    expect(find.text('重试下载'), findsOneWidget);
-  });
-
-  testWidgets('保存进行中会禁用删除、清理与刷新', (tester) async {
-    downloads.pendingSave = Completer<void>();
-    await open(tester);
-    await reveal(tester, find.text('保存到下载'));
-    await tester.tap(find.text('保存到下载'));
-    await tester.pump();
-    expect(
-      tester
-          .widget<IconButton>(
-            find.byWidgetPredicate(
-              (widget) => widget is IconButton && widget.tooltip == '刷新',
-            ),
-          )
-          .onPressed,
-      isNull,
-    );
-    expect(
-      tester
-          .widget<TextButton>(find.byKey(const ValueKey('save-download-entry')))
-          .onPressed,
-      isNull,
-    );
-    expect(
-      tester
-          .widget<TextButton>(find.byKey(const ValueKey('delete-cache-entry')))
-          .onPressed,
-      isNull,
-    );
-    expect(
-      tester
-          .widget<TextButton>(find.byKey(const ValueKey('save-download-entry')))
-          .onPressed,
-      isNull,
-    );
-    downloads.pendingSave!.complete();
-    await tester.pumpAndSettle();
-    expect(downloads.clearCalls, 0);
-    expect(downloads.deleteCalls, 0);
+    // 本页只保留汇总入口，不再直接铺开歌曲行。
+    await reveal(tester, find.text('缓存歌曲'));
+    expect(find.text('2 首 · 4.0 MB'), findsOneWidget);
+    expect(find.byKey(const ValueKey('cache-entry-menu')), findsNothing);
+    expect(find.text('播放缓存上限'), findsOneWidget);
+    await openSongsPage(tester);
+    expect(find.byType(CachedSongsPage), findsOneWidget);
+    expect(find.text('第二首缓存'), findsOneWidget);
+    expect(find.byKey(const ValueKey('cache-entry-menu')), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('清理播放缓存需要确认并暴露失败信息', (tester) async {
@@ -297,43 +281,13 @@ void main() {
     expect(tester.widget<TextButton>(clear).onPressed, isNotNull);
   });
 
-  testWidgets('正在播放的缓存不能删除但可以保存', (tester) async {
-    downloads.protected = true;
-    await open(tester);
-    await reveal(tester, find.text('删除'));
-    expect(find.text('正在播放，无法清理'), findsOneWidget);
-    expect(
-      tester.widget<TextButton>(find.widgetWithText(TextButton, '删除')).onPressed,
-      isNull,
-    );
-    expect(
-      tester
-          .widget<TextButton>(find.widgetWithText(TextButton, '保存到下载'))
-          .onPressed,
-      isNotNull,
-    );
-  });
-
-  testWidgets('删除单首缓存需要确认并更新列表', (tester) async {
-    await open(tester);
-    await reveal(tester, find.text('删除'));
-    await tester.tap(find.text('删除'));
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(downloads.deleteCalls, 0);
-    await tester.tap(find.text('确认'));
-    await tester.pumpAndSettle();
-    expect(downloads.deleteCalls, 1);
-    expect(downloads.entries, isEmpty);
-    expect(find.text('已删除'), findsOneWidget);
-  });
-
   testWidgets('后台淘汰缓存后用量立即刷新', (tester) async {
     await open(tester);
     expect(find.text('1.0 MB'), findsOneWidget);
     downloads.evictExternally();
     await tester.pumpAndSettle();
-    await reveal(tester, find.text('暂无缓存歌曲'));
-    expect(find.text('暂无缓存歌曲'), findsOneWidget);
+    await reveal(tester, find.text('缓存歌曲'));
+    expect(find.text('暂无'), findsOneWidget);
   });
 
   testWidgets('下载入口关闭缓存页且不叠加路由', (tester) async {

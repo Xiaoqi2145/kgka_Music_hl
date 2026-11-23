@@ -6,9 +6,13 @@ import '../../controllers/download_controller.dart';
 import '../../services/artwork_cache_service.dart';
 import '../../services/cache_service.dart';
 import '../adaptive_layout.dart';
-import '../widgets/artwork.dart';
+import 'cached_songs_page.dart';
 
 /// 缓存管理。
+///
+/// 这一页只负责**设置类**的事情：三类缓存各占多大、上限多少、要不要清。
+/// 歌曲清单本身是内容，放在 [CachedSongsPage]，由下方同级的「缓存歌曲」卡进入——
+/// 否则一长串歌名会把三张设置卡推得远远的，越往下滑越分不清自己在哪一层。
 class CacheManagementPage extends StatefulWidget {
   const CacheManagementPage({
     super.key,
@@ -140,18 +144,6 @@ class _CacheManagementPageState extends State<CacheManagementPage> {
     }
   }
 
-  Future<void> _saveDownload(PlayCacheEntry entry) => _perform(
-    success: '已保存到下载',
-    action: () async {
-      final downloads = widget.downloads!;
-      await downloads.download(entry.song, entry.quality);
-      final result = downloads.entryFor(entry.song);
-      if (result?.status != DownloadStatus.downloaded) {
-        throw StateError(result?.error ?? '未能保存下载，请重试');
-      }
-    },
-  );
-
   String _size(int? bytes) {
     if (bytes == null) return _busy ? '计算中…' : '暂不可用';
     if (bytes >= 1024 * 1024 * 1024) {
@@ -164,12 +156,20 @@ class _CacheManagementPageState extends State<CacheManagementPage> {
     return '$bytes B';
   }
 
+  void _openCachedSongs() {
+    final downloads = widget.downloads;
+    if (downloads == null) return;
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => CachedSongsPage(downloads: downloads)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final downloads = widget.downloads;
     final entries = downloads?.playCacheEntries.toList() ?? <PlayCacheEntry>[];
-    entries.sort((a, b) => b.lastAccessedAt.compareTo(a.lastAccessedAt));
+    final cachedBytes = entries.fold<int>(0, (sum, entry) => sum + entry.size);
 
     return Scaffold(
       appBar: AppBar(
@@ -202,105 +202,87 @@ class _CacheManagementPageState extends State<CacheManagementPage> {
       body: SafeArea(
         top: false,
         child: AdaptiveContentPadding(
-          child: CustomScrollView(
+          child: ListView(
             key: const PageStorageKey('cache-management-scroll'),
-            slivers: [
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                sliver: SliverList.list(
-                  children: [
-                    if (_loadError != null) ...[
-                      Text(_loadError!, style: TextStyle(color: colors.error)),
-                      const SizedBox(height: 12),
-                    ],
-                    _category(
-                      icon: Icons.music_note_rounded,
-                      title: '播放缓存',
-                      size: downloads == null ? '未启用' : _size(_playBytes),
-                      description:
-                          '听过的歌曲暂时保留，超出上限时优先移除较久未使用的条目。清理时保留当前播放的歌曲。',
-                      onClear: downloads == null || (_playBytes ?? 0) == 0
-                          ? null
-                          : () => _perform(
-                              success: '播放缓存已清理',
-                              confirmation: '清理播放缓存？当前播放的歌曲会保留。',
-                              action: downloads.clearPlayCache,
-                            ),
-                      limit: downloads == null
-                          ? null
-                          : _LimitEditor(
-                              label: '播放缓存上限',
-                              value: downloads.playCacheMaxBytes,
-                              min: AppConfig.minPlayCacheMaxBytes,
-                              max: AppConfig.maxPlayCacheMaxBytes,
-                              enabled: !_busy,
-                              onSave: (bytes) => _perform(
-                                success: '上限已更新',
-                                action: () =>
-                                    downloads.setPlayCacheMaxBytes(bytes),
-                              ),
-                            ),
-                    ),
-                    const SizedBox(height: 12),
-                    _category(
-                      icon: Icons.image_outlined,
-                      title: '封面缓存',
-                      size: _size(_artworkBytes),
-                      description: '浏览时保存的封面图片，清理后再次浏览会重新加载。',
-                      onClear: (_artworkBytes ?? 0) == 0
-                          ? null
-                          : () => _perform(
-                              success: '封面缓存已清理',
-                              confirmation: '清理封面缓存？',
-                              action: ArtworkCacheService.instance.clearCache,
-                            ),
-                      limit: _LimitEditor(
-                        label: '封面缓存上限',
-                        value: ArtworkCacheService.instance.maxCacheBytes,
-                        min: AppConfig.minArtworkCacheMaxBytes,
-                        max: AppConfig.maxArtworkCacheMaxBytes,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+            children: [
+              if (_loadError != null) ...[
+                Text(_loadError!, style: TextStyle(color: colors.error)),
+                const SizedBox(height: 12),
+              ],
+              _category(
+                icon: Icons.music_note_rounded,
+                title: '播放缓存',
+                size: downloads == null ? '未启用' : _size(_playBytes),
+                description:
+                    '听过的歌曲暂时保留，超出上限时优先移除较久未使用的条目。清理时保留当前播放的歌曲。',
+                onClear: downloads == null || (_playBytes ?? 0) == 0
+                    ? null
+                    : () => _perform(
+                        success: '播放缓存已清理',
+                        confirmation: '清理播放缓存？当前播放的歌曲会保留。',
+                        action: downloads.clearPlayCache,
+                      ),
+                limit: downloads == null
+                    ? null
+                    : _LimitEditor(
+                        label: '播放缓存上限',
+                        value: downloads.playCacheMaxBytes,
+                        min: AppConfig.minPlayCacheMaxBytes,
+                        max: AppConfig.maxPlayCacheMaxBytes,
                         enabled: !_busy,
                         onSave: (bytes) => _perform(
                           success: '上限已更新',
-                          action: () => ArtworkCacheService.instance
-                              .setMaxCacheBytes(bytes),
+                          action: () => downloads.setPlayCacheMaxBytes(bytes),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    _category(
-                      icon: Icons.storage_rounded,
-                      title: '数据缓存',
-                      size: widget.cache == null ? '未启用' : _size(_dataBytes),
-                      description:
-                          '首页和歌单的浏览数据，清理后再次打开会重新获取。上限 ${_size(AppConfig.maxDataCacheBytes)}。',
-                      onClear: widget.cache == null || (_dataBytes ?? 0) == 0
-                          ? null
-                          : () => _perform(
-                              success: '数据缓存已清理',
-                              confirmation: '清理数据缓存？',
-                              action: widget.cache!.clearAllCache,
-                            ),
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      '缓存的歌曲 · ${entries.length}',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    if (entries.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
-                        child: Text('暂无缓存歌曲'),
+              ),
+              const SizedBox(height: 12),
+              _category(
+                icon: Icons.image_outlined,
+                title: '封面缓存',
+                size: _size(_artworkBytes),
+                description: '浏览时保存的封面图片，清理后再次浏览会重新加载。',
+                onClear: (_artworkBytes ?? 0) == 0
+                    ? null
+                    : () => _perform(
+                        success: '封面缓存已清理',
+                        confirmation: '清理封面缓存？',
+                        action: ArtworkCacheService.instance.clearCache,
                       ),
-                  ],
+                limit: _LimitEditor(
+                  label: '封面缓存上限',
+                  value: ArtworkCacheService.instance.maxCacheBytes,
+                  min: AppConfig.minArtworkCacheMaxBytes,
+                  max: AppConfig.maxArtworkCacheMaxBytes,
+                  enabled: !_busy,
+                  onSave: (bytes) => _perform(
+                    success: '上限已更新',
+                    action: () =>
+                        ArtworkCacheService.instance.setMaxCacheBytes(bytes),
+                  ),
                 ),
               ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-                sliver: SliverList.builder(
-                  itemCount: entries.length,
-                  itemBuilder: (context, index) => _entry(entries[index]),
-                ),
+              const SizedBox(height: 12),
+              _category(
+                icon: Icons.storage_rounded,
+                title: '数据缓存',
+                size: widget.cache == null ? '未启用' : _size(_dataBytes),
+                description:
+                    '首页和歌单的浏览数据，清理后再次打开会重新获取。上限 ${_size(AppConfig.maxDataCacheBytes)}。',
+                onClear: widget.cache == null || (_dataBytes ?? 0) == 0
+                    ? null
+                    : () => _perform(
+                        success: '数据缓存已清理',
+                        confirmation: '清理数据缓存？',
+                        action: widget.cache!.clearAllCache,
+                      ),
+              ),
+              const SizedBox(height: 12),
+              _songsEntry(
+                count: entries.length,
+                bytes: cachedBytes,
+                onOpen: downloads == null ? null : _openCachedSongs,
               ),
             ],
           ),
@@ -318,8 +300,12 @@ class _CacheManagementPageState extends State<CacheManagementPage> {
     Widget? limit,
   }) {
     final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    // 「清理」从独立一行挪回标题行：原来它孤零零挂在卡片右下角，既没有说明
+    // 清理的是哪一类，又凭空吃掉一截高度；现在「图标 + 标题 + 用量 + 清理」
+    // 构成一条完整信息带，正文说明在下方独立成段。
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
         borderRadius: BorderRadius.circular(20),
@@ -329,126 +315,129 @@ class _CacheManagementPageState extends State<CacheManagementPage> {
         children: [
           Row(
             children: [
-              Icon(icon, color: colors.primary, size: 22),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleMedium,
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: colors.primary.withValues(alpha: .12),
+                  borderRadius: BorderRadius.circular(12),
                 ),
+                child: Icon(icon, color: colors.primary, size: 20),
               ),
-              Text(size, style: Theme.of(context).textTheme.titleMedium),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(description, style: TextStyle(color: colors.onSurfaceVariant)),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              key: ValueKey('clear-$title'),
-              onPressed: _busy ? null : onClear,
-              child: Text('清理'),
-            ),
-          ),
-          if (limit != null) ...[const Divider(height: 24), limit],
-        ],
-      ),
-    );
-  }
-
-  Widget _entry(PlayCacheEntry entry) {
-    final downloads = widget.downloads!;
-    final status = downloads.entryFor(entry.song)?.status;
-    final protected = downloads.isPlayCacheProtected(entry);
-    final saved = status == DownloadStatus.downloaded;
-    final downloading = status == DownloadStatus.downloading;
-    return Container(
-      key: ValueKey(entry.cacheKey),
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Artwork(url: entry.song.coverUrl, size: 48, borderRadius: 12),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text(title, style: textTheme.titleSmall),
+                    const SizedBox(height: 2),
                     Text(
-                      entry.song.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${entry.song.artist} · ${entry.quality.label} · ${_size(entry.size)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      size,
+                      style: textTheme.titleMedium?.copyWith(
+                        color: colors.primary,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              TextButton(
+                key: ValueKey('clear-$title'),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: _busy ? null : onClear,
+                child: const Text('清理'),
+              ),
             ],
           ),
-          if (protected)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: Text('正在播放，无法清理'),
+          const SizedBox(height: 10),
+          Text(
+            description,
+            style: textTheme.bodySmall?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.5,
             ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
+          ),
+          if (limit != null) ...[const Divider(height: 28), limit],
+        ],
+      ),
+    );
+  }
+
+  /// 「缓存歌曲」入口卡：与三张缓存卡同级，点进去才是列表页。
+  Widget _songsEntry({
+    required int count,
+    required int bytes,
+    required VoidCallback? onOpen,
+  }) {
+    final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final enabled = onOpen != null;
+    return Material(
+      color: colors.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('open-cached-songs'),
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextButton.icon(
-                key: const ValueKey('save-download-entry'),
-                onPressed: _busy || saved || downloading
-                    ? null
-                    : () => _saveDownload(entry),
-                icon: Icon(
-                  saved ? Icons.download_done_rounded : Icons.download_rounded,
-                  size: 18,
-                ),
-                label: Text(
-                  saved
-                      ? '已下载'
-                      : downloading
-                      ? '下载中'
-                      : status == DownloadStatus.failed
-                      ? '重试下载'
-                      : '保存到下载',
-                ),
-              ),
-              TextButton.icon(
-                key: const ValueKey('delete-cache-entry'),
-                onPressed: _busy || protected
-                    ? null
-                    : () => _perform(
-                        success: '已删除',
-                        confirmation:
-                            '删除“${entry.song.title}”的缓存？',
-                        action: () => downloads.deletePlayCache(
-                          entry.song,
-                          entry.quality,
+              Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: colors.primary.withValues(alpha: .12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.queue_music_rounded,
+                      color: colors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('缓存歌曲', style: textTheme.titleSmall),
+                        const SizedBox(height: 2),
+                        Text(
+                          count == 0 ? '暂无' : '$count 首 · ${_size(bytes)}',
+                          style: textTheme.titleMedium?.copyWith(
+                            color: enabled ? colors.primary : colors.outline,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
                         ),
-                      ),
-                icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                label: const Text('删除'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: enabled ? colors.onSurfaceVariant : colors.outline,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '播放过的歌曲会自动缓存到这里，可逐首保存到下载或删除。',
+                style: textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  height: 1.5,
+                ),
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }

@@ -45,6 +45,13 @@ KA Music 是一个功能丰富的 **第三方音乐播放器**，使用 Flutter 
 |:------:|:------:|:--------:|
 | ![我的](screenshots/library.jpg) | ![搜索](screenshots/search.jpg) | ![歌单](screenshots/playlist.jpg) |
 
+| 缓存管理 | 缓存歌曲 |
+|:--------:|:--------:|
+| ![缓存管理](screenshots/cache-management-light.png) | ![缓存歌曲](screenshots/cached-songs-light.png) |
+
+> 缓存预览由 `test/screenshots_test.dart` 直接渲染当前 widget 生成；改版后重跑
+> `flutter test test/screenshots_test.dart --update-goldens` 就会刷新，不再依赖手拍截图。
+
 
 ---
 
