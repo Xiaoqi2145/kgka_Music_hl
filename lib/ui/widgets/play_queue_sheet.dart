@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
+import '../../services/personal_fm_session.dart';
 import 'artwork.dart';
 
 const double _queueRowExtent = 68;
@@ -21,6 +22,7 @@ void showPlayQueueSheet(BuildContext context, PlayerController player) {
     int index, {
     VoidCallback? dismiss,
   }) {
+    if (player.personalFmQueueEntries.isNotEmpty) return;
     void closeSheet() {
       if (dismiss != null) {
         dismiss();
@@ -246,15 +248,25 @@ class _PlayQueueListViewState extends State<_PlayQueueListView> {
             ),
           );
         }
+        final fmEntries = player.personalFmQueueEntries;
+        final songs = player.queue;
         return ListView.builder(
           controller: _controller,
           itemExtent: _queueRowExtent,
           padding: const EdgeInsets.fromLTRB(8, 6, 8, 12),
-          itemCount: player.queue.length,
+          itemCount: songs.length,
           itemBuilder: (context, index) {
-            final song = player.queue[index];
-            final active = player.currentSong?.hash == song.hash;
-            final dismissible = player.queue.length > 1;
+            final song = songs[index];
+            final fm = fmEntries.elementAtOrNull(index);
+            final active = fm == null
+                ? player.currentSong?.hash == song.hash
+                : fm.source == null;
+            final dismissible = fm == null ? songs.length > 1 : !active;
+            final sourceLabel = fm?.source == PersonalFmTrackSource.manual
+                ? '插播'
+                : fm?.source == PersonalFmTrackSource.restored
+                ? (fm!.track.isRecommendation ? '回听' : '回听插播')
+                : null;
             final tile = Container(
               height: _queueTileHeight,
               margin: const EdgeInsets.symmetric(vertical: 2),
@@ -312,7 +324,9 @@ class _PlayQueueListViewState extends State<_PlayQueueListView> {
                     ),
                   ),
                   subtitle: Text(
-                    song.artist,
+                    sourceLabel == null
+                        ? song.artist
+                        : '${song.artist} · $sourceLabel',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -337,15 +351,27 @@ class _PlayQueueListViewState extends State<_PlayQueueListView> {
                     } else {
                       Navigator.of(widget.sheetContext).pop();
                     }
-                    player.playSong(song, queue: player.queue);
+                    if (fm != null) {
+                      player.playPersonalFmSong(fm);
+                    } else {
+                      player.playSong(song, queue: songs);
+                    }
                   },
                 ),
               ),
             );
             if (!dismissible) return tile;
             return Dismissible(
-              key: ValueKey('queue-${song.hash}-$index'),
+              key: fm == null
+                  ? ValueKey('queue-${song.hash}-$index')
+                  : ValueKey(fm),
               direction: DismissDirection.endToStart,
+              confirmDismiss: fm == null
+                  ? null
+                  : (_) async {
+                      player.removePersonalFmSong(fm);
+                      return false;
+                    },
               background: Container(
                 height: _queueTileHeight,
                 alignment: Alignment.centerRight,
@@ -360,7 +386,7 @@ class _PlayQueueListViewState extends State<_PlayQueueListView> {
                   color: scheme.onErrorContainer,
                 ),
               ),
-              onDismissed: (_) => widget.onRemove(index),
+              onDismissed: fm == null ? (_) => widget.onRemove(index) : null,
               child: tile,
             );
           },

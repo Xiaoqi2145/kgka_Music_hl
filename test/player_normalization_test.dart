@@ -8,12 +8,14 @@ import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:kgka_music_hl/controllers/download_controller.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
+import 'package:kgka_music_hl/core/api_client.dart';
 import 'package:kgka_music_hl/models/loudness_data.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/models/personal_fm_models.dart';
 import 'package:kgka_music_hl/services/download_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/services/music_audio_handler.dart';
+import 'package:kgka_music_hl/services/personal_fm_session.dart';
 import 'package:kgka_music_hl/services/playback_phase.dart';
 
 class _Player implements AudioPlayer {
@@ -113,6 +115,7 @@ class _Handler implements MusicAudioHandler {
   int plays = 0;
   final loads = <Song>[];
   final media = <Song>[];
+  List<Song> publishedQueue = const [];
   int appends = 0;
 
   /// 每次武装追加的地址：本地缓存命中时应是文件路径而不是 http 地址。
@@ -139,6 +142,7 @@ class _Handler implements MusicAudioHandler {
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
     Future<void> Function(Duration)? onSeek,
+    Future<void>? Function()? onResumeCompleted,
   }) {}
   @override
   void detachTransportControls() {}
@@ -306,7 +310,10 @@ class _Handler implements MusicAudioHandler {
     required List<Song> queueSongs,
     required int queueIndex,
     Song? currentSong,
-  }) async {}
+  }) async {
+    publishedQueue = List.of(queueSongs);
+  }
+
   @override
   Future<void> replaceSongQueue({
     required List<Song> queueSongs,
@@ -354,11 +361,24 @@ class _Handler implements MusicAudioHandler {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class _Api implements MusicApi {
+class _Api extends MusicApi {
+  _Api() : super(ApiClient());
+
   final requests = <String>[];
   final responses = <String, Completer<PlayUrl>>{};
   final fmBatches = <PersonalFmBatch>[];
-  final fmDepartures = <({String hash, int remain, bool completed})>[];
+  final fmDepartures =
+      <
+        ({
+          String hash,
+          int remain,
+          bool completed,
+          int seconds,
+          PersonalFmAction action,
+        })
+      >[];
+  Future<PersonalFmBatch>? fmFeedbackResponse;
+  Future<PersonalFmBatch>? fmFetchResponse;
   int fmFetches = 0;
 
   @override
@@ -372,6 +392,7 @@ class _Api implements MusicApi {
     int remainSongCount = 0,
   }) async {
     fmFetches++;
+    if (fmFetchResponse case final response?) return response;
     return fmBatches.isEmpty ? PersonalFmBatch.empty : fmBatches.removeAt(0);
   }
 
@@ -390,8 +411,10 @@ class _Api implements MusicApi {
       hash: hash,
       remain: remainSongCount,
       completed: isOverplay,
+      seconds: playtimeSeconds,
+      action: action,
     ));
-    return PersonalFmBatch.empty;
+    return fmFeedbackResponse ?? Future.value(PersonalFmBatch.empty);
   }
 
   /// Hashes whose songUrl() rejects, for prefetch cooldown coverage.
@@ -944,9 +967,11 @@ void main() {
     handler.loadGate!.complete();
     await pending;
     await drain();
-    expect(handler.media, [song]);
+    expect(handler.media, [song, song]);
     expect(handler.plays, 1);
     expect(controller.currentSong, song);
+    expect(handler.audioPlayer.sequenceState.currentSource?.tag, same(song));
+    expect(handler.audioPlayer.playing, isFalse);
   });
 
   test(
@@ -1583,50 +1608,61 @@ void main() {
     }),
   );
 
-  test('FM advances beyond five tracks when departure returns no batch', () async {
-    await setup();
-    api.fmBatches.addAll([fmBatch(1, 5), fmBatch(6, 5)]);
-    await controller.startPersonalFm(ownerKey: 'account');
-    expect(controller.currentSong?.id, 'fm1');
-    expect(
-      controller.upcomingPersonalFmSongs.map((song) => song.id),
-      ['fm2', 'fm3', 'fm4', 'fm5'],
-    );
+  test(
+    'FM advances beyond five tracks when departure returns no batch',
+    () async {
+      await setup();
+      api.fmBatches.addAll([fmBatch(1, 5), fmBatch(6, 5)]);
+      await controller.startPersonalFm(ownerKey: 'account');
+      expect(controller.currentSong?.id, 'fm1');
+      expect(controller.upcomingPersonalFmSongs.map((song) => song.id), [
+        'fm2',
+        'fm3',
+        'fm4',
+        'fm5',
+      ]);
 
-    await arm();
-    await controller.next();
-    await drain();
-    expect(controller.currentSong?.id, 'fm2');
-    expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
-    for (var number = 3; number <= 6; number++) {
+      await arm();
       await controller.next();
       await drain();
-      expect(controller.currentSong?.id, 'fm$number');
-    }
-    expect(api.fmFetches, 2);
-    expect(
-      api.fmDepartures.map((item) => item.hash),
-      ['fm1', 'fm2', 'fm3', 'fm4', 'fm5'],
-    );
-    expect(api.fmDepartures.first.remain, 3);
-    expect(controller.upcomingPersonalFmSongs.first.id, 'fm7');
-  });
+      expect(controller.currentSong?.id, 'fm2');
+      expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
+      for (var number = 3; number <= 6; number++) {
+        await controller.next();
+        await drain();
+        expect(controller.currentSong?.id, 'fm$number');
+      }
+      expect(api.fmFetches, 2);
+      expect(api.fmDepartures.map((item) => item.hash), [
+        'fm1',
+        'fm2',
+        'fm3',
+        'fm4',
+        'fm5',
+      ]);
+      expect(api.fmDepartures.first.remain, 3);
+      expect(controller.upcomingPersonalFmSongs.first.id, 'fm7');
+    },
+  );
 
-  test('FM native boundary consumes the same candidate the page previews', () async {
-    await setup();
-    api.fmBatches.add(fmBatch(1, 5));
-    await controller.startPersonalFm(ownerKey: 'account');
-    await arm();
-    expect(sourceCount(), 2);
-    handler.emitNativeBoundary();
-    await drain();
+  test(
+    'FM native boundary consumes the same candidate the page previews',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 5));
+      await controller.startPersonalFm(ownerKey: 'account');
+      await arm();
+      expect(sourceCount(), 2);
+      handler.emitNativeBoundary();
+      await drain();
 
-    expect(controller.currentSong?.id, 'fm2');
-    expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
-    expect(controller.upcomingPersonalFmSongs.first.id, 'fm3');
-    expect(api.fmDepartures.single.hash, 'fm1');
-    expect(api.fmDepartures.single.completed, isTrue);
-  });
+      expect(controller.currentSong?.id, 'fm2');
+      expect(controller.personalFmCurrentTrack?.song.id, 'fm2');
+      expect(controller.upcomingPersonalFmSongs.first.id, 'fm3');
+      expect(api.fmDepartures.single.hash, 'fm1');
+      expect(api.fmDepartures.single.completed, isTrue);
+    },
+  );
 
   test('a normal playlist click exits FM', () async {
     await setup();
@@ -1648,9 +1684,9 @@ void main() {
       await setup();
       api.fmBatches.addAll([fmBatch(1, 2), fmBatch(3, 1)]);
       await controller.startPersonalFm(ownerKey: 'account');
-      final fmQueue = List<Song>.of(controller.queue);
+      final fmQueue = controller.personalFmQueueEntries;
 
-      await controller.playSong(fmQueue[1], queue: fmQueue);
+      await controller.playPersonalFmSong(fmQueue[1]);
       await drain();
 
       expect(controller.currentSong?.id, 'fm2');
@@ -1662,6 +1698,293 @@ void main() {
       expect(controller.currentSong?.id, 'fm3');
       expect(controller.isPersonalFmActive, isTrue);
       expect(api.fmFetches, 2);
+    },
+  );
+
+  test(
+    'FM identity permits the ordinary current song and an identical playlist exits FM',
+    () async {
+      await setup();
+      final original = PersonalFmTrack(song: song, songId: 'recommendation');
+      api.fmBatches.add(
+        PersonalFmBatch(tracks: [original, ...fmBatch(2, 4).tracks]),
+      );
+      await controller.preparePersonalFm(ownerKey: 'account');
+      expect(controller.isPersonalFmActive, isFalse);
+      await controller.playPersonalFmSong(
+        controller.upcomingPersonalFmEntries.first.selection!,
+      );
+      expect(controller.personalFmCurrentTrack, same(original));
+
+      final staleSelection = controller.personalFmQueueEntries[2];
+      final identicalPlaylist = List<Song>.of(controller.queue);
+      await controller.playSong(identicalPlaylist[1], queue: identicalPlaylist);
+      await controller.playPersonalFmSong(staleSelection);
+      expect(controller.personalFmSession, isNull);
+      expect(controller.currentSong, same(identicalPlaylist[1]));
+      expect(api.fmDepartures.single.hash, song.hash);
+    },
+  );
+
+  test(
+    'FM taps coalesce, use the latest target, and rotate the shared queue',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 5));
+      await controller.startPersonalFm(ownerKey: 'account');
+      final pending = controller.personalFmQueueEntries;
+      final gate = api.responses['fm2'] = Completer<PlayUrl>();
+      final first = controller.playPersonalFmSong(pending[1]);
+      final duplicate = controller.playPersonalFmSong(pending[1]);
+      await drain();
+      expect(api.requests.where((hash) => hash == 'fm2'), hasLength(1));
+
+      await controller.playPersonalFmSong(pending[3]);
+      gate.complete(
+        PlayUrl(url: 'https://example.invalid/stale.mp3', hash: 'fm2'),
+      );
+      await Future.wait([first, duplicate]);
+      expect(controller.currentSong?.id, 'fm4');
+      expect(controller.queue.map((song) => song.id), [
+        'fm4',
+        'fm5',
+        'fm2',
+        'fm3',
+      ]);
+      expect(controller.upcomingPersonalFmSongs.map((song) => song.id), [
+        'fm5',
+        'fm2',
+        'fm3',
+      ]);
+      expect(api.fmDepartures.single.hash, 'fm1');
+    },
+  );
+
+  test(
+    'paused FM retains position on resolve failure and restores native source on replace failure',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 5));
+      await controller.startPersonalFm(ownerKey: 'account');
+      await handler.pause();
+      const at = Duration(seconds: 37);
+      handler.audioPlayer.emitNative(ProcessingState.ready, position: at);
+      final original = controller.currentSong;
+      final originalSource = handler.audioPlayer.sequenceState.currentSource;
+      final queue = controller.queue;
+      final candidate = controller.personalFmQueueEntries[1];
+      api.failures.add('fm2');
+      await controller.playPersonalFmSong(candidate);
+      expect(
+        handler.audioPlayer.sequenceState.currentSource,
+        same(originalSource),
+      );
+      expect(controller.position, at);
+      api.failures.clear();
+      handler.failingHashes.add('fm2');
+      await controller.playPersonalFmSong(candidate);
+      expect(
+        handler.audioPlayer.sequenceState.currentSource?.tag,
+        same(original),
+      );
+      expect(controller.currentSong, same(original));
+      expect(controller.queue, same(queue));
+      expect(controller.position, at);
+      expect(handler.audioPlayer.playing, isFalse);
+      expect(api.fmDepartures, isEmpty);
+    },
+  );
+
+  test(
+    'feedback updates the media queue without disarming an unchanged FM next song',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 5));
+      await controller.startPersonalFm(ownerKey: 'account');
+      final feedback = Completer<PersonalFmBatch>();
+      api.fmFeedbackResponse = feedback.future;
+      await controller.next();
+      await arm();
+      expect(sourceCount(), 2);
+      feedback.complete(fmBatch(6, 4));
+      await drain();
+      expect(sourceCount(), 2);
+      expect(handler.publishedQueue.map((song) => song.id), [
+        'fm2',
+        'fm3',
+        'fm4',
+        'fm5',
+        'fm6',
+        'fm7',
+        'fm8',
+        'fm9',
+      ]);
+
+      final removed = controller.personalFmQueueEntries[1];
+      controller.removePersonalFmSong(removed);
+      await drain();
+      expect(sourceCount(), 1);
+      expect(handler.publishedQueue.any((song) => song.id == 'fm3'), isFalse);
+      await controller.playPersonalFmSong(removed);
+      expect(controller.currentSong?.id, 'fm2');
+      complete();
+      await drain();
+      expect(controller.currentSong?.id, 'fm4');
+    },
+  );
+
+  test(
+    'radio preparation and manual next share one fetch from an active empty pool',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 1));
+      await controller.startPersonalFm(ownerKey: 'account');
+      final batch = Completer<PersonalFmBatch>();
+      api.fmFetchResponse = batch.future;
+      final preparing = controller.preparePersonalFm(ownerKey: 'account');
+      final advancing = controller.next();
+      await drain();
+      expect(api.fmFetches, 2);
+      expect(api.fmDepartures, isEmpty);
+      expect(controller.currentSong?.id, 'fm1');
+      batch.complete(fmBatch(2, 5));
+      await Future.wait([preparing, advancing]);
+      expect(controller.currentSong?.id, 'fm2');
+      expect(api.fmDepartures.single.completed, isFalse);
+    },
+  );
+
+  test(
+    'natural completion settles once and page retry never starts playback',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 1));
+      await controller.startPersonalFm(ownerKey: 'account');
+      complete();
+      await drain();
+      expect(api.fmDepartures.single.completed, isTrue);
+      expect(handler.audioPlayer.playing, isFalse);
+      expect(controller.currentSong?.id, 'fm1');
+      api.fmBatches.add(fmBatch(2, 5));
+      await controller.preparePersonalFm(ownerKey: 'account', retry: true);
+      expect(controller.currentSong?.id, 'fm1');
+      expect(handler.audioPlayer.playing, isFalse);
+      await controller.togglePlay();
+      expect(controller.currentSong?.id, 'fm2');
+      expect(api.fmDepartures, hasLength(1));
+    },
+  );
+
+  test('FM history preserves the insert identity when replayed', () async {
+    await setup();
+    api.fmBatches.add(fmBatch(1, 7));
+    await controller.startPersonalFm(ownerKey: 'account');
+    await controller.addToQueue(b);
+    final replaced = controller.personalFmQueueEntries[1];
+    await controller.addToQueue(c);
+    await controller.playPersonalFmSong(replaced);
+    expect(controller.currentSong?.id, 'fm1');
+    await controller.next();
+    expect(controller.currentSong, same(c));
+    await controller.next();
+    await controller.previous();
+    expect(controller.currentSong, same(c));
+    await controller.next();
+    await drain();
+    expect(api.fmDepartures.map((item) => item.hash), ['fm1', 'fm2']);
+  });
+
+  test(
+    'FM account switch drops pending feedback and late recommendations',
+    () async {
+      await setup();
+      api.setSession(const LoginSession(userId: 'old', token: 'old-token'));
+      api.fmBatches.add(fmBatch(1, 6));
+      await controller.startPersonalFm(ownerKey: 'old');
+      final response = Completer<PersonalFmBatch>();
+      api.fmFeedbackResponse = response.future;
+      await controller.next();
+      await controller.next();
+      expect(api.fmDepartures.map((item) => item.hash), ['fm1']);
+
+      api.setSession(const LoginSession(userId: 'new', token: 'new-token'));
+      api.fmBatches.add(fmBatch(20, 2));
+      expect(
+        await controller.preparePersonalFm(ownerKey: 'new'),
+        PersonalFmStartOutcome.started,
+      );
+      response.complete(fmBatch(30, 3));
+      await drain();
+      expect(controller.currentSong?.id, 'fm3');
+      expect(controller.isPersonalFmActive, isFalse);
+      expect(controller.upcomingPersonalFmSongs.map((song) => song.id), [
+        'fm20',
+        'fm21',
+      ]);
+      expect(api.fmDepartures.map((item) => item.hash), ['fm1']);
+    },
+  );
+
+  test(
+    'FM handoff racing a manual choice sends one feedback per departed entry',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 6));
+      await controller.startPersonalFm(ownerKey: 'account');
+      await arm();
+      handler.emitNativeBoundary();
+      await controller.next();
+      await drain();
+      expect(controller.currentSong?.id, 'fm3');
+      expect(
+        handler.audioPlayer.sequenceState.currentSource?.tag,
+        same(controller.currentSong),
+      );
+      expect(api.fmDepartures.map((item) => (item.hash, item.completed)), [
+        ('fm1', true),
+        ('fm2', false),
+      ]);
+      expect(api.fmDepartures.first.seconds, 100);
+    },
+  );
+
+  test(
+    'FM finish-current sleep timer drops the native next source and reports completion',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 6));
+      await controller.startPersonalFm(ownerKey: 'account');
+      await arm();
+      expect(sourceCount(), 2);
+      controller.setSleepTimerFinishSong(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+      expect(sourceCount(), 1);
+      complete();
+      await drain();
+      expect(controller.currentSong?.id, 'fm1');
+      expect(handler.audioPlayer.playing, isFalse);
+      expect(controller.isSleepFinishCurrentSong, isFalse);
+      expect(api.fmDepartures.single.completed, isTrue);
+    },
+  );
+
+  test(
+    'natural FM advance skips one definite empty source and no more',
+    () async {
+      await setup();
+      api.fmBatches.add(fmBatch(1, 6));
+      await controller.startPersonalFm(ownerKey: 'account');
+      for (final hash in ['fm2', 'fm3']) {
+        api.responses[hash] = Completer<PlayUrl>()
+          ..complete(PlayUrl(url: '', hash: hash));
+      }
+      complete();
+      await drain();
+      expect(controller.currentSong?.id, 'fm1');
+      expect(handler.audioPlayer.playing, isFalse);
+      expect(controller.upcomingPersonalFmSongs.first.id, 'fm4');
+      expect(api.requests, isNot(contains('fm4')));
+      expect(api.fmDepartures.single.completed, isTrue);
     },
   );
 
@@ -1677,34 +2000,31 @@ void main() {
     expect(handler.loads, [song]);
   });
 
-  test(
-    'a cached next song still produces an armable candidate',
-    () async {
-      await setup();
-      // 实机形状：下一曲已在播放缓存里（每首歌播满 30 秒就会被
-      // _schedulePlaybackCache 写进缓存），当前曲仍走网络。
-      // 早期实现在这里静默 `return`，`_preparedNext` 永远为 null，
-      // 于是「下一曲已缓存」这一最常见情况永不武装 —— 实机症状就是
-      // 零 prefetch_ready / 零 armed_next，过界全退化成显式重载。
-      controller.downloadController = _CachedDownloadController(api, {'B'});
-      // 关掉音量均衡，去掉「本地命中补取响度」这条元数据请求的噪声：
-      // 剩下的任何 B 请求都只可能来自播放地址解析。
-      await controller.setVolumeNormalizationEnabled(false);
-      await arm();
-      expect(
-        api.requests.where((s) => s == 'B'),
-        isEmpty,
-        reason: '缓存命中不应再请求播放地址',
-      );
-      expect(sourceCount(), 2, reason: '缓存命中必须同样武装');
-      expect(
-        handler.appendedUrls.single,
-        '/tmp/B.flac',
-        reason: '应把本地文件路径追加为第二子源，而不是网络地址',
-      );
-      expect(controller.currentSong, song, reason: '武装仍然不提交');
-    },
-  );
+  test('a cached next song still produces an armable candidate', () async {
+    await setup();
+    // 实机形状：下一曲已在播放缓存里（每首歌播满 30 秒就会被
+    // _schedulePlaybackCache 写进缓存），当前曲仍走网络。
+    // 早期实现在这里静默 `return`，`_preparedNext` 永远为 null，
+    // 于是「下一曲已缓存」这一最常见情况永不武装 —— 实机症状就是
+    // 零 prefetch_ready / 零 armed_next，过界全退化成显式重载。
+    controller.downloadController = _CachedDownloadController(api, {'B'});
+    // 关掉音量均衡，去掉「本地命中补取响度」这条元数据请求的噪声：
+    // 剩下的任何 B 请求都只可能来自播放地址解析。
+    await controller.setVolumeNormalizationEnabled(false);
+    await arm();
+    expect(
+      api.requests.where((s) => s == 'B'),
+      isEmpty,
+      reason: '缓存命中不应再请求播放地址',
+    );
+    expect(sourceCount(), 2, reason: '缓存命中必须同样武装');
+    expect(
+      handler.appendedUrls.single,
+      '/tmp/B.flac',
+      reason: '应把本地文件路径追加为第二子源，而不是网络地址',
+    );
+    expect(controller.currentSong, song, reason: '武装仍然不提交');
+  });
 
   test(
     'a locally cached next song commits without re-caching its path',

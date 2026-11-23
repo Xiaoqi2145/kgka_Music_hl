@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
+import 'package:kgka_music_hl/core/api_client.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/services/music_audio_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -64,6 +65,7 @@ class _Handler implements MusicAudioHandler {
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
     Future<void> Function(Duration)? onSeek,
+    Future<void>? Function()? onResumeCompleted,
   }) {}
 
   @override
@@ -87,7 +89,9 @@ class _Handler implements MusicAudioHandler {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class _Api implements MusicApi {
+class _Api extends MusicApi {
+  _Api() : super(ApiClient());
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

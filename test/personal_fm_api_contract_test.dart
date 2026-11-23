@@ -1,7 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:kgka_music_hl/core/api_client.dart';
+import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/models/personal_fm_models.dart';
+import 'package:kgka_music_hl/services/music_api.dart';
 
 /// 真实响应样本（来自默认 API 的一次 /personal/fm?action=login 调用），
 /// 只保留解析所需的字段，用于锁住「接口字段 -> 播放输入」的映射。
@@ -28,6 +34,37 @@ const _sample = '''
 }''';
 
 void main() {
+  test('FM 旧账号响应不能覆盖新账号会话标识', () async {
+    final reply = Completer<http.Response>();
+    final started = Completer<void>();
+    final api = MusicApi(
+      ApiClient(
+        client: MockClient((request) {
+          expect(request.headers['X-Kg-Session-Id'], 'old-session');
+          started.complete();
+          return reply.future;
+        }),
+      ),
+    );
+    addTearDown(api.close);
+    api.setSession(const LoginSession(userId: 'old', sessionId: 'old-session'));
+    final inFlight = api.personalFm();
+    await started.future;
+    api.setSession(const LoginSession(userId: 'new', sessionId: 'new-session'));
+    reply.complete(
+      http.Response(
+        _sample,
+        200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-kg-session-id': 'old-late-session',
+        },
+      ),
+    );
+    await inFlight;
+    expect(api.clientSessionId, 'new-session');
+  });
+
   test('真实 FM 响应可解析为播放输入', () {
     final batch = PersonalFmBatch.fromJson(
       jsonDecode(_sample) as Map<String, dynamic>,
@@ -51,7 +88,7 @@ void main() {
     final batch = PersonalFmBatch.fromJson(<String, dynamic>{
       'status': 1,
       'song_list': <dynamic>[
-        <String, dynamic>{'songname': 'no hash' },
+        <String, dynamic>{'songname': 'no hash'},
         <String, dynamic>{'songname': 'ok', 'hash': 'H1'},
       ],
     });
@@ -63,7 +100,7 @@ void main() {
     final batch = PersonalFmBatch.fromJson(<String, dynamic>{
       'status': 1,
       'song_list': <dynamic>[
-        <String, dynamic>{'songname': 'a', 'hash': 'H2' },
+        <String, dynamic>{'songname': 'a', 'hash': 'H2'},
       ],
     });
     expect(batch.tracks.single.recommendDesc, isNull);

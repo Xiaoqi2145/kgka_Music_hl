@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
+import 'package:kgka_music_hl/core/api_client.dart';
+import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/models/personal_fm_models.dart';
 import 'package:kgka_music_hl/services/personal_fm_session.dart';
@@ -28,6 +30,12 @@ class _RadioPlayer extends FakePlayer {
          ),
        );
 
+  final session = PersonalFmSession(
+    MusicApi(ApiClient()),
+    ownerKey: 'test',
+    launchId: 'test',
+  );
+
   bool tracked;
   bool preparing;
   final List<Song> songs;
@@ -35,6 +43,7 @@ class _RadioPlayer extends FakePlayer {
   var disliked = false;
   var stopped = false;
   var prepared = false;
+  var hasRecommendations = true;
   var playCalls = 0;
   Song? played;
   String? error;
@@ -50,7 +59,12 @@ class _RadioPlayer extends FakePlayer {
       tracked ? PersonalFmTrack(song: songs[index]) : null;
 
   @override
-  PersonalFmSession? get personalFmSession => null;
+  PersonalFmSession? get personalFmSession => session;
+
+  @override
+  PersonalFmSelection? get personalFmCurrentSelection => tracked
+      ? (session: session, track: personalFmCurrentTrack!, source: null)
+      : null;
 
   @override
   bool get personalFmCurrentDisliked => disliked;
@@ -63,6 +77,7 @@ class _RadioPlayer extends FakePlayer {
 
   @override
   Iterable<PersonalFmUpcomingItem> get upcomingPersonalFmEntries sync* {
+    if (!hasRecommendations) return;
     final rest = songs.skip(index + 1).toList();
     for (var i = 0; i < rest.length; i++) {
       // 第 1 项模拟回听暂存，第 2 项模拟手动插播，其余是普通候选。
@@ -70,6 +85,11 @@ class _RadioPlayer extends FakePlayer {
         song: rest[i],
         isFromHistory: i == 0,
         isManual: i == 1,
+        selection: (
+          session: session,
+          track: PersonalFmTrack(song: rest[i]),
+          source: PersonalFmTrackSource.candidate,
+        ),
       );
     }
   }
@@ -84,7 +104,12 @@ class _RadioPlayer extends FakePlayer {
   }
 
   @override
-  Future<void> playPersonalFmSong(Song song) async {
+  Future<void> playPersonalFmSong(PersonalFmSelection selection) async {
+    if (selection.source == null) {
+      if (!isPlaying) await togglePlay();
+      return;
+    }
+    final song = selection.track.song;
     playCalls++;
     played = song;
     index = songs.indexOf(song);
@@ -107,6 +132,12 @@ class _RadioPlayer extends FakePlayer {
   @override
   Future<void> stopPersonalFm() async {
     stopped = true;
+  }
+
+  @override
+  void dispose() {
+    session.dispose();
+    super.dispose();
   }
 
   @override
@@ -150,8 +181,8 @@ Future<void> _pump(
 }
 
 void main() {
-  testWidgets('电台页进入时准备候选，但不会自动开播', (tester) async {
-    final player = _RadioPlayer(tracked: false);
+  testWidgets('电台页进入空池时准备候选，但不会自动开播', (tester) async {
+    final player = _RadioPlayer(tracked: false)..hasRecommendations = false;
     addTearDown(player.dispose);
 
     await _pump(tester, player);
@@ -253,7 +284,7 @@ void main() {
     expect(player.played!.title, '电台曲目 2');
   });
 
-  testWidgets('播放加载中禁用重复点选', (tester) async {
+  testWidgets('加载中也可以选择另一个候选', (tester) async {
     final player = _RadioPlayer(preparing: true);
     addTearDown(player.dispose);
 
@@ -261,7 +292,7 @@ void main() {
     await tester.tap(find.text('电台曲目 2'), warnIfMissed: false);
     await tester.pump();
 
-    expect(player.playCalls, 0);
+    expect(player.playCalls, 1);
   });
 
   testWidgets('点击当前曲目不会重复加载', (tester) async {
@@ -269,7 +300,6 @@ void main() {
     addTearDown(player.dispose);
 
     await _pump(tester, player);
-    // 当前曲目卡片上的标题不是点播入口。
     await tester.tap(find.text('电台曲目 0'));
     await tester.pump();
 

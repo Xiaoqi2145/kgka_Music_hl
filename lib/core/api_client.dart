@@ -32,12 +32,14 @@ class ApiClient {
 
   /// Idempotent GET without the generic retry loop.
   Future<dynamic> getOnce(
-    String path, [
-    Map<String, Object?> query = const {},
-  ]) => _sendWithRetry(
+    String path,
+    Map<String, Object?> query, {
+    bool Function()? acceptSession,
+  }) => _sendWithRetry(
     () => _client.get(AppConfig.apiUri(path, query), headers: _headers),
     maxRetries: 0,
     allowRetry: false,
+    acceptSession: acceptSession,
   );
 
   Future<dynamic> post(
@@ -87,6 +89,7 @@ class ApiClient {
     bool allowRetry = true,
     bool preserveEnvelope = false,
     bool updateSession = true,
+    bool Function()? acceptSession,
   }) async {
     const attemptTimeout = Duration(seconds: 15);
     const overallTimeout = Duration(seconds: 45);
@@ -114,7 +117,7 @@ class ApiClient {
         return _processResponse(
           response,
           preserveEnvelope: preserveEnvelope,
-          updateSession: updateSession,
+          updateSession: updateSession && (acceptSession?.call() ?? true),
         );
       } on TimeoutException {
         if (!allowRetry || attempt >= maxRetries) rethrow;

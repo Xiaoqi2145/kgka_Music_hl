@@ -17,6 +17,8 @@ class _Player extends ChangeNotifier implements PlayerController {
   @override
   List<Song> get queue => [currentSong];
   @override
+  List<PersonalFmSelection> get personalFmQueueEntries => const [];
+  @override
   bool isPlaying = true;
   @override
   bool get isPreparing => false;

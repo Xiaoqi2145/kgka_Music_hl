@@ -77,7 +77,6 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
   ///
   /// 自动取候选只发生在「首次进入且候选为空」；之后切标签再回来只复用
   /// 会话与候选，不重新请求。用户点「重新获取 / 重试」不受此限制。
-  bool _autoRequested = false;
 
   /// 会话归属：账号 + API 来源。切换后旧响应不得进入新会话。
   String get _ownerKey =>
@@ -98,7 +97,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     // 首次进入（含从其它 Home 标签切回）时按会话状态决定是否取候选。
-    if (widget.visible) _ensureRecommendations(notify: false);
+    if (widget.visible) _scheduleRecommendations();
   }
 
   @override
@@ -106,8 +105,14 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     super.didUpdateWidget(oldWidget);
     // 父级重建后本组件紧接着会 build，这里只需要改状态、不用 setState。
     if (widget.visible && !oldWidget.visible) {
-      _ensureRecommendations(notify: false);
+      _scheduleRecommendations();
     }
+  }
+
+  void _scheduleRecommendations() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.visible) _ensureRecommendations();
+    });
   }
 
   @override
@@ -139,25 +144,17 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
 
   /// 进入页面时的唯一自动请求入口。
   ///
-  /// - 已有候选或 FM 正在播放：复用会话，不请求。
+  /// - 已有待播项：直接展示。
   /// - 有请求在途：复用同一次请求，只显示加载状态。
   /// - 失败后状态未变：沿用会话退避，不为了页面打开反复请求；用户点重试
   ///   才走 retry 重新请求。
-  void _ensureRecommendations({bool retry = false, bool notify = true}) {
+  void _ensureRecommendations({bool retry = false}) {
     if (_preparingRecommendations) return;
-    if (!retry && _autoRequested) return;
     final player = widget.player;
-    final session = player.personalFmSession;
-    if (!retry) {
-      // FM 正在播放：进入页面只展示当前曲目与待播候选，不再请求。
-      if (player.personalFmCurrentTrack != null) return;
-      if (session?.hasCandidates == true) return;
-      if (session?.isLoadingRecommendations == true) return;
-    }
+    if (!retry && player.upcomingPersonalFmEntries.isNotEmpty) return;
     _preparingRecommendations = true;
-    _autoRequested = true;
     _recommendError = null;
-    if (notify && mounted) setState(() {});
+    if (mounted) setState(() {});
     player
         .preparePersonalFm(ownerKey: _ownerKey, retry: retry)
         .then<void>((outcome) {
@@ -216,14 +213,19 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
   /// 点选待播条目：交给播放器解析加载，成功后才消耗候选。
   Future<void> _select(PersonalFmUpcomingItem item) async {
     final player = widget.player;
-    // 只在真的有一次解析在进行时屏蔽重复点击；后台补候选不该锁住已有歌曲。
-    if (player.isPreparing) return;
-    await player.playPersonalFmSong(item.song);
+    final selection = item.selection;
+    if (selection == null) return;
+    await player.playPersonalFmSong(selection);
     if (!mounted) return;
     final error = player.errorMessage;
     if (error != null && error.isNotEmpty) {
       Toast.error(error);
     }
+  }
+
+  void _selectCurrent() {
+    final selection = widget.player.personalFmCurrentSelection;
+    if (selection != null) widget.player.playPersonalFmSong(selection);
   }
 
   Future<void> _toggleLike(Song song) async {
@@ -347,6 +349,8 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
               children: [
                 Text(
                   '私人 FM',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w900,
                     color: scheme.onSurface,
@@ -355,6 +359,15 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
               ],
             ),
           ),
+          if (widget.player.personalFmCurrentTrack != null)
+            SizedBox(
+              height: compact ? 42 : 56,
+              child: IconButton(
+                tooltip: '结束电台',
+                onPressed: widget.player.stopPersonalFm,
+                icon: const Icon(Icons.stop_circle_outlined),
+              ),
+            ),
         ],
       ),
     );
@@ -580,13 +593,16 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  song.title,
-                  key: const ValueKey('personal-fm-wide-current-title'),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
+                GestureDetector(
+                  onTap: _selectCurrent,
+                  child: Text(
+                    song.title,
+                    key: const ValueKey('personal-fm-wide-current-title'),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -644,7 +660,10 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
       (
         tooltip: player.personalFmCurrentDisliked ? '已标记不喜欢' : '不喜欢',
         icon: Icons.thumb_down_alt_outlined,
-        onTap: canAct && !player.personalFmCurrentDisliked
+        onTap:
+            canAct &&
+                !player.personalFmCurrentDisliked &&
+                player.personalFmCurrentTrack?.isRecommendation == true
             ? player.dislikePersonalFmCurrent
             : null,
       ),
@@ -723,7 +742,6 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
       ...items.map((item) => item.song),
     ];
     final hasCurrent = current != null;
-    final canSelect = !player.isPreparing;
     final count = songs.length;
     final coversWidth = size + stride * (count - 1);
     final coversHeight = size + _wideCoverVerticalStep * (count - 1);
@@ -756,9 +774,10 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                         size: size,
                         selected: hasCurrent && index == 0,
                         preparing: player.isPreparingSong(songs[index]),
-                        onTap: canSelect && (!hasCurrent || index > 0)
-                            ? () => _select(items[index - (hasCurrent ? 1 : 0)])
-                            : null,
+                        onTap: hasCurrent && index == 0
+                            ? _selectCurrent
+                            : () =>
+                                  _select(items[index - (hasCurrent ? 1 : 0)]),
                       ),
                     ),
                 ],
@@ -787,7 +806,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                           : _wideCoverCaption(
                               context,
                               items[index - (hasCurrent ? 1 : 0)],
-                              enabled: canSelect,
+                              enabled: true,
                             ),
                     ),
                   ),
@@ -810,8 +829,8 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     final scheme = Theme.of(context).colorScheme;
     final radius = BorderRadius.circular(12);
     return Semantics(
-      button: !selected,
-      enabled: selected ? null : onTap != null,
+      button: onTap != null,
+      enabled: onTap != null,
       selected: selected,
       onTap: onTap,
       label: selected ? song.title : '播放 ${song.title}',
@@ -1110,7 +1129,14 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                         ),
                       )
                     else
-                      Artwork(url: coverUrl, size: coverSize, borderRadius: 12),
+                      GestureDetector(
+                        onTap: _selectCurrent,
+                        child: Artwork(
+                          url: coverUrl,
+                          size: coverSize,
+                          borderRadius: 12,
+                        ),
+                      ),
                     const SizedBox(width: coverGap),
                     Expanded(
                       child: Column(
@@ -1134,14 +1160,17 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                                   ),
                                   const SizedBox(height: 2),
                                 ],
-                                Text(
-                                  song?.title ?? '红心电台',
-                                  style: titleStyle,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  strutStyle: StrutStyle.fromTextStyle(
-                                    titleStyle,
-                                    forceStrutHeight: true,
+                                GestureDetector(
+                                  onTap: song == null ? null : _selectCurrent,
+                                  child: Text(
+                                    song?.title ?? '红心电台',
+                                    style: titleStyle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    strutStyle: StrutStyle.fromTextStyle(
+                                      titleStyle,
+                                      forceStrutHeight: true,
+                                    ),
                                   ),
                                 ),
                                 if (song != null || hasRecommendations) ...[
@@ -1276,14 +1305,13 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     final exhausted = session?.isExhausted == true;
     // 列表含回听暂存与手动插播，候选计数只统计候选池；两者取大才是
     // 「还剩几首」的真实值，避免出现「共 3 首」却列出 4 行。
-    final pending = session?.pendingCount ?? 0;
-    final total = pending > entries.length ? pending : entries.length;
+    final total = player.upcomingPersonalFmEntries.length;
     final error = _recommendError;
     final rows = [
       for (final entry in entries)
         _UpNextRow(
           item: entry,
-          enabled: !player.isPreparing,
+          enabled: true,
           preparing: player.isPreparingSong(entry.song),
           onTap: () => _select(entry),
         ),

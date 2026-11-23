@@ -450,6 +450,19 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     return songs;
   }
 
+  Future<void> _playFromPlaylist(Song song, List<Song> queue) async {
+    final player = widget.player;
+    final wasPlayingFm = player.isPersonalFmActive;
+    final playback = player.playSong(song, queue: List<Song>.of(queue));
+    if (wasPlayingFm) {
+      await playback;
+      if (!mounted || player.isPersonalFmActive || player.currentSong != song) {
+        return;
+      }
+    }
+    _startBackgroundQueueLoad(player.queueRevision);
+  }
+
   void _startBackgroundQueueLoad(int expectedRevision) {
     if (_searchQuery.isEmpty && !_allSongsLoaded) {
       final generation = ++_queueLoadGeneration;
@@ -1041,12 +1054,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           : () async {
                               final queue = _queueForImmediatePlayback();
                               if (!mounted || queue.isEmpty) return;
-                              widget.player.playSong(
-                                queue.first,
-                                queue: List<Song>.of(queue),
-                              );
-                              final revision = widget.player.queueRevision;
-                              _startBackgroundQueueLoad(revision);
+                              await _playFromPlaylist(queue.first, queue);
                             },
                       searchQuery: _searchQuery,
                       searchResultCount: _searchQuery.isNotEmpty
@@ -1074,12 +1082,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                             onTap: () async {
                               final queue = _queueForImmediatePlayback(song);
                               if (!mounted || queue.isEmpty) return;
-                              widget.player.playSong(
-                                song,
-                                queue: List<Song>.of(queue),
-                              );
-                              final revision = widget.player.queueRevision;
-                              _startBackgroundQueueLoad(revision);
+                              await _playFromPlaylist(song, queue);
                             },
                             onAddToPlaylist: () => _addSongToPlaylist(song),
                             onDelete: () => _removeSong(song),

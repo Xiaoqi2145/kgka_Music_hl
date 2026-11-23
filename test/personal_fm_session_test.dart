@@ -151,13 +151,50 @@ void main() {
       await session.start();
       expect(session.pendingCount, 2);
 
-      api.nextBatch = _batch(['1', '2', '3']);
-      await session.retry();
+      api.feedbackBatch = _batch(['1', '2', '3']);
+      await session.reportDeparture(
+        session.peekNext()!,
+        action: PersonalFmAction.play,
+        playtimeSeconds: 1,
+        isOverplay: false,
+      );
       expect(session.pendingCount, 3);
     });
   });
 
   group('PersonalFmSession 单飞与失败', () {
+    test('直接点选任意前进项只消费该曲，推荐点播保留回听路径', () async {
+      final api = _FakeApi()
+        ..nextBatch = _batch(['1', '2', '3', '4', '5', '6']);
+      final session = PersonalFmSession(api, ownerKey: 'u', launchId: 'l');
+      addTearDown(session.dispose);
+      await session.start();
+      for (var index = 0; index < 4; index++) {
+        session.commit(session.peekNext()!, PersonalFmTrackSource.candidate);
+      }
+      for (var index = 0; index < 3; index++) {
+        session.commit(session.peekPrevious()!, PersonalFmTrackSource.history);
+      }
+      final third = session.upcoming.elementAt(1);
+      session.commit(third, PersonalFmTrackSource.restored);
+      expect(session.upcoming.map((track) => track.song.id), [
+        '2',
+        '4',
+        '5',
+        '6',
+      ]);
+      session.commit(session.upcoming.last, PersonalFmTrackSource.candidate);
+      expect(session.upcoming.map((track) => track.song.id), ['5']);
+      final back = <String>[];
+      var previous = session.peekPrevious();
+      while (previous != null) {
+        back.add(previous.song.id);
+        session.commit(previous, PersonalFmTrackSource.history);
+        previous = session.peekPrevious();
+      }
+      expect(back, ['3', '2', '4', '1']);
+    });
+
     test('并发补池共享同一次请求', () async {
       final api = _FakeApi()..nextBatch = _batch(['1']);
       final gate = Completer<void>();

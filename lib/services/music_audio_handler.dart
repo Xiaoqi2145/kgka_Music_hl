@@ -85,22 +85,26 @@ class MusicAudioHandler extends BaseAudioHandler
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
   Future<void> Function(Duration)? _onSeek;
+  Future<void>? Function()? _onResumeCompleted;
   int _queueIndex = 0;
 
   void attachTransportControls({
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
     Future<void> Function(Duration)? onSeek,
+    Future<void>? Function()? onResumeCompleted,
   }) {
     _onNext = onNext;
     _onPrevious = onPrevious;
     _onSeek = onSeek;
+    _onResumeCompleted = onResumeCompleted;
   }
 
   void detachTransportControls() {
     _onNext = null;
     _onPrevious = null;
     _onSeek = null;
+    _onResumeCompleted = null;
     onPlaybackIntent = null;
   }
 
@@ -397,7 +401,7 @@ class MusicAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> play() => _play(userIntent: true);
+  Future<void> play() => _onResumeCompleted?.call() ?? _play(userIntent: true);
 
   Future<void> reclaimAudioFocus() => _play(userIntent: false);
 

@@ -60,9 +60,11 @@ class PersonalFmTrack {
     this.songId,
     this.recommendDesc,
     this.similarDesc,
+    this.isRecommendation = true,
   });
 
   final Song song;
+  final bool isRecommendation;
 
   /// 接口原始 `songid`（int64 文本）。反馈请求优先使用它而不是 `mixsongid`。
   final String? songId;
@@ -117,7 +119,8 @@ class PersonalFmTrack {
         albumAudioId: mixSongId ?? songId,
         albumName: asString(json['album_name']),
         coverUrl: normalizeImageUrl(
-          asString(transParam['union_cover']) ?? asString(json['sizable_cover']),
+          asString(transParam['union_cover']) ??
+              asString(json['sizable_cover']),
         ),
         artists: artists,
         catalogId: mixSongId,

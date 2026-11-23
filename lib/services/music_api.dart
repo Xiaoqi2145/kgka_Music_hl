@@ -14,15 +14,35 @@ class MusicApi {
   static const _registerHint = '若没有账号请先在酷狗音乐概念版App注册';
 
   final ApiClient _client;
+  final personalFmAccountRevision = ValueNotifier(0);
+  String? _accountId;
+  bool _hasAccount = false;
+
+  Future<dynamic> _requestPersonalFm(Map<String, Object?> query) {
+    final account = personalFmAccountRevision.value;
+    final source = AppConfig.apiSourceRevision.value;
+    return _client.getOnce(
+      '/personal/fm',
+      query,
+      acceptSession: () => personalFmAccountRevision.value == account &&
+          AppConfig.apiSourceRevision.value == source,
+    );
+  }
 
   /// 暴露 ApiClient 当前持有的后端 session key（由响应 header 自动保存）。
   String? get clientSessionId => _client.sessionId;
 
   void setSession(LoginSession? session) {
+    final accountId = session?.userId ?? session?.sessionId ?? session?.token;
+    final accountChanged =
+        _hasAccount != (session != null) || _accountId != accountId;
+    _hasAccount = session != null;
+    _accountId = accountId;
     if (session == null) {
       _client.token = null;
       _client.t1 = null;
       _client.sessionId = null;
+      if (accountChanged) personalFmAccountRevision.value++;
       return;
     }
     _client.token = session.token;
@@ -36,6 +56,7 @@ class MusicApi {
     if (sid != null && sid.isNotEmpty) {
       _client.sessionId = sid;
     }
+    if (accountChanged) personalFmAccountRevision.value++;
   }
 
   void close() => _client.close();
@@ -241,7 +262,7 @@ class MusicApi {
     bool isOverplay = false,
     int remainSongCount = 0,
   }) async {
-    final raw = await _client.getOnce('/personal/fm', {
+    final raw = await _requestPersonalFm({
       'mode': mode.apiValue,
       'action': PersonalFmAction.play.apiValue,
       'songPoolId': songPoolId,
@@ -271,7 +292,7 @@ class MusicApi {
     PersonalFmMode mode = PersonalFmMode.normal,
     int songPoolId = 0,
   }) async {
-    final raw = await _client.getOnce('/personal/fm', {
+    final raw = await _requestPersonalFm({
       'mode': mode.apiValue,
       'action': action.apiValue,
       'songPoolId': songPoolId,

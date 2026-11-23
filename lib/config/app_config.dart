@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AppConfig {
@@ -56,6 +57,7 @@ class AppConfig {
   /// User-configured API base URL override. When non-null, takes precedence
   /// over the compile-time `apiBaseUrl`.
   static String? _customBaseUrl;
+  static final apiSourceRevision = ValueNotifier(0);
 
   /// The effective API base URL (custom if set, otherwise the default).
   static String get effectiveBaseUrl => _customBaseUrl ?? apiBaseUrl;
@@ -94,14 +96,17 @@ class AppConfig {
   static Future<void> saveCustomBaseUrl(String? url) async {
     final prefs = await SharedPreferences.getInstance();
     final trimmed = url?.trim();
+    final previous = effectiveBaseUrl;
     if (trimmed == null ||
         trimmed.isEmpty ||
         trimmed == apiBaseUrl ||
         _legacyDefaultApiBaseUrls.contains(trimmed)) {
       _customBaseUrl = null;
+      if (effectiveBaseUrl != previous) apiSourceRevision.value++;
       await prefs.remove(_customBaseUrlKey);
     } else {
       _customBaseUrl = trimmed;
+      if (effectiveBaseUrl != previous) apiSourceRevision.value++;
       await prefs.setString(_customBaseUrlKey, trimmed);
     }
   }

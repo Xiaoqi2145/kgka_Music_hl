@@ -49,12 +49,14 @@ class PersonalFmSession extends ChangeNotifier {
     this._api, {
     required this.ownerKey,
     required this.launchId,
+    this.isOwnerCurrent,
   });
 
   final MusicApi _api;
 
   /// 会话归属：账号 + API 来源。变化时必须整体作废，避免迟到响应污染新账号。
   final String ownerKey;
+  final bool Function()? isOwnerCurrent;
 
   /// 本次启动标识，只用于诊断。
   final String launchId;
@@ -77,11 +79,13 @@ class PersonalFmSession extends ChangeNotifier {
   final List<PersonalFmTrack> _back = [];
   final List<PersonalFmTrack> _forward = [];
   final Set<String> _disliked = <String>{};
+  final Set<String> _excluded = <String>{};
   final List<String> _recent = <String>[];
 
   PersonalFmTrack? _current;
   bool _active = false;
   bool _disposed = false;
+  bool _finishPendingFeedback = false;
   String? _lastError;
   PersonalFmFeedbackState _feedbackState = PersonalFmFeedbackState.idle;
   Future<bool>? _refill;
@@ -89,6 +93,9 @@ class PersonalFmSession extends ChangeNotifier {
   int _refillEpoch = 0;
   int _blockedEpoch = -1;
   int _requestCount = 0;
+  int _lifecycle = 0;
+
+  bool get _canRequest => !_disposed && (isOwnerCurrent?.call() ?? true);
 
   /// 当前正在播放的推荐。
   PersonalFmTrack? get current => _current;
@@ -163,6 +170,7 @@ class PersonalFmSession extends ChangeNotifier {
   bool _isExcluded(PersonalFmTrack track) {
     final key = track.dedupeKey;
     return _disliked.contains(key) ||
+        _excluded.contains(key) ||
         _recent.contains(key) ||
         track.song.hash.isEmpty;
   }
@@ -184,25 +192,17 @@ class PersonalFmSession extends ChangeNotifier {
   /// [allowRefill] 为 false 时只做纯查询，用于「不想为一次预解析付出请求」
   /// 的场景。
   Future<PersonalFmTrack?> ensureNextTrack({bool allowRefill = true}) async {
-    if (!_active) return null;
+    if (!_active || !_canRequest) return null;
     final peeked = peekNext();
     if (peeked != null) return peeked;
     if (!allowRefill) return null;
-    for (var feedback = _feedback; feedback != null; feedback = _feedback) {
-      await feedback;
-      if (!_active || _disposed) return null;
-      final next = peekNext();
-      if (next != null) return next;
-    }
-    if (_blockedEpoch == _refillEpoch) return null;
-    final ok = await _refillCandidates();
-    if (!ok) return null;
+    await ensureRecommendations();
     return peekNext();
   }
 
   /// 首次开播：请求首批推荐并选定第一首。
   Future<PersonalFmStartOutcome> start() async {
-    if (_disposed) return PersonalFmStartOutcome.failed;
+    if (!_canRequest) return PersonalFmStartOutcome.cancelled;
     if (_active) {
       // 电台页已经准备过候选：直接开始播放，不重复请求。
       return hasCandidates
@@ -211,8 +211,8 @@ class PersonalFmSession extends ChangeNotifier {
     }
     _lastError = null;
     // 候选已由页面准备过就不再请求；只有空池才拉一批。
-    final ok = hasCandidates ? true : await _refillCandidates();
-    if (_disposed) return PersonalFmStartOutcome.failed;
+    final ok = await ensureRecommendations();
+    if (!_canRequest) return PersonalFmStartOutcome.cancelled;
     if (!ok) {
       final error = _lastError;
       return error == null
@@ -232,15 +232,19 @@ class PersonalFmSession extends ChangeNotifier {
 
   /// 提交一次真正生效的切歌。只有提交过的候选才会离开候选池。
   void commit(PersonalFmTrack track, PersonalFmTrackSource source) {
+    _active = true;
     final outgoing = _current;
     switch (source) {
       case PersonalFmTrackSource.candidate:
+        for (final forward in _forward) {
+          _pushBack(forward);
+        }
+        _forward.clear();
         if (outgoing != null &&
             !identical(outgoing, track) &&
             !_disliked.contains(outgoing.dedupeKey)) {
           _pushBack(outgoing);
         }
-        _forward.clear();
         _adoptCandidate(track);
         _remember(track);
       case PersonalFmTrackSource.history:
@@ -253,9 +257,7 @@ class PersonalFmSession extends ChangeNotifier {
           _forward.add(outgoing);
         }
       case PersonalFmTrackSource.restored:
-        if (_forward.isNotEmpty && identical(_forward.last, track)) {
-          _forward.removeLast();
-        }
+        _forward.remove(track);
         if (outgoing != null &&
             !identical(outgoing, track) &&
             !_disliked.contains(outgoing.dedupeKey)) {
@@ -273,6 +275,26 @@ class PersonalFmSession extends ChangeNotifier {
     // 任何一次有效切歌都解除补池退避：下一位听众（或同一用户下一首）值得
     // 重新尝试，而不是被上一次失败永久卡住。
     _blockedEpoch = -1;
+    _notify();
+  }
+
+  bool containsUpcoming(PersonalFmTrack track, PersonalFmTrackSource source) =>
+      switch (source) {
+        PersonalFmTrackSource.candidate =>
+          _candidates.contains(track) && !_isExcluded(track),
+        PersonalFmTrackSource.restored => _forward.contains(track),
+        PersonalFmTrackSource.history => identical(peekPrevious(), track),
+        PersonalFmTrackSource.manual => false,
+      };
+
+  void removeUpcoming(PersonalFmTrack track, PersonalFmTrackSource source) {
+    if (!containsUpcoming(track, source)) return;
+    if (source == PersonalFmTrackSource.candidate) {
+      _candidates.remove(track);
+      _excluded.add(track.dedupeKey);
+    } else if (source == PersonalFmTrackSource.restored) {
+      _forward.remove(track);
+    }
     _notify();
   }
 
@@ -299,25 +321,39 @@ class PersonalFmSession extends ChangeNotifier {
     required int playtimeSeconds,
     required bool isOverplay,
     bool Function()? canRefill,
+    bool finalDeparture = false,
   }) {
-    if (_disposed || !_active) return Future<void>.value();
+    if (!_canRequest || !_active) return Future<void>.value();
     final pending = _feedback ?? _refill;
+    final lifecycle = _lifecycle;
+    final remaining = pendingCount;
+    bool belongsToSession() => _canRequest && _lifecycle == lifecycle;
     late final Future<void> request;
     request =
         Future<void>.sync(() async {
           if (pending != null) await pending;
-          if (_disposed || !_active) return;
+          if (!belongsToSession() &&
+              !_finishPendingFeedback &&
+              !finalDeparture) {
+            return;
+          }
+          if (!(isOwnerCurrent?.call() ?? true)) return;
           await _reportDeparture(
             track,
             action: action,
             playtimeSeconds: playtimeSeconds,
             isOverplay: isOverplay,
+            remaining: remaining,
+            acceptResponse: () => !finalDeparture && belongsToSession(),
           );
-          if (!_disposed &&
+          if (!finalDeparture &&
+              identical(_feedback, request) &&
+              belongsToSession() &&
               _active &&
               canRefill?.call() == true &&
               pendingCount < refillThreshold &&
-              peekNext() != null) {
+              hasCandidates &&
+              _blockedEpoch != _refillEpoch) {
             await _refillCandidates();
           }
         }).whenComplete(() {
@@ -335,10 +371,15 @@ class PersonalFmSession extends ChangeNotifier {
     required PersonalFmAction action,
     required int playtimeSeconds,
     required bool isOverplay,
+    required int remaining,
+    required bool Function() acceptResponse,
   }) async {
     final playtime = playtimeSeconds < 0 ? 0 : playtimeSeconds;
-    _feedbackState = PersonalFmFeedbackState.syncing;
-    _notify();
+    if (acceptResponse()) {
+      _feedbackState = PersonalFmFeedbackState.syncing;
+      _notify();
+    }
+    final watch = Stopwatch()..start();
     try {
       _requestCount++;
       final batch = await _api.personalFmFeedback(
@@ -346,12 +387,12 @@ class PersonalFmSession extends ChangeNotifier {
         hash: track.song.hash,
         songId: track.songId,
         playtimeSeconds: playtime,
-        remainSongCount: pendingCount,
+        remainSongCount: remaining,
         isOverplay: isOverplay,
         mode: mode,
         songPoolId: songPoolId,
       );
-      if (_disposed || !_active) return;
+      if (!acceptResponse()) return;
       if (batch.ok) {
         _merge(batch.tracks);
         _feedbackState = PersonalFmFeedbackState.synced;
@@ -362,30 +403,27 @@ class PersonalFmSession extends ChangeNotifier {
       }
     } on TimeoutException {
       // 请求已发出、结果未知：不重发，继续用当前缓冲。
-      if (_disposed) return;
+      if (!acceptResponse()) return;
       _feedbackState = PersonalFmFeedbackState.unknown;
       _lastError = '反馈结果未知';
     } catch (error) {
-      if (_disposed) return;
+      if (!acceptResponse()) return;
       _feedbackState = PersonalFmFeedbackState.unknown;
       _lastError = error.toString();
     } finally {
-      _notify();
+      debugPrint(
+        '[KA Music][fm] feedback action=${action.apiValue} '
+        'requests=$_requestCount elapsedMs=${watch.elapsedMilliseconds}',
+      );
+      if (acceptResponse()) _notify();
     }
   }
 
   /// 用户主动重试：清空退避与错误后重新补池。
   Future<bool> retry() async {
-    if (_disposed) return false;
-    _blockedEpoch = -1;
-    _lastError = null;
-    for (var feedback = _feedback; feedback != null; feedback = _feedback) {
-      await feedback;
-      if (!_active || _disposed) return false;
-      if (peekNext() != null) return true;
-    }
-    final ok = await _refillCandidates();
-    return ok && peekNext() != null;
+    if (!_active) return false;
+    await retryRecommendations();
+    return peekNext() != null;
   }
 
   /// 取一批推荐，**不选曲、不激活会话**。
@@ -393,11 +431,21 @@ class PersonalFmSession extends ChangeNotifier {
   /// 电台页进入且候选为空时用它准备歌曲；是否补池仍由 [refillThreshold]
   /// 等低水位策略决定，页面不会为了打开而反复请求。上次失败且状态未变时
   /// 沿用退避直接返回 false，用户点重试才走 [retry]。
-  Future<bool> ensureRecommendations() {
-    if (_disposed) return Future<bool>.value(false);
-    if (hasCandidates) return Future<bool>.value(true);
-    if (_blockedEpoch == _refillEpoch) return Future<bool>.value(false);
-    return _refillCandidates();
+  Future<bool> ensureRecommendations({String reason = 'continuation'}) async {
+    final lifecycle = _lifecycle;
+    for (
+      var feedback = _feedback;
+      feedback != null && !hasCandidates && _canRequest;
+      feedback = _feedback
+    ) {
+      await feedback;
+      if (_lifecycle != lifecycle) return false;
+    }
+    if (!_canRequest) return false;
+    if (hasCandidates) return true;
+    if (_blockedEpoch == _refillEpoch) return false;
+    await _refillCandidates(reason: reason);
+    return _canRequest && _lifecycle == lifecycle && hasCandidates;
   }
 
   /// 用户主动重试推荐：清退避后重新补池，**不要求会话已激活**。
@@ -405,11 +453,10 @@ class PersonalFmSession extends ChangeNotifier {
   /// 与 [retry] 的区别只在于返回值判据：这里看的是候选池是否真的有歌，
   /// 而不是 [peekNext]——电台页准备候选时会话还没被激活。
   Future<bool> retryRecommendations() async {
-    if (_disposed) return false;
+    if (!_canRequest) return false;
     _blockedEpoch = -1;
     _lastError = null;
-    await _refillCandidates();
-    return hasCandidates;
+    return ensureRecommendations(reason: 'retry');
   }
 
   /// 结束会话并清空本次会话的全部缓冲。
@@ -417,6 +464,9 @@ class PersonalFmSession extends ChangeNotifier {
   /// 账号 / API 切换与用户手动结束电台都会走到这里。
   void stop() {
     if (_disposed) return;
+    _lifecycle++;
+    _refill = null;
+    _feedback = null;
     _active = false;
     _current = null;
     _candidates.clear();
@@ -424,6 +474,7 @@ class PersonalFmSession extends ChangeNotifier {
     _forward.clear();
     _recent.clear();
     _disliked.clear();
+    _excluded.clear();
     _feedbackState = PersonalFmFeedbackState.idle;
     _lastError = null;
     _blockedEpoch = -1;
@@ -431,24 +482,28 @@ class PersonalFmSession extends ChangeNotifier {
   }
 
   /// 单飞补池：并发调用共享同一次请求。
-  Future<bool> _refillCandidates() {
+  Future<bool> _refillCandidates({String reason = 'low_watermark'}) {
     final inFlight = _refill;
     if (inFlight != null) return inFlight;
-    final future = _runRefill();
-    _refill = future;
-    _notify();
-    return future.whenComplete(() {
+    late final Future<bool> future;
+    future = _runRefill(reason).whenComplete(() {
       if (identical(_refill, future)) {
         _refill = null;
         _notify();
       }
     });
+    _refill = future;
+    _notify();
+    return future;
   }
 
-  Future<bool> _runRefill() async {
-    if (_disposed) return false;
+  Future<bool> _runRefill(String reason) async {
+    if (!_canRequest) return false;
     _refillEpoch++;
     final epoch = _refillEpoch;
+    final lifecycle = _lifecycle;
+    bool belongsToSession() => _canRequest && _lifecycle == lifecycle;
+    final watch = Stopwatch()..start();
     try {
       _requestCount++;
       final batch = await _api.personalFm(
@@ -456,7 +511,7 @@ class PersonalFmSession extends ChangeNotifier {
         songPoolId: songPoolId,
         remainSongCount: 0,
       );
-      if (_disposed) return false;
+      if (!belongsToSession()) return false;
       if (!batch.ok) {
         _lastError = '推荐暂不可用（status=${batch.status}）';
         _blockedEpoch = epoch;
@@ -464,22 +519,27 @@ class PersonalFmSession extends ChangeNotifier {
         return false;
       }
       _merge(batch.tracks);
-      if (upcoming.isEmpty) _blockedEpoch = epoch;
+      if (!hasCandidates) _blockedEpoch = epoch;
       _lastError = null;
       _notify();
       return true;
     } on TimeoutException {
-      if (_disposed) return false;
+      if (!belongsToSession()) return false;
       _lastError = '推荐请求超时';
       _blockedEpoch = epoch;
       _notify();
       return false;
     } catch (error) {
-      if (_disposed) return false;
+      if (!belongsToSession()) return false;
       _lastError = error.toString();
       _blockedEpoch = epoch;
       _notify();
       return false;
+    } finally {
+      debugPrint(
+        '[KA Music][fm] refill reason=$reason '
+        'requests=$_requestCount elapsedMs=${watch.elapsedMilliseconds}',
+      );
     }
   }
 
@@ -489,7 +549,10 @@ class PersonalFmSession extends ChangeNotifier {
       for (final track in _candidates) track.dedupeKey,
       if (_current != null) _current!.dedupeKey,
       ..._recent,
+      for (final track in _back) track.dedupeKey,
+      for (final track in _forward) track.dedupeKey,
       ..._disliked,
+      ..._excluded,
     };
     for (final track in incoming) {
       if (_candidates.length >= maxCandidates) break;
@@ -539,6 +602,10 @@ class PersonalFmSession extends ChangeNotifier {
   void _notify() {
     if (_disposed) return;
     notifyListeners();
+  }
+
+  void allowPendingFeedbackToFinish() {
+    _finishPendingFeedback = true;
   }
 
   @override
