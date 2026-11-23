@@ -120,6 +120,7 @@ Future<void> _pump(
   WidgetTester tester,
   _RadioPlayer player, {
   Size size = const Size(400, 800),
+  TextScaler textScaler = TextScaler.noScaling,
   ThemeMode themeMode = ThemeMode.light,
 }) async {
   tester.view.physicalSize = size;
@@ -128,6 +129,10 @@ Future<void> _pump(
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
     MaterialApp(
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: child!,
+      ),
       themeMode: themeMode,
       theme: ThemeData.light(),
       darkTheme: ThemeData.dark(),
@@ -156,21 +161,68 @@ void main() {
     expect(player.playCalls, 0);
   });
 
-  testWidgets('未开播页面的布局与播放中一致：入口卡片在上，接下来在下', (tester) async {
-    final idle = _RadioPlayer(tracked: false);
-    final playing = _RadioPlayer();
-    addTearDown(idle.dispose);
-    addTearDown(playing.dispose);
+  testWidgets('竖屏主卡和队列在开播与暂停时保持位置和尺寸', (tester) async {
+    final player = _RadioPlayer(tracked: false, withCovers: true);
+    addTearDown(player.dispose);
+    await _pump(tester, player);
+    await tester.pump();
 
-    await _pump(tester, idle);
-    final idleCard = tester.getTopLeft(find.byType(FilledButton)).dy;
-    final idleList = tester.getTopLeft(find.text('接下来')).dy;
-    expect(idleCard, lessThan(idleList));
+    final panel = find.byKey(
+      const ValueKey('personal-fm-compact-control-panel'),
+    );
+    final background = find.byKey(
+      const ValueKey('personal-fm-compact-control-artwork'),
+    );
+    final card = tester.getRect(panel);
+    final listTop = tester.getTopLeft(find.text('为你推荐')).dy;
+    final idleCover = tester.getRect(find.byIcon(Icons.sensors_rounded));
+    expect(card.bottom, lessThan(listTop));
+    expect(background, findsNothing);
+    expect(find.text('开始播放'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('电台曲目 2')).dy,
+      greaterThan(tester.getTopLeft(find.text('电台曲目 1')).dy),
+    );
 
-    await _pump(tester, playing);
-    final playingCard = tester.getTopLeft(find.byTooltip('下一首')).dy;
-    final playingList = tester.getTopLeft(find.text('接下来')).dy;
-    expect(playingCard, lessThan(playingList));
+    player.tracked = true;
+    player.notifyListeners();
+    await tester.pump();
+    expect(tester.getRect(panel), card);
+    expect(tester.getRect(background), card);
+    final cover = find.descendant(of: panel, matching: find.byType(Artwork));
+    expect(tester.getRect(cover), idleCover);
+    expect(tester.getTopLeft(find.text('接下来')).dy, listTop);
+    expect(
+      tester.getTopLeft(find.byTooltip('暂停')).dx,
+      greaterThan(tester.getRect(cover).right),
+    );
+
+    await tester.tap(find.byTooltip('暂停'));
+    await tester.pump();
+    expect(find.text('已暂停'), findsOneWidget);
+    expect(find.byTooltip('播放'), findsOneWidget);
+    expect(tester.getRect(panel), card);
+    expect(tester.getTopLeft(find.text('接下来')).dy, listTop);
+  });
+
+  testWidgets('竖屏平板队列按行排为双列并可直接点播', (tester) async {
+    final player = _RadioPlayer(tracked: false);
+    addTearDown(player.dispose);
+    await _pump(tester, player, size: const Size(720, 1000));
+
+    Offset titlePosition(int index) =>
+        tester.getTopLeft(find.text('电台曲目 $index'));
+
+    expect(titlePosition(1).dy, titlePosition(2).dy);
+    expect(titlePosition(2).dx, greaterThan(titlePosition(1).dx));
+    expect(titlePosition(3).dx, titlePosition(1).dx);
+    expect(titlePosition(3).dy, greaterThan(titlePosition(1).dy));
+    expect(titlePosition(5).dx, titlePosition(1).dx);
+
+    await tester.tap(find.text('电台曲目 2'));
+    await tester.pump();
+    expect(player.played, player.songs[2]);
+    expect(player.playCalls, 1);
   });
 
   testWidgets('待播列表随切歌更新', (tester) async {
@@ -294,7 +346,7 @@ void main() {
     expect(player.playCalls, 1);
   });
 
-  testWidgets('横屏播放中首张方形封面高亮当前曲目', (tester) async {
+  testWidgets('横屏首张方形封面高亮当前曲目并显示歌名', (tester) async {
     final player = _RadioPlayer();
     addTearDown(player.dispose);
 
@@ -304,7 +356,15 @@ void main() {
       find.byKey(const ValueKey('personal-fm-record-current')),
       findsOneWidget,
     );
-    expect(find.text('正在播放'), findsOneWidget);
+    final stage = find.byKey(const ValueKey('personal-fm-wide-stage'));
+    final title = find.descendant(of: stage, matching: find.text('电台曲目 0'));
+    expect(title, findsOneWidget);
+    final primary = Theme.of(tester.element(title)).colorScheme.primary;
+    expect(tester.widget<Text>(title).style?.color, primary);
+    expect(
+      find.descendant(of: stage, matching: find.text('当前曲目')),
+      findsNothing,
+    );
     expect(find.text('电台曲目 1'), findsOneWidget);
     expect(find.text('电台曲目 4'), findsNothing);
     expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
@@ -321,6 +381,7 @@ void main() {
     await _pump(tester, player, size: const Size(1000, 600));
 
     expect(find.text('开始播放'), findsOneWidget);
+    expect(find.text('也可以点一张封面开始听'), findsNothing);
     expect(find.text('为你推荐'), findsOneWidget);
     expect(find.text('接下来'), findsNothing);
     expect(
@@ -338,17 +399,22 @@ void main() {
     expect(player.played!.title, '电台曲目 1');
   });
 
-  testWidgets('横屏控制卡随暂停切换状态文案', (tester) async {
+  testWidgets('横屏控制卡以图标切换播放和暂停状态', (tester) async {
     final player = _RadioPlayer();
     addTearDown(player.dispose);
 
     await _pump(tester, player, size: const Size(1000, 600));
-    expect(find.text('正在播放'), findsOneWidget);
+    expect(find.text('正在播放'), findsNothing);
+    for (final caption in ['暂停', '下一首', '喜欢', '不喜欢']) {
+      expect(find.text(caption), findsNothing);
+      expect(find.byTooltip(caption), findsOneWidget);
+    }
 
     await tester.tap(find.byTooltip('暂停'));
     await tester.pump();
 
-    expect(find.text('已暂停'), findsOneWidget);
+    expect(find.text('已暂停'), findsNothing);
+    expect(find.text('播放'), findsNothing);
     expect(find.byTooltip('播放'), findsOneWidget);
   });
 
@@ -379,13 +445,13 @@ void main() {
     player.isPlaying = true;
     player.notifyListeners();
     await tester.pump();
-    expect(find.text('正在播放'), findsOneWidget);
+    expect(find.byTooltip('暂停'), findsOneWidget);
     expect(details, findsOneWidget);
     expect(tester.getRect(control), idleRect);
 
     await tester.tap(find.byTooltip('暂停'));
     await tester.pump();
-    expect(find.text('已暂停'), findsOneWidget);
+    expect(find.byTooltip('播放'), findsOneWidget);
     expect(tester.getRect(control), idleRect);
   });
 
@@ -499,7 +565,7 @@ void main() {
       (tester.widget<Image>(cover).image as ResizeImage).imageProvider,
       CachedArtworkImage(player.songs[1].coverUrl!),
     );
-    expect(find.text('电台曲目 1'), findsOneWidget);
+    expect(find.text('电台曲目 1'), findsNWidgets(2));
   });
 
   testWidgets('横屏最窄宽屏下不溢出', (tester) async {
@@ -545,13 +611,44 @@ void main() {
     expect(find.text('开始播放'), findsOneWidget);
   });
 
-  testWidgets('窄屏下候选列表不横向溢出', (tester) async {
-    final player = _RadioPlayer();
+  testWidgets('窄屏大字模式仍可操作主卡和候选列表', (tester) async {
+    final player = _RadioPlayer(tracked: false);
     addTearDown(player.dispose);
 
-    await _pump(tester, player, size: const Size(320, 640));
+    await _pump(
+      tester,
+      player,
+      size: const Size(320, 640),
+      textScaler: const TextScaler.linear(2),
+    );
     await tester.pump();
+    final panel = find.byKey(
+      const ValueKey('personal-fm-compact-control-panel'),
+    );
+    final card = tester.getRect(panel);
 
+    player.tracked = true;
+    player.notifyListeners();
+    await tester.pump();
+    expect(tester.getRect(panel), card);
+    final actions = [
+      for (final label in ['暂停', '下一首', '喜欢', '不喜欢'])
+        tester.getRect(
+          find.byWidgetPredicate(
+            (widget) => widget is IconButton && widget.tooltip == label,
+          ),
+        ),
+    ];
+    for (final action in actions) {
+      expect(action.width, closeTo(48, .01));
+      expect(action.height, closeTo(48, .01));
+      expect(card.contains(action.center), isTrue);
+    }
+    expect(actions[0].top, actions[1].top);
+    expect(actions[2].top, greaterThan(actions[0].top));
+    await tester.tapAt(actions.first.centerLeft + const Offset(2, 0));
+    await tester.pump();
+    expect(player.isPlaying, isFalse);
     expect(tester.takeException(), isNull);
   });
 

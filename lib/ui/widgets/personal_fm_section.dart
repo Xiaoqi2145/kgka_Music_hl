@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../config/app_config.dart';
@@ -7,6 +9,7 @@ import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import '../../models/personal_fm_models.dart';
 import '../../services/personal_fm_session.dart';
+import '../adaptive_layout.dart';
 import 'artwork.dart';
 import 'cached_artwork_image.dart';
 import 'toast.dart';
@@ -254,7 +257,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
         builder: (context, constraints) =>
             landscape && constraints.maxWidth >= 680
             ? _wideLayout(context, current, upcoming)
-            : _compactLayout(context, current, upcoming),
+            : _compactLayout(context, current, upcoming, constraints.maxWidth),
       ),
     );
   }
@@ -263,23 +266,37 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     BuildContext context,
     PersonalFmTrack? current,
     List<PersonalFmUpcomingItem> upcoming,
+    double width,
   ) {
+    final theme = Theme.of(context);
+    final song = current?.song;
+    final startError = _startError;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _hero(context, compact: true),
-        if (current == null) ...[
-          // 未开播时布局与播放中一致：上面是与「当前播放」等位的入口卡片，
-          // 下面是「接下来」。顺序颠倒会让自动取到候选后的页面和播放中的
-          // 页面看起来像两个不同的页面。
-          _startCard(context),
-          const SizedBox(height: 20),
-          _upNext(context, upcoming),
-        ] else ...[
-          _nowPlaying(context, current),
-          const SizedBox(height: 20),
-          _upNext(context, upcoming),
+        _compactControlPanel(
+          context,
+          song,
+          width: width,
+          hasRecommendations: upcoming.isNotEmpty,
+        ),
+        if (song == null && startError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            startError,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.error,
+            ),
+          ),
         ],
+        const SizedBox(height: 20),
+        _upNext(
+          context,
+          upcoming,
+          hasCurrent: song != null,
+          twoColumns: AdaptiveLayout.isTablet(context) && width >= 460,
+        ),
       ],
     );
   }
@@ -385,11 +402,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
               key: const ValueKey('personal-fm-wide-control-panel'),
               width: controlWidth,
               height: controlHeight,
-              child: _wideControlPanel(
-                context,
-                current,
-                hasRecommendations: items.isNotEmpty,
-              ),
+              child: _wideControlPanel(context, current),
             ),
             const SizedBox(width: columnGap),
             Expanded(
@@ -435,11 +448,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     );
   }
 
-  Widget _wideControlPanel(
-    BuildContext context,
-    PersonalFmTrack? current, {
-    required bool hasRecommendations,
-  }) {
+  Widget _wideControlPanel(BuildContext context, PersonalFmTrack? current) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final player = widget.player;
@@ -448,7 +457,6 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     // 当前曲目的封面直接铺在操作区底部，遮罩为浅色封面提供文字对比度。
     final hasCover = coverUrl != null && coverUrl.isNotEmpty;
     final foreground = hasCover ? Colors.white : scheme.onSurface;
-    final secondary = hasCover ? Colors.white : scheme.onSurfaceVariant;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
@@ -457,40 +465,9 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
         children: [
           if (hasCover)
             Positioned.fill(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final decodeWidth = artworkDecodePixels(
-                    size: constraints.maxWidth,
-                    devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
-                  );
-                  return Stack(
-                    key: const ValueKey('personal-fm-wide-control-artwork'),
-                    fit: StackFit.expand,
-                    children: [
-                      const ColoredBox(color: Color(0xFF202A3B)),
-                      Image(
-                        image: ResizeImage.resizeIfNeeded(
-                          decodeWidth,
-                          null,
-                          CachedArtworkImage(coverUrl),
-                        ),
-                        fit: BoxFit.cover,
-                        excludeFromSemantics: true,
-                        errorBuilder: (context, error, stackTrace) =>
-                            const SizedBox.shrink(),
-                      ),
-                      const DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [Color(0x99080D18), Color(0xC4080D18)],
-                          ),
-                        ),
-                      ),
-                    ],
-                  );
-                },
+              child: _controlArtwork(
+                coverUrl,
+                key: const ValueKey('personal-fm-wide-control-artwork'),
               ),
             ),
           DecoratedBox(
@@ -513,41 +490,17 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '红心电台',
-                            style: theme.textTheme.headlineSmall?.copyWith(
-                              color: foreground,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          if (song != null || hasRecommendations) ...[
-                            const SizedBox(height: 5),
-                            Text(
-                              song == null
-                                  ? '也可以点一张封面开始听'
-                                  : player.isPlaying
-                                  ? '正在播放'
-                                  : '已暂停',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: secondary,
-                              ),
-                            ),
-                          ],
-                        ],
+                      Text(
+                        '红心电台',
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          color: foreground,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                       Padding(
                         padding: const EdgeInsets.only(top: 16),
                         child: song != null
-                            ? _wideActions(
-                                context,
-                                song,
-                                canAct: !player.isPreparing,
-                                liked: widget.auth.isLiked(song),
-                                onArtwork: hasCover,
-                              )
+                            ? _wideActions(context, song, onArtwork: hasCover)
                             : Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -664,17 +617,13 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     );
   }
 
-  Widget _wideActions(
-    BuildContext context,
+  List<({String tooltip, IconData icon, VoidCallback? onTap})> _playbackActions(
     Song song, {
-    required bool canAct,
     required bool liked,
-    required bool onArtwork,
   }) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     final player = widget.player;
-    final actions = <({String tooltip, IconData icon, VoidCallback? onTap})>[
+    final canAct = !player.isPreparing;
+    return [
       (
         tooltip: player.isPlaying ? '暂停' : '播放',
         icon: player.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
@@ -700,63 +649,59 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
             : null,
       ),
     ];
+  }
+
+  Widget _wideActions(
+    BuildContext context,
+    Song song, {
+    required bool onArtwork,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final liked = widget.auth.isLiked(song);
+    final actions = _playbackActions(song, liked: liked);
     return Row(
       children: [
         for (var index = 0; index < actions.length; index++)
           Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (index == 0)
-                  IconButton.filled(
-                    tooltip: actions[index].tooltip,
-                    onPressed: actions[index].onTap,
-                    icon: Icon(actions[index].icon, size: 22),
-                    style: IconButton.styleFrom(
-                      fixedSize: const Size.square(40),
-                      shape: const CircleBorder(),
-                      backgroundColor: scheme.primary,
-                      foregroundColor: scheme.onPrimary,
+            child: Center(
+              child: index == 0
+                  ? IconButton.filled(
+                      tooltip: actions[index].tooltip,
+                      onPressed: actions[index].onTap,
+                      icon: Icon(actions[index].icon, size: 22),
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size.square(40),
+                        shape: const CircleBorder(),
+                        backgroundColor: scheme.primary,
+                        foregroundColor: scheme.onPrimary,
+                      ),
+                    )
+                  : IconButton(
+                      tooltip: actions[index].tooltip,
+                      onPressed: actions[index].onTap,
+                      icon: Icon(
+                        actions[index].icon,
+                        size: 22,
+                        color:
+                            actions[index].onTap != null && index == 2 && liked
+                            ? (onArtwork
+                                  ? scheme.primaryContainer
+                                  : scheme.primary)
+                            : null,
+                      ),
+                      style: IconButton.styleFrom(
+                        fixedSize: const Size.square(36),
+                        backgroundColor: onArtwork
+                            ? Colors.white.withValues(alpha: .16)
+                            : scheme.surface,
+                        foregroundColor: onArtwork
+                            ? Colors.white
+                            : scheme.onSurface,
+                        disabledForegroundColor: onArtwork
+                            ? Colors.white38
+                            : null,
+                      ),
                     ),
-                  )
-                else
-                  IconButton(
-                    tooltip: actions[index].tooltip,
-                    onPressed: actions[index].onTap,
-                    icon: Icon(
-                      actions[index].icon,
-                      size: 22,
-                      color: actions[index].onTap != null && index == 2 && liked
-                          ? (onArtwork
-                                ? scheme.primaryContainer
-                                : scheme.primary)
-                          : null,
-                    ),
-                    style: IconButton.styleFrom(
-                      fixedSize: const Size.square(36),
-                      backgroundColor: onArtwork
-                          ? Colors.white.withValues(alpha: .16)
-                          : scheme.surface,
-                      foregroundColor: onArtwork
-                          ? Colors.white
-                          : scheme.onSurface,
-                      disabledForegroundColor: onArtwork
-                          ? Colors.white38
-                          : null,
-                    ),
-                  ),
-                const SizedBox(height: 2),
-                Text(
-                  actions[index].tooltip == '已标记不喜欢'
-                      ? '不喜欢'
-                      : actions[index].tooltip,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: onArtwork ? Colors.white : scheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
             ),
           ),
       ],
@@ -830,7 +775,9 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                       padding: const EdgeInsets.symmetric(horizontal: 3),
                       child: hasCurrent && index == 0
                           ? Text(
-                              '当前曲目',
+                              songs[index].title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               textAlign: TextAlign.center,
                               style: theme.textTheme.labelLarge?.copyWith(
                                 color: scheme.primary,
@@ -1023,155 +970,304 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     return personalFmCardColor(Theme.of(context).colorScheme, frosted: frosted);
   }
 
-  /// 未开播：一张与首页其它区块同材质的入口卡片。
-  Widget _startCard(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    // 只留一个主操作：入口卡片不再重复标题文案，说明信息由
-    // 上方标题区与下方候选列表承担。
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _cardColor(context),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_startError case final error?) ...[
-            Text(
-              error,
-              style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
+  Widget _controlArtwork(String url, {required Key key}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final decodeWidth = artworkDecodePixels(
+          size: constraints.maxWidth,
+          devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+        );
+        return Stack(
+          key: key,
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: Color(0xFF202A3B)),
+            Image(
+              image: ResizeImage.resizeIfNeeded(
+                decodeWidth,
+                null,
+                CachedArtworkImage(url),
+              ),
+              fit: BoxFit.cover,
+              excludeFromSemantics: true,
+              errorBuilder: (context, error, stackTrace) =>
+                  const SizedBox.shrink(),
             ),
-            const SizedBox(height: 12),
-          ],
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _starting ? null : _start,
-              icon: _starting
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow_rounded),
-              label: const Text('开始播放'),
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0x99080D18), Color(0xC4080D18)],
+                ),
               ),
             ),
-          ),
-        ],
-      ),
+          ],
+        );
+      },
     );
   }
 
-  /// 正在播放：封面 + 曲目信息 + 四个操作，材质与首页其它卡片一致。
-  Widget _nowPlaying(BuildContext context, PersonalFmTrack track) {
+  Widget _compactControlPanel(
+    BuildContext context,
+    Song? song, {
+    required double width,
+    required bool hasRecommendations,
+  }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final player = widget.player;
-    final song = track.song;
-    final liked = widget.auth.isLiked(song);
-    final canAct = !player.isPreparing;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      decoration: BoxDecoration(
-        color: _cardColor(context),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
+    final coverUrl = song?.coverUrl;
+    final hasCover = coverUrl != null && coverUrl.isNotEmpty;
+    final foreground = hasCover ? Colors.white : scheme.onSurface;
+    final secondary = hasCover ? Colors.white : scheme.onSurfaceVariant;
+    final radius = BorderRadius.circular(18);
+    const padding = 14.0;
+    const coverGap = 14.0;
+    const actionSize = 48.0;
+    final titleStyle = theme.textTheme.titleMedium!.copyWith(
+      fontSize: 18,
+      height: 1.25,
+      fontWeight: FontWeight.w800,
+      color: foreground,
+    );
+    final secondaryStyle = theme.textTheme.bodySmall!.copyWith(
+      height: 1.3,
+      color: secondary,
+    );
+    final textScaler = MediaQuery.textScalerOf(context);
+    final innerWidth = width - 2 * padding;
+    final preferredCover = (width * .28).clamp(72.0, 128.0);
+    final singleActionRow = innerWidth >= 4 * actionSize + coverGap + 80;
+    final coverSize = math
+        .min(
+          preferredCover,
+          innerWidth - coverGap - (singleActionRow ? 4 : 2) * actionSize,
+        )
+        .clamp(0.0, preferredCover);
+    final buttonHeight = math.max(
+      actionSize,
+      textScaler.scale(theme.textTheme.labelLarge!.fontSize!) * 1.4 + 12,
+    );
+    final actionHeight = math.max(
+      buttonHeight,
+      singleActionRow ? actionSize : 2 * actionSize,
+    );
+    // 两种状态共用操作区与曲目信息区，换歌或暂停时卡片和队列不会跳动。
+    final detailHeight =
+        textScaler.scale(titleStyle.fontSize!) * titleStyle.height! +
+        2 *
+            textScaler.scale(secondaryStyle.fontSize!) *
+            secondaryStyle.height! +
+        8;
+    final contentHeight = math.max(coverSize, detailHeight + 4 + actionHeight);
+
+    return ClipRRect(
+      key: const ValueKey('personal-fm-compact-control-panel'),
+      borderRadius: radius,
+      child: Stack(
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Artwork(url: song.coverUrl, size: 84, borderRadius: 12),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+          if (hasCover)
+            Positioned.fill(
+              child: _controlArtwork(
+                coverUrl,
+                key: const ValueKey('personal-fm-compact-control-artwork'),
+              ),
+            ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: hasCover ? null : _cardColor(context),
+              borderRadius: radius,
+              border: Border.all(
+                color: hasCover ? Colors.white24 : scheme.outlineVariant,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(padding),
+              child: SizedBox(
+                height: contentHeight,
+                child: Row(
                   children: [
-                    Text(
-                      song.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                        height: 1.25,
-                        color: scheme.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      song.artist,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                    if (song == null)
+                      SizedBox.square(
+                        dimension: coverSize,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                scheme.surfaceContainerLow,
+                                scheme.primaryContainer,
+                              ],
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.sensors_rounded,
+                            color: scheme.primary,
+                          ),
+                        ),
+                      )
+                    else
+                      Artwork(url: coverUrl, size: coverSize, borderRadius: 12),
+                    const SizedBox(width: coverGap),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (song != null) ...[
+                                  Text(
+                                    player.isPlaying ? '正在播放' : '已暂停',
+                                    style: secondaryStyle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    strutStyle: StrutStyle.fromTextStyle(
+                                      secondaryStyle,
+                                      forceStrutHeight: true,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                ],
+                                Text(
+                                  song?.title ?? '红心电台',
+                                  style: titleStyle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  strutStyle: StrutStyle.fromTextStyle(
+                                    titleStyle,
+                                    forceStrutHeight: true,
+                                  ),
+                                ),
+                                if (song != null || hasRecommendations) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    song?.artist ?? '也可以点封面直接播放',
+                                    style: secondaryStyle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    strutStyle: StrutStyle.fromTextStyle(
+                                      secondaryStyle,
+                                      forceStrutHeight: true,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          SizedBox(
+                            height: actionHeight,
+                            child: Align(
+                              alignment: Alignment.topLeft,
+                              child: song == null
+                                  ? FilledButton.icon(
+                                      onPressed: _starting || player.isPreparing
+                                          ? null
+                                          : _start,
+                                      icon: _starting
+                                          ? const SizedBox.square(
+                                              dimension: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(
+                                              Icons.play_arrow_rounded,
+                                              size: 20,
+                                            ),
+                                      label: const FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text('开始播放'),
+                                      ),
+                                      style: FilledButton.styleFrom(
+                                        minimumSize: Size(0, buttonHeight),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                      ),
+                                    )
+                                  : _compactActions(
+                                      context,
+                                      song,
+                                      onArtwork: hasCover,
+                                      rowWidth: singleActionRow
+                                          ? 4 * actionSize
+                                          : 2 * actionSize,
+                                    ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _GhostAction(
-                tooltip: player.personalFmCurrentDisliked ? '已标记不喜欢' : '不喜欢',
-                icon: Icons.thumb_down_alt_outlined,
-                onPressed: canAct && !player.personalFmCurrentDisliked
-                    ? player.dislikePersonalFmCurrent
-                    : null,
-              ),
-              IconButton.filled(
-                tooltip: player.isPlaying ? '暂停' : '播放',
-                onPressed: canAct ? player.togglePlay : null,
-                iconSize: 30,
-                style: IconButton.styleFrom(
-                  fixedSize: const Size.square(58),
-                  shape: const CircleBorder(),
-                ),
-                icon: Icon(
-                  player.isPlaying
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
-                ),
-              ),
-              _GhostAction(
-                tooltip: '下一首',
-                icon: Icons.skip_next_rounded,
-                onPressed: canAct ? player.next : null,
-              ),
-              _GhostAction(
-                tooltip: liked ? '取消喜欢' : '喜欢',
-                icon: liked
-                    ? Icons.favorite_rounded
-                    : Icons.favorite_border_rounded,
-                color: liked ? scheme.primary : scheme.onSurface,
-                onPressed: _liking || song.source != SongSource.kugou
-                    ? null
-                    : () => _toggleLike(song),
-              ),
-            ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  /// 接下来：与「今日推荐」同样的行样式，标题用区块头字重。
+  Widget _compactActions(
+    BuildContext context,
+    Song song, {
+    required bool onArtwork,
+    required double rowWidth,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final liked = widget.auth.isLiked(song);
+    final actions = _playbackActions(song, liked: liked);
+    return SizedBox(
+      width: rowWidth,
+      child: Wrap(
+        children: [
+          for (var index = 0; index < actions.length; index++)
+            IconButton.filled(
+              tooltip: actions[index].tooltip,
+              onPressed: actions[index].onTap,
+              icon: Icon(actions[index].icon),
+              style: IconButton.styleFrom(
+                fixedSize: const Size.square(38),
+                minimumSize: Size.zero,
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.standard,
+                tapTargetSize: MaterialTapTargetSize.padded,
+                shape: const CircleBorder(),
+                backgroundColor: index == 0
+                    ? scheme.primary
+                    : onArtwork
+                    ? Colors.white.withValues(alpha: .18)
+                    : scheme.surfaceContainerHighest,
+                foregroundColor: index == 0
+                    ? scheme.onPrimary
+                    : index == 2 && liked
+                    ? (onArtwork ? scheme.primaryContainer : scheme.primary)
+                    : (onArtwork ? Colors.white : scheme.onSurface),
+                disabledForegroundColor: onArtwork ? Colors.white38 : null,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 与「今日推荐」一样，歌曲行直接放在页面背景上。
   ///
   /// 列表区分三种来源：手动插播、回听暂存、候选池。数量说明放在标题右侧，
   /// 让「还有几首」在不滚动的情况下可知。每一行都能直接点播。
-  Widget _upNext(BuildContext context, List<PersonalFmUpcomingItem> entries) {
+  Widget _upNext(
+    BuildContext context,
+    List<PersonalFmUpcomingItem> entries, {
+    required bool hasCurrent,
+    required bool twoColumns,
+  }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final player = widget.player;
@@ -1183,17 +1279,28 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     final pending = session?.pendingCount ?? 0;
     final total = pending > entries.length ? pending : entries.length;
     final error = _recommendError;
+    final rows = [
+      for (final entry in entries)
+        _UpNextRow(
+          item: entry,
+          enabled: !player.isPreparing,
+          preparing: player.isPreparingSong(entry.song),
+          onTap: () => _select(entry),
+        ),
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Text(
-              '接下来',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: scheme.onSurface,
+            Expanded(
+              child: Text(
+                hasCurrent ? '接下来' : '为你推荐',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.onSurface,
+                ),
               ),
             ),
             if (entries.isNotEmpty) ...[
@@ -1205,23 +1312,33 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                 ),
               ),
             ],
-            const Spacer(),
-            if (loading && entries.isNotEmpty)
+            if (loading && entries.isNotEmpty) ...[
+              const SizedBox(width: 8),
               const SizedBox.square(
                 dimension: 16,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
+            ],
           ],
         ),
         const SizedBox(height: 6),
         if (entries.isNotEmpty) ...[
-          for (final entry in entries)
-            _UpNextRow(
-              item: entry,
-              enabled: !player.isPreparing,
-              preparing: player.isPreparingSong(entry.song),
-              onTap: () => _select(entry),
-            ),
+          if (twoColumns)
+            for (var index = 0; index < rows.length; index += 2)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: rows[index]),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: index + 1 < rows.length
+                        ? rows[index + 1]
+                        : const SizedBox.shrink(),
+                  ),
+                ],
+              )
+          else
+            ...rows,
           if (error != null) ...[
             const SizedBox(height: 4),
             Text(
@@ -1248,10 +1365,12 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
                 const SizedBox(width: 10),
-                Text(
-                  '正在获取推荐…',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
+                Flexible(
+                  child: Text(
+                    '正在获取推荐…',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],
@@ -1273,31 +1392,6 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
           ),
         ],
       ],
-    );
-  }
-}
-
-/// 圆形幽灵按钮：播放卡片里的次要操作，与主按钮拉开层级。
-class _GhostAction extends StatelessWidget {
-  const _GhostAction({
-    required this.tooltip,
-    required this.icon,
-    required this.onPressed,
-    this.color,
-  });
-
-  final String tooltip;
-  final IconData icon;
-  final VoidCallback? onPressed;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: tooltip,
-      onPressed: onPressed,
-      iconSize: 24,
-      icon: Icon(icon, color: color),
     );
   }
 }
