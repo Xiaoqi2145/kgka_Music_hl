@@ -5,24 +5,32 @@ import 'package:kgka_music_hl/models/music_models.dart';
 import 'package:kgka_music_hl/models/personal_fm_models.dart';
 import 'package:kgka_music_hl/services/personal_fm_session.dart';
 import 'package:kgka_music_hl/ui/widgets/artwork.dart';
+import 'package:kgka_music_hl/ui/widgets/cached_artwork_image.dart';
 import 'package:kgka_music_hl/ui/widgets/personal_fm_section.dart';
 
 import 'player_quick_actions_test_support.dart';
 
 class _RadioPlayer extends FakePlayer {
-  _RadioPlayer({this.tracked = true, this.preparing = false});
+  _RadioPlayer({
+    this.tracked = true,
+    this.preparing = false,
+    bool withCovers = false,
+  }) : songs = List.generate(
+         7,
+         (index) => Song(
+           id: '$index',
+           title: '电台曲目 $index',
+           artist: '电台艺人',
+           hash: 'hash-$index',
+           coverUrl: withCovers
+               ? 'https://example.test/cover-$index.png'
+               : null,
+         ),
+       );
 
-  final bool tracked;
+  bool tracked;
   bool preparing;
-  final songs = List.generate(
-    7,
-    (index) => Song(
-      id: '$index',
-      title: '电台曲目 $index',
-      artist: '电台艺人',
-      hash: 'hash-$index',
-    ),
-  );
+  final List<Song> songs;
   var index = 0;
   var disliked = false;
   var stopped = false;
@@ -112,6 +120,7 @@ Future<void> _pump(
   WidgetTester tester,
   _RadioPlayer player, {
   Size size = const Size(400, 800),
+  ThemeMode themeMode = ThemeMode.light,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -119,6 +128,9 @@ Future<void> _pump(
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
     MaterialApp(
+      themeMode: themeMode,
+      theme: ThemeData.light(),
+      darkTheme: ThemeData.dark(),
       home: Scaffold(
         body: SingleChildScrollView(
           child: PersonalFmSection(
@@ -273,12 +285,264 @@ void main() {
     addTearDown(player.dispose);
 
     await _pump(tester, player, size: const Size(1000, 600));
-    // 第 5 首只出现在「接下来」列表里（横向封面栏只放前 4 首），
-    // 用它验证待播列表本身也是可点选的入口。
-    await tester.tap(find.text('电台曲目 5'));
+    expect(find.text('电台曲目 1'), findsOneWidget);
+    expect(find.text('电台曲目 4'), findsNothing);
+    await tester.tap(find.text('电台曲目 2'));
     await tester.pump();
 
-    expect(player.played!.title, '电台曲目 5');
+    expect(player.played!.title, '电台曲目 2');
+    expect(player.playCalls, 1);
+  });
+
+  testWidgets('横屏播放中首张方形封面高亮当前曲目', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    expect(
+      find.byKey(const ValueKey('personal-fm-record-current')),
+      findsOneWidget,
+    );
+    expect(find.text('正在播放'), findsOneWidget);
+    expect(find.text('电台曲目 1'), findsOneWidget);
+    expect(find.text('电台曲目 4'), findsNothing);
+    expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('personal-fm-record-current')));
+    await tester.pump();
+    expect(player.playCalls, 0);
+  });
+
+  testWidgets('横屏未开播时在封面带内点选推荐', (tester) async {
+    final player = _RadioPlayer(tracked: false);
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    expect(find.text('开始播放'), findsOneWidget);
+    expect(find.text('为你推荐'), findsOneWidget);
+    expect(find.text('接下来'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('personal-fm-wide-stage')),
+        matching: find.byTooltip('播放'),
+      ),
+      findsNothing,
+    );
+    expect(tester.getSize(find.text('为你推荐')).width, isPositive);
+
+    await tester.tap(find.text('电台曲目 1'));
+    await tester.pump();
+
+    expect(player.played!.title, '电台曲目 1');
+  });
+
+  testWidgets('横屏控制卡随暂停切换状态文案', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+    expect(find.text('正在播放'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('暂停'));
+    await tester.pump();
+
+    expect(find.text('已暂停'), findsOneWidget);
+    expect(find.byTooltip('播放'), findsOneWidget);
+  });
+
+  testWidgets('横屏控制卡顶边对齐且在开播和暂停时尺寸不变', (tester) async {
+    final player = _RadioPlayer(tracked: false)..isPlaying = false;
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    final stage = find.byKey(const ValueKey('personal-fm-wide-stage'));
+    final control = find.byKey(
+      const ValueKey('personal-fm-wide-control-panel'),
+    );
+    final details = find.byKey(
+      const ValueKey('personal-fm-wide-track-details'),
+    );
+    final idleRect = tester.getRect(control);
+    expect(idleRect.top, tester.getTopLeft(find.text('为你推荐')).dy);
+    expect(idleRect.top, tester.getTopLeft(stage).dy);
+    expect(idleRect.bottom, closeTo(tester.getBottomLeft(stage).dy, 4));
+    expect(details, findsNothing);
+    expect(
+      find.byKey(const ValueKey('personal-fm-wide-control-artwork')),
+      findsNothing,
+    );
+
+    player.tracked = true;
+    player.isPlaying = true;
+    player.notifyListeners();
+    await tester.pump();
+    expect(find.text('正在播放'), findsOneWidget);
+    expect(details, findsOneWidget);
+    expect(tester.getRect(control), idleRect);
+
+    await tester.tap(find.byTooltip('暂停'));
+    await tester.pump();
+    expect(find.text('已暂停'), findsOneWidget);
+    expect(tester.getRect(control), idleRect);
+  });
+
+  testWidgets('横屏当前曲目详情独立显示在播放控制下方', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    final stage = find.byKey(const ValueKey('personal-fm-wide-stage'));
+    final details = find.byKey(
+      const ValueKey('personal-fm-wide-track-details'),
+    );
+    final cover = find.byKey(const ValueKey('personal-fm-wide-current-cover'));
+    final title = find.byKey(const ValueKey('personal-fm-wide-current-title'));
+    final pause = find.byTooltip('暂停');
+    expect(find.descendant(of: details, matching: title), findsOneWidget);
+    expect(
+      tester.getTopLeft(details).dy,
+      greaterThan(tester.getBottomLeft(stage).dy),
+    );
+    expect(
+      tester.getTopLeft(cover).dy,
+      greaterThan(tester.getBottomLeft(pause).dy),
+    );
+    final size = tester.getSize(cover);
+    expect(size.width, closeTo(size.height, .01));
+  });
+
+  testWidgets('横屏右侧方形封面互相重叠，点露出的封面可切歌', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    final stage = find.byKey(const ValueKey('personal-fm-wide-stage'));
+    final rects =
+        tester
+            .widgetList<Artwork>(
+              find.descendant(of: stage, matching: find.byType(Artwork)),
+            )
+            .map((widget) => tester.getRect(find.byWidget(widget)))
+            .toList()
+          ..sort((a, b) => a.left.compareTo(b.left));
+    expect(rects, hasLength(4));
+    expect(rects[0].width, closeTo(rects[0].height, .01));
+    expect(rects[0].overlaps(rects[1]), isTrue);
+    expect(rects[1].left, greaterThan(rects[0].left));
+
+    await tester.tapAt(rects[0].intersect(rects[1]).center);
+    await tester.pump();
+    expect(player.playCalls, 0);
+
+    final coverTwo = rects[1];
+    final exposed = Offset(coverTwo.right - 20, coverTwo.center.dy);
+    expect(rects[0].contains(exposed), isFalse);
+    await tester.tapAt(exposed);
+    await tester.pump();
+
+    expect(player.played!.title, '电台曲目 1');
+  });
+
+  testWidgets('横屏随栏宽减少封面重叠并铺到右边缘', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+    await _pump(tester, player, size: const Size(900, 600));
+
+    final stage = find.byKey(const ValueKey('personal-fm-wide-stage'));
+    final covers = find.descendant(of: stage, matching: find.byType(Artwork));
+    double overlapRatio() {
+      final rects =
+          covers
+              .evaluate()
+              .map((element) => tester.getRect(find.byWidget(element.widget)))
+              .toList()
+            ..sort((a, b) => a.left.compareTo(b.left));
+      expect(rects, hasLength(4));
+      expect(tester.getRect(stage).right - rects.last.right, closeTo(5, 1));
+      expect(rects.first.width, closeTo(rects.first.height, .01));
+      return (rects[0].right - rects[1].left) / rects[0].width;
+    }
+
+    final narrowOverlap = overlapRatio();
+    tester.view.physicalSize = const Size(1280, 720);
+    await tester.pump();
+    final wideOverlap = overlapRatio();
+    expect(wideOverlap, greaterThan(0));
+    expect(wideOverlap, lessThan(narrowOverlap));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('横屏控制卡使用当前曲目的封面并随切歌更新', (tester) async {
+    final player = _RadioPlayer(withCovers: true);
+    addTearDown(player.dispose);
+    await _pump(tester, player, size: const Size(1000, 600));
+
+    final background = find.byKey(
+      const ValueKey('personal-fm-wide-control-artwork'),
+    );
+    final cover = find.descendant(of: background, matching: find.byType(Image));
+    expect(tester.getRect(cover), tester.getRect(background));
+    expect(
+      (tester.widget<Image>(cover).image as ResizeImage).imageProvider,
+      CachedArtworkImage(player.songs[0].coverUrl!),
+    );
+
+    await tester.tap(find.byTooltip('下一首'));
+    await tester.pump();
+
+    expect(
+      (tester.widget<Image>(cover).image as ResizeImage).imageProvider,
+      CachedArtworkImage(player.songs[1].coverUrl!),
+    );
+    expect(find.text('电台曲目 1'), findsOneWidget);
+  });
+
+  testWidgets('横屏最窄宽屏下不溢出', (tester) async {
+    final player = _RadioPlayer();
+    addTearDown(player.dispose);
+
+    await _pump(tester, player, size: const Size(900, 520));
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('横屏大字体设置下仍保持完整操作区', (tester) async {
+    final player = _RadioPlayer(tracked: false);
+    addTearDown(player.dispose);
+
+    tester.view.physicalSize = const Size(1000, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(
+            size: Size(1000, 600),
+            textScaler: TextScaler.linear(2),
+          ),
+          child: Scaffold(
+            body: SingleChildScrollView(
+              child: PersonalFmSection(
+                auth: FakeAuth(),
+                player: player,
+                visible: true,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('开始播放'), findsOneWidget);
   });
 
   testWidgets('窄屏下候选列表不横向溢出', (tester) async {
